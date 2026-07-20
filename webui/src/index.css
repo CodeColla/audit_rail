@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: #f4f5f6;
+  color: #0e1a2b;
+  font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* thin brand scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d5d9de;
+  border-radius: 6px;
+  border: 2px solid #f4f5f6;
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.18em] text-txt3;
+  }
+  .card {
+    @apply rounded-xl border border-bd bg-paper shadow-card;
+  }
+  .h1 {
+    @apply text-[26px] font-semibold tracking-[-0.02em];
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-md border border-bd bg-paper px-3.5 py-2 text-[13px] font-medium text-ink hover:bg-canvas;
+  }
+  .btn-primary {
+    @apply border-accent bg-accent px-3.5 py-2 font-semibold text-[#231205] hover:bg-accent-hover hover:border-accent-hover;
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* rendered markdown for documents (Sprint 2) */
+.doc-md {
+  @apply text-[14px] leading-relaxed text-ink;
+}
+.doc-md h1 { @apply mb-2 mt-6 text-[22px] font-semibold tracking-[-0.01em] first:mt-0; }
+.doc-md h2 { @apply mb-2 mt-6 text-[17px] font-semibold; }
+.doc-md h3 { @apply mb-1.5 mt-4 text-[15px] font-semibold; }
+.doc-md p { @apply my-2.5; }
+.doc-md ul { @apply my-2.5 list-disc pl-5; }
+.doc-md ol { @apply my-2.5 list-decimal pl-5; }
+.doc-md li { @apply my-1; }
+.doc-md a { @apply text-accent underline; }
+.doc-md code { @apply rounded bg-canvas px-1 py-0.5 font-mono text-[12.5px]; }
+.doc-md blockquote { @apply my-3 border-l-[3px] border-bd pl-3 text-txt2; }
+.doc-md table { @apply my-3 w-full border-collapse text-[13px]; }
+.doc-md th, .doc-md td { @apply border border-bd px-2.5 py-1.5 text-left; }
+.doc-md th { @apply bg-canvas font-semibold; }
+.doc-md hr { @apply my-5 border-bd; }

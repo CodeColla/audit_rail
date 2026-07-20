@@ -1,0 +1,26 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+sqlalchemy==2.0.36
+psycopg[binary]>=3.2      # PostgreSQL driver (docker-compose, host port 5433)
+pydantic==2.10.3
+pydantic-settings>=2.6
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# M1: auth
+PyJWT>=2.9
+argon2-cffi>=23.1
+
+# M5: recurring-task scheduler
+APScheduler>=3.10
+
+# M6: xlsx import/export
+openpyxl>=3.1
+
+# M9 (Sprint 2): document rendering (markdown -> HTML -> PDF, pure-python)
+Markdown>=3.5
+xhtml2pdf>=0.2.16
+
+# Dev/test
+pytest>=8.0
+httpx>=0.28          # Starlette TestClient

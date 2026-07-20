@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+db/*.db
+data/vault/
+node_modules/
+webui/dist/
+.pytest_cache/
+*.Zone.Identifier
+*SandBoxSafeFile
+data
+docs
