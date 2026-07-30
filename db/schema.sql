@@ -93,16 +93,28 @@ BEGIN RAISE EXCEPTION '% is append-only (no UPDATE/DELETE)', TG_TABLE_NAME; END 
 -- L0 · IDENTITY, TENANCY, PEOPLE, FILES
 -- =====================================================================================
 
--- The customer org. Single DB, app-enforced scoping + composite FKs + (optional) RLS.
+-- The customer org (P4: what the UI calls an "Organisation"). Single DB, app-enforced
+-- scoping + composite FKs + (optional) RLS.
+-- gst_number is the anti-duplicate key: one GSTIN, one organisation, globally. It is
+-- NULLABLE rather than NOT NULL because Postgres allows many NULLs under a UNIQUE index,
+-- which keeps pre-P4 tenants and test fixtures valid; POST /auth/signup requires it.
 CREATE TABLE tenants (
-    id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
-    name        text NOT NULL,
-    slug        text NOT NULL UNIQUE,
-    status      text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
-    created_at  iso_ts NOT NULL DEFAULT now_iso()
+    id                  text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    name                text NOT NULL,
+    slug                text NOT NULL UNIQUE,
+    gst_number          text UNIQUE,
+    super_admin_user_id text,                       -- FK added in CROSS-LAYER section
+    status              text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
+    created_at          iso_ts NOT NULL DEFAULT now_iso()
 );
 
--- A LOGIN. Staff do not get one (D-SIGN). Auditor guests are users with no people row.
+-- A LOGIN. Auditor guests are users with no people row.
+-- P4 NOTE: every PERSON now gets one of these too (created in status='invited' with a NULL
+-- password_hash; they set the password themselves via user_invites). people.user_id is the
+-- bridge. Magic-link attestation still works without any login — signing.py derives
+-- everything from the token — so staff who never sign in are unaffected.
+-- email is GLOBALLY unique: one human = one login across every organisation, with several
+-- tenant_members rows.
 CREATE TABLE users (
     id                 text PRIMARY KEY DEFAULT gen_random_uuid()::text,
     email              text NOT NULL UNIQUE,
@@ -115,24 +127,103 @@ CREATE TABLE users (
     last_login_at      iso_ts
 );
 
+-- P4. Password policy support: min 8 alphanumeric, expires after 30 days, and the previous
+-- 3 hashes may not be reused.
+--   level 0 = current password, 1 = previous, 2 = the one before that.
+-- A change shifts everyone down and deletes level 3, so at most 3 rows exist per user.
+-- Expiry is measured from the level-0 row's changed_at, which is why the timestamp lives
+-- here rather than on users.
+CREATE TABLE user_password_history (
+    id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    password_hash text NOT NULL,
+    level       smallint NOT NULL CHECK (level BETWEEN 0 AND 2),
+    changed_at  iso_ts NOT NULL DEFAULT now_iso(),
+    UNIQUE (user_id, level)
+);
+
+-- P4. Single-use invite so a new user sets their OWN password (admins never type one).
+-- Deliberately NOT folded into signing_tokens: that table's st_exactly_one_target CHECK and
+-- race-free redemption are security-critical and covered by tests; widening them for an
+-- unrelated purpose would put attestation at risk. Same discipline though — hash only.
+CREATE TABLE user_invites (
+    id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id   text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  text NOT NULL UNIQUE,
+    invited_by_user_id text REFERENCES users(id),
+    issued_at   iso_ts NOT NULL DEFAULT now_iso(),
+    expires_at  iso_ts NOT NULL,
+    consumed_at iso_ts,
+    revoked_at  iso_ts
+);
+CREATE INDEX ix_user_invites_user ON user_invites (user_id) WHERE consumed_at IS NULL;
+
 -- KEPT AS A REAL TABLE, NOT folded into people and NOT replaced by a view.
 -- Rationale (this reverses draft B's headline decision): api/database.py reflects with
 -- MetaData.reflect(bind=engine), whose `views` argument defaults to False — a view named
 -- tenant_members is NOT reflected, so t("tenant_members") raises KeyError at import and
 -- all 8 read sites (api/auth.py:159, tasks.py:20, assessments.py:31, evidence.py:87,
 -- policies.py:94, templates.py:102/182, tasks_engine.py:68) die. Separately,
--- scripts/init_db.py:108 and tests/conftest.py:83 do a POSITIONAL
--- `INSERT INTO tenant_members VALUES (:i,:t,:u,:r,:c)`.
--- >>> DO NOT ADD, REORDER OR RETYPE THESE 5 COLUMNS. The bootstrap depends on their order.
+-- scripts/init_db.py and tests/conftest.py used to do a POSITIONAL
+-- `INSERT INTO tenant_members VALUES (:i,:t,:u,:r,:c)`, which made any new column a
+-- landmine. P4-S1 converted every such call site to a NAMED insert, so columns may now be
+-- appended safely — keep them at the END and keep the inserts named.
+--
+-- P4-S2: `role_id` is the real authorisation source. The legacy `role` text column is kept
+-- so pre-P4 rows (and fixtures that don't set role_id) still resolve — see
+-- api/permissions.py LEGACY_ROLE_MAP.
 CREATE TABLE tenant_members (
     id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
     tenant_id   text NOT NULL REFERENCES tenants(id),
     user_id     text NOT NULL REFERENCES users(id),
     role        text NOT NULL CHECK (role IN ('admin', 'manager', 'member')),
     created_at  iso_ts NOT NULL DEFAULT now_iso(),
+    role_id     text,                             -- FK added in CROSS-LAYER section
     UNIQUE (tenant_id, user_id),
     UNIQUE (id, tenant_id),
     UNIQUE (user_id, tenant_id)   -- referenced by people.user_id's composite FK
+);
+
+-- P4-S3. Admin-editable dropdown vocabularies (risk category, vendor category, asset
+-- subtype, data type, incident category). Deliberately a TABLE rather than CHECK
+-- constraints: these lists change per customer and adding a value must not need a
+-- migration. True state machines (status, severity, classification) stay as CHECKs.
+-- `kind` is validated against api/vocabularies.KINDS, not here.
+CREATE TABLE lookup_values (
+    id         text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id  text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    kind       text NOT NULL,
+    value      text NOT NULL,
+    sort_order integer NOT NULL DEFAULT 0,
+    is_active  integer NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at iso_ts NOT NULL DEFAULT now_iso(),
+    UNIQUE (tenant_id, kind, value)
+);
+CREATE INDEX ix_lookup_kind ON lookup_values (tenant_id, kind, sort_order);
+
+-- P4-S2. RBAC: a role is a named bundle of (module, action) permissions, per organisation.
+-- System roles (is_system=1) are seeded for every org and cannot be deleted; admins may add
+-- their own. Permissions are deliberately module x action only — no record-level ownership.
+CREATE TABLE roles (
+    id          text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id   text NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name        text NOT NULL,
+    description text,
+    is_system   integer NOT NULL DEFAULT 0 CHECK (is_system IN (0, 1)),
+    created_at  iso_ts NOT NULL DEFAULT now_iso(),
+    UNIQUE (tenant_id, name),
+    UNIQUE (id, tenant_id)
+);
+
+-- The checkbox matrix, one row per ticked box. The vocabulary lives in api/permissions.py
+-- (MODULES x ACTIONS); it is intentionally NOT a CHECK constraint here, so adding a module
+-- does not require a migration.
+CREATE TABLE role_permissions (
+    role_id  text NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    module   text NOT NULL,
+    action   text NOT NULL,
+    PRIMARY KEY (role_id, module, action)
 );
 
 -- M8. A HUMAN — with or without a login. The accountable owner of everything in L1-L3.
@@ -605,6 +696,20 @@ CREATE TABLE control_clause_map (
     FOREIGN KEY (clause_id, tenant_id)  REFERENCES framework_clauses (id, tenant_id) ON DELETE CASCADE
 );
 
+-- M10b. Which controls satisfy which legal/contractual obligation (RBI etc.). M2M, so one
+-- control can answer several obligations and one obligation lean on several controls. Feeds
+-- the SoA's reason-for-inclusion in Sprint 7.
+CREATE TABLE control_obligation_map (
+    tenant_id     text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    control_id    text NOT NULL,
+    obligation_id text NOT NULL,
+    note          text,
+    created_at    iso_ts NOT NULL DEFAULT now_iso(),
+    PRIMARY KEY (control_id, obligation_id),
+    FOREIGN KEY (control_id, tenant_id)    REFERENCES controls    (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (obligation_id, tenant_id) REFERENCES obligations (id, tenant_id) ON DELETE CASCADE
+);
+
 -- M13. The SoA header; document_id is the published, approved, signed rendering.
 CREATE TABLE statements_of_applicability (
     id           text PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -684,6 +789,13 @@ CREATE TABLE document_versions (
     minor                 integer NOT NULL CHECK (minor >= 0),
     version_label         text GENERATED ALWAYS AS (major::text || '.' || minor::text) STORED,
     content               text NOT NULL DEFAULT '',
+    -- P4-S4: authored content is HTML now (TipTap). Everything written before that sprint is
+    -- markdown and STAYS markdown — sanitising or converting it would change content_sha256,
+    -- which electronic_signatures.file_sha256 pins, orphaning every attestation. The format is
+    -- an explicit column rather than sniffed: `Use the <b>badge</b>` is valid markdown that any
+    -- heuristic reads as HTML, and the meaning of already-signed bytes must not be a guess.
+    content_format        text NOT NULL DEFAULT 'MARKDOWN'
+                              CHECK (content_format IN ('MARKDOWN', 'HTML')),
     content_sha256        text GENERATED ALWAYS AS (sha256_hex(content)) STORED,
     changelog             text,
     status                text NOT NULL DEFAULT 'DRAFT'
@@ -826,6 +938,24 @@ CREATE TABLE signing_tokens (
         (purpose = 'ATTEST'  AND document_signature_id IS NOT NULL) OR
         (purpose = 'APPROVE' AND document_approval_decision_id IS NOT NULL) OR
         (purpose = 'NDA'     AND trust_access_id IS NOT NULL))
+);
+
+-- ---- control <-> document (P4-S5) ------------------------------------------------------
+-- "This control is written down in that policy." Many-to-many: one policy documents dozens
+-- of controls, and one control is documented by a policy AND a procedure AND a plan.
+-- Mirrors control_obligation_map — the regulation side of the same fact — rather than
+-- extending risk_links' polymorphic shape: a control's link targets are a closed set and
+-- both sides here are plain M2M. Declared after `documents` so BOTH composite FKs are
+-- inline and nothing has to defer to the CROSS-LAYER section.
+CREATE TABLE control_documents (
+    tenant_id   text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    control_id  text NOT NULL,
+    document_id text NOT NULL,
+    note        text,
+    created_at  iso_ts NOT NULL DEFAULT now_iso(),
+    PRIMARY KEY (control_id, document_id),
+    FOREIGN KEY (control_id, tenant_id)  REFERENCES controls  (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id, tenant_id) REFERENCES documents (id, tenant_id) ON DELETE CASCADE
 );
 
 -- TRANSITIONAL (drop at end of M9). api/routers/policies.py + dashboard.py:73 still read
@@ -1074,6 +1204,7 @@ CREATE TABLE assessment_guests (
     assessment_id        text NOT NULL,
     user_id              text NOT NULL REFERENCES users(id),
     role                 text NOT NULL DEFAULT 'auditor' CHECK (role IN ('auditor', 'observer')),
+    firm                 text,                          -- "PwC" — which firm audited us
     invited_by_member_id text REFERENCES tenant_members(id),
     invited_at           iso_ts NOT NULL DEFAULT now_iso(),
     expires_at           iso_ts,
@@ -1305,6 +1436,14 @@ CREATE TABLE activity_log (
 -- =====================================================================================
 -- CROSS-LAYER FKs — added last (dependency cycles / forward references)
 -- =====================================================================================
+-- P4: tenants is declared before users, so its owner FK lands here.
+ALTER TABLE tenants ADD CONSTRAINT tenants_super_admin_fk
+    FOREIGN KEY (super_admin_user_id) REFERENCES users (id) ON DELETE SET NULL;
+
+-- P4-S2: a member's role must belong to the SAME organisation as the membership.
+ALTER TABLE tenant_members ADD CONSTRAINT tenant_members_role_fk
+    FOREIGN KEY (role_id, tenant_id) REFERENCES roles (id, tenant_id) ON DELETE SET NULL (role_id);
+
 ALTER TABLE documents ADD CONSTRAINT documents_current_version_fk
     FOREIGN KEY (current_published_version_id, tenant_id)
     REFERENCES document_versions (id, tenant_id) ON DELETE SET NULL (current_published_version_id);
@@ -1520,8 +1659,12 @@ CREATE CONSTRAINT TRIGGER trg_mofn_sane AFTER INSERT OR UPDATE ON document_appro
 -- signed content / version number cannot, once the version has ever been published.
 CREATE FUNCTION freeze_published_version() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+    -- content_format is frozen too: content_sha256 covers `content` alone, so flipping the
+    -- format on a published, attested version would change how the signed bytes render
+    -- while leaving the hash — and therefore the signature — apparently intact.
     IF OLD.status IN ('PUBLISHED', 'SUPERSEDED')
        AND (NEW.content IS DISTINCT FROM OLD.content
+            OR NEW.content_format IS DISTINCT FROM OLD.content_format
             OR NEW.major IS DISTINCT FROM OLD.major
             OR NEW.minor IS DISTINCT FROM OLD.minor) THEN
         RAISE EXCEPTION 'version %.% is published and immutable; its content cannot change',
@@ -1645,8 +1788,17 @@ CREATE INDEX ix_dv_document       ON document_versions (document_id, major DESC,
 CREATE INDEX ix_ec_control        ON evidence_controls (control_id);
 CREATE INDEX ix_re_evidence       ON response_evidence (evidence_id);
 CREATE INDEX ix_ccm_clause        ON control_clause_map (clause_id);
+-- the PK covers the control_id leg; these index the reverse lookups
+CREATE INDEX ix_cd_document       ON control_documents (document_id);
+CREATE INDEX ix_com_obligation    ON control_obligation_map (obligation_id);
 CREATE INDEX ix_clauses_framework ON framework_clauses (framework_id, sort_order);
 CREATE INDEX ix_risk_links_risk   ON risk_links (risk_id);
+-- One link per (risk, target): backs the app's dedupe so a concurrent double-click can't
+-- land two identical links (which would double the reverse-nav count). num_nonnulls=1 is
+-- guaranteed by rl_exactly_one, so coalesce() resolves to the single target id.
+CREATE UNIQUE INDEX uq_risk_link_target ON risk_links
+    (risk_id, target_kind, coalesce(control_id, document_id, obligation_id,
+                                    asset_id, third_party_id, incident_id));
 CREATE INDEX ix_fa_assessment     ON finding_assessments (assessment_id);
 CREATE INDEX ix_fa_finding        ON finding_assessments (finding_id);
 CREATE INDEX ix_tp_parent         ON third_parties (tenant_id, parent_third_party_id)
@@ -1741,18 +1893,22 @@ SELECT DISTINCT dv.id AS document_version_id, dv.tenant_id, p.id AS person_id
 -- Computed against the LIVE audience, not against the signature rows materialised at
 -- publish: a person hired after publish has no signature row, and counting only those rows
 -- reports 100% while they have never attested (the M4 fix).
+-- EXEMPT people leave BOTH sides of the ratio (an exemption excuses a person, it must not
+-- drag the % down): `expected` counts audience members who are not EXEMPT for this version,
+-- `signed` counts the SIGNED. Join is unfiltered so the FILTERs can see the EXEMPT state.
 CREATE VIEW v_document_coverage AS
 SELECT dv.tenant_id, dv.document_id, dv.id AS version_id, dv.version_label,
-       count(*)                                        AS expected,
-       count(s.id) FILTER (WHERE s.state = 'SIGNED')   AS signed,
-       count(*) - count(s.id) FILTER (WHERE s.state = 'SIGNED') AS outstanding,
-       round(100.0 * count(s.id) FILTER (WHERE s.state = 'SIGNED')
-             / nullif(count(*), 0), 1)                 AS coverage_pct
+       count(*) FILTER (WHERE s.state IS DISTINCT FROM 'EXEMPT')          AS expected,
+       count(*) FILTER (WHERE s.state = 'SIGNED')                         AS signed,
+       count(*) FILTER (WHERE s.state IS DISTINCT FROM 'EXEMPT'
+                          AND s.state IS DISTINCT FROM 'SIGNED')          AS outstanding,
+       round(100.0 * count(*) FILTER (WHERE s.state = 'SIGNED')
+             / nullif(count(*) FILTER (WHERE s.state IS DISTINCT FROM 'EXEMPT'), 0), 1)
+                                                                          AS coverage_pct
   FROM document_versions dv
   JOIN v_document_expected_signers x ON x.document_version_id = dv.id
   LEFT JOIN document_signatures s ON s.document_version_id = dv.id
                                  AND s.person_id = x.person_id
-                                 AND s.state <> 'EXEMPT'
  WHERE dv.status = 'PUBLISHED'
  GROUP BY dv.tenant_id, dv.document_id, dv.id, dv.version_label;
 

@@ -7,7 +7,19 @@ import datetime as dt
 import re
 from typing import Annotated
 
-from pydantic import BeforeValidator
+from pydantic import BaseModel, BeforeValidator, ConfigDict
+
+
+class StrictModel(BaseModel):
+    """Request body base that REJECTS unknown fields (422) instead of ignoring them.
+
+    Pydantic's default is to silently discard anything it doesn't recognise, so a client
+    that posts `assessed_on` when the field is `assessed_at` gets a cheerful 201 and a NULL
+    column. That bit us twice in one session. In a compliance product a silently-dropped
+    date or justification is an integrity problem, not a typo — fail loudly instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
 # ── ISO date coercion ───────────────────────────────────────────────────────
 # The `iso_ts` domain in db/schema_v2_postgres.sql rejects anything that isn't
@@ -28,6 +40,10 @@ def iso_or_none(v):
         return None
     if not _ISO_RE.match(v):
         raise ValueError(f"expected an ISO-8601 date (YYYY-MM-DD), got {v!r}")
+    try:                                   # reject impossible calendar dates (2026-13-45)
+        dt.date.fromisoformat(v[:10])
+    except ValueError:
+        raise ValueError(f"not a real calendar date: {v!r}")
     return v
 
 
@@ -41,6 +57,12 @@ def now_iso() -> str:
 
 def today_iso() -> str:
     return dt.date.today().isoformat()
+
+
+def now_plus_days(days: int) -> str:
+    """A full iso_ts `days` in the future (UTC) — token expiry, attestation due dates."""
+    return (dt.datetime.now(dt.timezone.utc)
+            + dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def add_months(iso_date: str, months: int) -> str:
@@ -68,6 +90,20 @@ def evidence_status(valid_until: str | None, today: str, soon_days: int = 60) ->
     if days < 0:
         return "expired"
     return "expiring" if days <= soon_days else "valid"
+
+
+def risk_band(score: int | None) -> str | None:
+    """A 1–25 risk score (likelihood × impact on 1–5 scales) → its band. Calibrated to the
+    Sprint 4a spec (9 → HIGH, 3 → LOW)."""
+    if score is None:
+        return None
+    if score <= 4:
+        return "LOW"
+    if score <= 8:
+        return "MEDIUM"
+    if score <= 14:
+        return "HIGH"
+    return "CRITICAL"
 
 
 def review_status(next_review_at: str | None, today: str, soon_days: int = 30) -> str:

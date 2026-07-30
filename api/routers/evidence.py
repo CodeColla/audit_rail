@@ -8,9 +8,11 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query,
                      UploadFile)
 from fastapi.responses import FileResponse
 from sqlalchemy import delete as sqldelete, func, insert, select
+from sqlalchemy.exc import IntegrityError
 
 from api import activity, storage
-from api.auth import Principal, get_current_user, require_roles
+from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.config import settings
 from api.database import engine, get_conn, t
 from api.util import IsoDate, evidence_status, now_iso, today_iso
@@ -28,7 +30,7 @@ def _link_counts(conn) -> dict:
 @router.get("")
 def list_evidence(
     expiring: bool = Query(False, description="only items expired or expiring soon"),
-    user: Principal = Depends(get_current_user),
+    user: Principal = Depends(require("evidence", "view")),
     conn=Depends(get_conn),
 ):
     ev = t("evidence")
@@ -50,7 +52,7 @@ def list_evidence(
 
 @router.get("/{evidence_id}")
 def evidence_detail(
-    evidence_id: str, user: Principal = Depends(get_current_user), conn=Depends(get_conn)
+    evidence_id: str, user: Principal = Depends(require("evidence", "view")), conn=Depends(get_conn)
 ):
     ev, ec, controls = t("evidence"), t("evidence_controls"), t("controls")
     row = conn.execute(
@@ -75,7 +77,7 @@ async def upload_evidence(
     valid_until: IsoDate = Form(None),
     control_ids: str | None = Form(None, description="comma-separated control ids"),
     file: UploadFile = File(...),
-    user: Principal = Depends(get_current_user),
+    user: Principal = Depends(require("evidence", "add")),
 ):
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
@@ -117,8 +119,11 @@ async def upload_evidence(
 
 @router.get("/{evidence_id}/file")
 def download_evidence(
-    evidence_id: str, user: Principal = Depends(get_current_user), conn=Depends(get_conn)
+    evidence_id: str, disposition: str = Query("attachment", pattern="^(attachment|inline)$"),
+    user: Principal = Depends(require("evidence", "view")), conn=Depends(get_conn)
 ):
+    """Serve the artifact. `disposition=inline` lets FilePreview render it in place;
+    the default stays `attachment` so existing download links are unchanged."""
     ev, files = t("evidence"), t("files")
     row = conn.execute(
         select(files.c.storage_key, files.c.original_name, files.c.mime_type)
@@ -130,14 +135,16 @@ def download_evidence(
     path = storage.path_for(row["storage_key"])
     if not path.exists():
         raise HTTPException(410, "file missing from vault")
-    return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream",
-                        filename=row["original_name"])
+    name = (row["original_name"] or "evidence").replace('"', "")
+    return FileResponse(
+        path, media_type=row["mime_type"] or "application/octet-stream",
+        headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
 
 
 @router.delete("/{evidence_id}", status_code=204)
 def delete_evidence(
     evidence_id: str,
-    user: Principal = Depends(require_roles("admin", "manager")),
+    user: Principal = Depends(require("evidence", "delete")),
 ):
     ev, files = t("evidence"), t("files")
     with engine.begin() as conn:
@@ -152,9 +159,17 @@ def delete_evidence(
         ).scalar() if row["file_id"] else None
         conn.execute(sqldelete(t("evidence_controls")).where(
             t("evidence_controls").c.evidence_id == evidence_id))
-        conn.execute(sqldelete(ev).where(ev.c.id == evidence_id))
-        if row["file_id"]:
-            conn.execute(sqldelete(files).where(files.c.id == row["file_id"]))
+        try:
+            conn.execute(sqldelete(ev).where(ev.c.id == evidence_id))
+            if row["file_id"]:
+                conn.execute(sqldelete(files).where(files.c.id == row["file_id"]))
+        except IntegrityError:
+            # Something still points at this artifact — a completed task run, a training
+            # assignment, a third-party assessment. Those FKs are RESTRICT/NO ACTION on
+            # purpose: the proof behind a completed obligation must not silently vanish.
+            raise HTTPException(
+                409, "This evidence is still referenced (e.g. by a completed task run or "
+                     "a vendor assessment) and cannot be deleted.")
     if key:
         storage.delete(key)
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,

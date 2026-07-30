@@ -1,7 +1,8 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { api, errText } from "../lib/api";
+import { useCan } from "../lib/auth";
 import { Bar, Card, cn, PageHead, Pill } from "../lib/ui";
 
 type Proposal = {
@@ -14,6 +15,7 @@ type ImportResult = { template_id: string; sections: number; questions: number; 
 export default function Import() {
   const nav = useNavigate();
   const qc = useQueryClient();
+  const can = useCan();
   const [step, setStep] = useState<"upload" | "review">("upload");
   const [bank, setBank] = useState("");
   const [version, setVersion] = useState("");
@@ -60,7 +62,7 @@ export default function Import() {
       await loadProposals(data.template_id);
       setStep("review");
     } catch (e: any) {
-      setErr(e?.response?.data?.detail ?? "Import failed — check the file and column layout.");
+      setErr(errText(e, "Import failed — check the file and column layout."));
     } finally {
       setBusy(false);
     }
@@ -88,6 +90,20 @@ export default function Import() {
     qc.invalidateQueries({ queryKey: ["assessments"] });
     qc.invalidateQueries({ queryKey: ["templates"] });
     nav(`/audits/${data.id}`);
+  }
+
+  // The whole page is a write flow, so gate the page rather than each button. The API
+  // re-checks audits.add on every call — this only avoids a dead-end form.
+  if (!can("audits", "add")) {
+    return (
+      <>
+        <PageHead eyebrow="Audits · Import" title="Import a bank checklist" />
+        <Card className="max-w-xl text-[13px] text-txt2">
+          You do not have permission to import checklists. Ask an administrator for the
+          <span className="font-medium"> Audits · add</span> permission.
+        </Card>
+      </>
+    );
   }
 
   if (step === "upload") {

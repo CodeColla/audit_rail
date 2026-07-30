@@ -19,14 +19,15 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func, insert, select, text, update
 
 from api import activity
-from api.auth import Principal, get_current_user, require_roles
+from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
-from api.util import IsoDate, now_iso
+from api.util import IsoDate, StrictModel, now_iso
 
 router = APIRouter(prefix="/people", tags=["people"])
 
 
-class PersonIn(BaseModel):
+class PersonIn(StrictModel):
     full_name: str
     email: str
     employee_number: str | None = None
@@ -47,7 +48,7 @@ class PersonIn(BaseModel):
         return v
 
 
-class PersonPatch(BaseModel):
+class PersonPatch(StrictModel):
     full_name: str | None = None
     employee_number: str | None = None
     department: str | None = None
@@ -74,7 +75,7 @@ def list_people(
     department: str | None = Query(None),
     state: str | None = Query(None, pattern="^(ACTIVE|INACTIVE)$"),
     q: str | None = Query(None, description="search name / email / employee number"),
-    user: Principal = Depends(get_current_user),
+    user: Principal = Depends(require("people", "view")),
     conn=Depends(get_conn),
 ):
     from api.util import today_iso
@@ -96,7 +97,7 @@ def list_people(
 
 
 @router.get("/departments")
-def list_departments(user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+def list_departments(user: Principal = Depends(require("people", "view")), conn=Depends(get_conn)):
     """Distinct departments in use. There is no `departments` table — department is
     free text on people, so the filter list is derived."""
     p = t("people")
@@ -108,7 +109,7 @@ def list_departments(user: Principal = Depends(get_current_user), conn=Depends(g
 
 
 @router.get("/org-chart")
-def org_chart(user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+def org_chart(user: Principal = Depends(require("people", "view")), conn=Depends(get_conn)):
     """Manager tree — VRA #3.1 ('organizational charts')."""
     from api.util import today_iso
     p = t("people")
@@ -127,7 +128,7 @@ def org_chart(user: Principal = Depends(get_current_user), conn=Depends(get_conn
 
 
 @router.get("/{person_id}")
-def person_detail(person_id: str, user: Principal = Depends(get_current_user),
+def person_detail(person_id: str, user: Principal = Depends(require("people", "view")),
                   conn=Depends(get_conn)):
     from api.util import today_iso
     p = t("people")
@@ -149,7 +150,7 @@ def person_detail(person_id: str, user: Principal = Depends(get_current_user),
 
 
 @router.post("", status_code=201)
-def create_person(body: PersonIn, user: Principal = Depends(get_current_user)):
+def create_person(body: PersonIn, user: Principal = Depends(require("people", "add"))):
     pid, now = str(uuid.uuid4()), now_iso()
     with engine.begin() as conn:
         try:
@@ -164,9 +165,74 @@ def create_person(body: PersonIn, user: Principal = Depends(get_current_user)):
     return {"id": pid}
 
 
+class InviteIn(StrictModel):
+    role_id: str | None = None          # defaults to the Viewer system role
+
+
+@router.post("/{person_id}/invite", status_code=201)
+def invite_person(person_id: str, body: InviteIn,
+                  user: Principal = Depends(require("users", "add"))):
+    """Give a person a login.
+
+    Creates the user in `invited` state with NO password — they set their own via the
+    returned link — plus a membership carrying the chosen role, and bridges the two through
+    the existing `people.user_id` column. Staff who never sign in still attest by magic
+    link, so this is additive.
+
+    The link is returned in the response (there is no mailer yet — same copy-the-link
+    approach as attestation).
+    """
+    from api.routers.auth import issue_invite
+
+    p, users = t("people"), t("users")
+    with engine.begin() as conn:
+        person = conn.execute(select(p).where(
+            p.c.id == person_id, p.c.tenant_id == user.tenant_id)).mappings().first()
+        if person is None:
+            raise HTTPException(404, "person not found")
+        if person["user_id"]:
+            raise HTTPException(409, f"{person['full_name']} already has a login")
+
+        role_id = body.role_id
+        if role_id is None:
+            role_id = conn.execute(select(t("roles").c.id).where(
+                t("roles").c.tenant_id == user.tenant_id,
+                t("roles").c.name == "Viewer")).scalar()
+        elif conn.execute(select(t("roles").c.id).where(
+                t("roles").c.id == role_id,
+                t("roles").c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "that role is not in this organisation")
+
+        # users.email is globally unique — an existing login is attached, not duplicated
+        uid = conn.execute(select(users.c.id).where(users.c.email == person["email"])).scalar()
+        if uid is None:
+            uid = str(uuid.uuid4())
+            conn.execute(insert(users).values(
+                id=uid, email=person["email"], full_name=person["full_name"],
+                auth_provider="local", is_platform_admin=0, status="invited",
+                created_at=now_iso()))
+
+        already = conn.execute(select(t("tenant_members").c.id).where(
+            t("tenant_members").c.tenant_id == user.tenant_id,
+            t("tenant_members").c.user_id == uid)).scalar()
+        if not already:
+            conn.execute(insert(t("tenant_members")).values(
+                id=str(uuid.uuid4()), tenant_id=user.tenant_id, user_id=uid,
+                role="member", role_id=role_id, created_at=now_iso()))
+        # the composite FK requires the membership to exist first
+        conn.execute(update(p).where(p.c.id == person_id).values(user_id=uid))
+        raw = issue_invite(conn, tenant_id=user.tenant_id, user_id=uid,
+                           invited_by=user.user_id)
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="person.invited", entity_type="person", entity_id=person_id,
+                 detail={"email": person["email"]})
+    return {"user_id": uid, "invite_path": f"/accept-invite/{raw}", "token": raw}
+
+
 @router.patch("/{person_id}")
 def update_person(person_id: str, body: PersonPatch,
-                  user: Principal = Depends(get_current_user)):
+                  user: Principal = Depends(require("people", "edit"))):
     vals = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not vals:
         raise HTTPException(400, "nothing to update")
@@ -195,7 +261,7 @@ CSV_COLUMNS = ("full_name", "email", "employee_number", "department", "position"
 @router.post("/import")
 async def import_people(
     file: UploadFile = File(...),
-    user: Principal = Depends(require_roles("admin", "manager")),
+    user: Principal = Depends(require("people", "add")),
 ):
     """CSV → people (source=IMPORT). Bad rows are REPORTED, never silently dropped."""
     try:

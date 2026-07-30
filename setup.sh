@@ -15,19 +15,19 @@ $PY -m venv .venv
 .venv/bin/pip install --upgrade pip -q
 .venv/bin/pip install -r api/requirements.txt -q
 
-echo "[2] Starting PostgreSQL (docker compose — host port 5433)..."
+echo "[2] Starting PostgreSQL (docker compose — host port 5434)..."
 if docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null; then
   # wait for the healthcheck rather than racing it
   for i in $(seq 1 30); do
     if docker compose exec -T postgres pg_isready -U audit -d audit_rail >/dev/null 2>&1; then
-      echo "    postgres ready on 127.0.0.1:5433"
+      echo "    postgres ready on 127.0.0.1:5434"
       break
     fi
     sleep 1
   done
 else
   echo "    !! could not run docker compose — start Postgres yourself, then re-run this script."
-  echo "       Expected: postgres on 127.0.0.1:5433, db=audit_rail, user=audit, pass=audit"
+  echo "       Expected: postgres on 127.0.0.1:5434, db=audit_rail, user=audit, pass=audit"
   exit 1
 fi
 

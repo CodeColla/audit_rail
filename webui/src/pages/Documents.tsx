@@ -1,7 +1,8 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { api, get } from "../lib/api";
+import { api, errText, get } from "../lib/api";
+import { useCan } from "../lib/auth";
 import { cn, inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
 
 type Doc = {
@@ -11,12 +12,19 @@ type Doc = {
 };
 type Person = { id: string; full_name: string };
 
-const TYPE_CHIPS: { label: string; type: string | null }[] = [
-  { label: "All", type: null }, { label: "Policies", type: "POLICY" },
-  { label: "Procedures", type: "PROCEDURE" }, { label: "Plans", type: "PLAN" },
-  { label: "Governance", type: "GOVERNANCE" },
-];
-const TYPES = ["POLICY", "PROCEDURE", "PLAN", "GOVERNANCE", "STANDARD", "RECORD", "REPORT"];
+type DocType = { value: string; label: string };
+
+/**
+ * The type list comes from the API (`GET /documents/types`), which reads it from the same
+ * constant the router validates against. It used to be hardcoded here and had drifted:
+ * it offered "STANDARD", which the database CHECK rejects — picking it produced a 500 —
+ * and omitted REGISTER, TEMPLATE and SOA, which are valid.
+ */
+function useDocTypes() {
+  return useQuery({ queryKey: ["document-types"], staleTime: Infinity,
+    queryFn: () => get<DocType[]>("/documents/types") });
+}
+
 const CLASSES = ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"];
 
 /** A document's live state: the newest version's status, shown as a pill. */
@@ -35,6 +43,7 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
   const nav = useNavigate();
   const qc = useQueryClient();
   const people = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
+  const types = useDocTypes();
   const [f, setF] = useState({ title: "", document_type: "POLICY", classification: "INTERNAL",
     owner_person_id: "", review_cadence_months: "12" });
   const [err, setErr] = useState("");
@@ -44,7 +53,7 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
     mutationFn: () => api.post("/documents", {
       ...f, review_cadence_months: f.review_cadence_months ? +f.review_cadence_months : null }),
     onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["documents"] }); nav(`/documents/${r.data.id}`); },
-    onError: (e: any) => setErr(e?.response?.data?.detail ?? "Could not create."),
+    onError: (e: any) => setErr(errText(e, "Could not create.")),
   });
   const submit = (e: FormEvent) => { e.preventDefault(); if (f.title && f.owner_person_id) create.mutate(); };
 
@@ -57,8 +66,8 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="text-[13px] font-medium">Type
-            <select value={f.document_type} onChange={set("document_type")} className={inputCls + " mt-1 capitalize"}>
-              {TYPES.map((t) => <option key={t} value={t}>{t.charAt(0) + t.slice(1).toLowerCase()}</option>)}
+            <select value={f.document_type} onChange={set("document_type")} className={inputCls + " mt-1"}>
+              {(types.data ?? []).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </label>
           <label className="text-[13px] font-medium">Classification
@@ -90,10 +99,12 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
 }
 
 export default function Documents() {
+  const can = useCan();
   const [params, setParams] = useSearchParams();
   const typeParam = params.get("type");
   const [adding, setAdding] = useState(false);
   const nav = useNavigate();
+  const types = useDocTypes();
   const { data, isLoading } = useQuery({
     queryKey: ["documents", typeParam],
     queryFn: () => get<Doc[]>(`/documents${typeParam ? `?document_type=${typeParam}` : ""}`),
@@ -105,14 +116,16 @@ export default function Documents() {
     <>
       <PageHead eyebrow="Program · Documents" title="Documents"
         lead="Policies, procedures and plans — authored, approved by a quorum, published as controlled PDFs. (Registers will render themselves here too, from Sprint 5.)"
-        action={<button onClick={() => setAdding(true)} className="btn btn-primary">＋ New document</button>} />
+        action={can("documents", "add")
+          ? <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New document</button>
+          : undefined} />
 
       <div className="mb-4 flex flex-wrap gap-2">
-        {TYPE_CHIPS.map((c) => (
+        {[{ value: null, label: "All" }, ...(types.data ?? [])].map((c) => (
           <button key={c.label}
-            onClick={() => setParams(c.type ? { type: c.type } : {})}
+            onClick={() => setParams(c.value ? { type: c.value } : {})}
             className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
-              (typeParam ?? null) === c.type ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
+              (typeParam ?? null) === c.value ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                 : "border-bd bg-paper text-txt2 hover:bg-canvas")}>
             {c.label}
           </button>
@@ -127,7 +140,9 @@ export default function Documents() {
             Policy, route it to approvers, and publish a controlled v1.0 — no more Word file on a
             share drive.
           </p>
-          <button onClick={() => setAdding(true)} className="btn btn-primary mt-4">＋ New document</button>
+          {can("documents", "add") && (
+            <button onClick={() => setAdding(true)} className="btn btn-primary mt-4">＋ New document</button>
+          )}
         </div>
       ) : (
         <Table head={["Title", "Type", "Classification", "Status", "Owner", "Next review"]}>

@@ -8,7 +8,8 @@ type Dash = {
   queues: {
     overdue_tasks: { run_id: string; title: string; due_at: string }[];
     expiring_evidence: { id: string; title: string; valid_until: string; status: string }[];
-    policies_due: { id: string; title: string; next_review_at: string; review_status: string }[];
+    expiring_assessments: { id: string; third_party_name: string; expires_at: string; outcome: string | null; status: string }[];
+    documents_due: { id: string; title: string; kind: string; next_review_at: string; review_status: string }[];
     open_auditor_asks: { id: string; number: string; text: string; bank_name: string }[];
   };
 };
@@ -103,8 +104,10 @@ export default function Dashboard() {
           items={q.overdue_tasks.map((t) => ({ key: t.run_id, main: t.title, meta: `due ${t.due_at}`, right: <Pill tone="overdue">overdue</Pill> }))} />
         <Queue title="Evidence expiring" count={q.expiring_evidence.length} tone="warn"
           items={q.expiring_evidence.map((e) => ({ key: e.id, main: e.title, meta: `valid until ${e.valid_until}`, right: <Pill tone={e.status}>{e.status}</Pill> }))} />
-        <Queue title="Policies due for review" count={q.policies_due.length} tone="warn"
-          items={q.policies_due.map((p) => ({ key: p.id, main: p.title, meta: `review ${p.next_review_at}`, right: <Pill tone={p.review_status}>{p.review_status.replace("_", " ")}</Pill> }))} />
+        <Queue title="Documents due for review" count={q.documents_due.length} tone="warn"
+          items={q.documents_due.map((p) => ({ key: p.id, main: p.title, meta: `review ${p.next_review_at}`, right: <Pill tone={p.review_status}>{p.review_status.replace("_", " ")}</Pill> }))} />
+        <Queue title="Vendor reviews expiring" count={q.expiring_assessments.length} tone="warn"
+          items={q.expiring_assessments.map((v) => ({ key: v.id, main: v.third_party_name, meta: `expires ${v.expires_at}`, right: <Pill tone={v.status}>{v.status}</Pill> }))} />
         <Queue title="Open auditor asks" count={q.open_auditor_asks.length} tone="info"
           items={q.open_auditor_asks.map((a) => ({ key: a.id, main: a.text.slice(0, 60), meta: `${a.bank_name} · #${a.number}`, right: <Pill tone="ask_pending">ask</Pill> }))} />
       </div>

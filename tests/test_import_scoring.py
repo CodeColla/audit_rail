@@ -38,7 +38,7 @@ def _seed_controls(engine, tenant_id):
 def test_import_proposals_scoring_export(app_client):
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     _seed_controls(engine, tid)
     tok = token(app_client, "member@kiam.example", "secret2")
     h = {"Authorization": f"Bearer {tok}"}

@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, get } from "../lib/api";
+import { api, downloadFile, get } from "../lib/api";
+import { useCan } from "../lib/auth";
 import { Card, cn, Drawer, inputCls, Loading, Modal, Pill, Segment, Table, Td } from "../lib/ui";
 
 type Detail = {
@@ -17,6 +18,7 @@ type RespDetail = {
   mapped_control: { code: string; statement: string } | null;
   response: { id: string; response_value: string; comment: string | null; na_justification: string | null; workflow_status: string } | null;
   evidence: { id: string; title: string; evidence_type: string }[];
+  revisions: { rev_no: number; response_value: string | null; comment: string | null; created_at: string }[];
   thread: { author_kind: string; kind: string; body: string; created_at: string }[];
   findings: { title: string; risk_rating: string | null; likelihood: number | null; impact: number | null }[];
 };
@@ -26,9 +28,16 @@ const VALUES = [
   { v: "yes", label: "Yes", tone: "ok" }, { v: "partial", label: "Partial", tone: "warn" },
   { v: "no", label: "No", tone: "bad" }, { v: "na", label: "N/A", tone: "na" },
 ];
-const FILTERS = ["all", "answered", "ask_pending", "na", "open"] as const;
+const STATUSES = ["draft", "in_progress", "submitted", "in_review",
+                  "verdict_issued", "closed"] as const;
+// these must be workflow_status values (schema: open|answered|ask_pending|actioned|
+// validated|final). "na" used to be listed here, but that is a RESPONSE value — the chip
+// could never match anything.
+const FILTERS = ["all", "open", "answered", "ask_pending", "actioned",
+                 "validated", "final"] as const;
 
 function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClose: () => void }) {
+  const can = useCan();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["resp", aid, qid], queryFn: () => get<RespDetail>(`/assessments/${aid}/responses/${qid}`) });
 
@@ -66,33 +75,50 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
 
   if (!data) return <Drawer open onClose={onClose} title="Loading…"><div /></Drawer>;
   const naNoJust = val === "na" && !just.trim();
+  const canEdit = can("audits", "edit");
 
   return (
     <Drawer open onClose={onClose} sub={`QUESTION · #${data.question.number}`} title={data.question.text}>
-      {/* answer / edit */}
+      {/* answer / edit — read-only for anyone without audits.edit */}
       <Card>
         <div className="eyebrow mb-2.5">Your answer{data.mapped_control && <span className="ml-2 font-mono normal-case tracking-normal text-txt3">↳ {data.mapped_control.code}</span>}</div>
-        <Segment value={val} onChange={setVal} options={VALUES} />
-        <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Comment / how you meet this control…"
-          className={cn(inputCls, "mt-3 min-h-[64px]")} />
-        {val === "na" && (
-          <textarea value={just} onChange={(e) => setJust(e.target.value)} placeholder="N/A justification (required)…"
-            className={cn(inputCls, "mt-2 min-h-[48px] border-l-[3px] border-l-warn")} />
+        {canEdit ? (
+          <>
+            <Segment value={val} onChange={setVal} options={VALUES} />
+            <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Comment / how you meet this control…"
+              className={cn(inputCls, "mt-3 min-h-[64px]")} />
+            {val === "na" && (
+              <textarea value={just} onChange={(e) => setJust(e.target.value)} placeholder="N/A justification (required)…"
+                className={cn(inputCls, "mt-2 min-h-[48px] border-l-[3px] border-l-warn")} />
+            )}
+            <div className="mt-3 flex items-center gap-2">
+              <button disabled={!val || naNoJust || saveAnswer.isPending} onClick={() => saveAnswer.mutate()}
+                className="btn btn-primary disabled:opacity-50">{saveAnswer.isPending ? "Saving…" : "Save answer"}</button>
+              {data.response && <Pill tone={data.response.workflow_status}>{data.response.workflow_status.replace(/_/g, " ")}</Pill>}
+              {naNoJust && <span className="text-[11.5px] text-bad">N/A needs a justification</span>}
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <Pill tone={val || "na"}>{(val || "unanswered").toUpperCase()}</Pill>
+              {data.response && <Pill tone={data.response.workflow_status}>{data.response.workflow_status.replace(/_/g, " ")}</Pill>}
+            </div>
+            {comment && <p className="text-[13px] text-txt2">{comment}</p>}
+            {just && <p className="border-l-[3px] border-l-warn pl-2 text-[12.5px] text-txt2">{just}</p>}
+            <span className="text-[11.5px] text-txt3">Read-only — you don't have permission to answer audit points.</span>
+          </div>
         )}
-        <div className="mt-3 flex items-center gap-2">
-          <button disabled={!val || naNoJust || saveAnswer.isPending} onClick={() => saveAnswer.mutate()}
-            className="btn btn-primary disabled:opacity-50">{saveAnswer.isPending ? "Saving…" : "Save answer"}</button>
-          {data.response && <Pill tone={data.response.workflow_status}>{data.response.workflow_status.replace(/_/g, " ")}</Pill>}
-          {naNoJust && <span className="text-[11.5px] text-bad">N/A needs a justification</span>}
-        </div>
       </Card>
 
       {/* evidence */}
       <Card>
         <div className="mb-2 flex items-center justify-between">
           <div className="eyebrow">Linked evidence</div>
-          <button onClick={() => setPickEv((s) => !s)} className="text-[12px] font-medium text-accent"
-            disabled={!data.response}>＋ Link evidence</button>
+          {canEdit && (
+            <button onClick={() => setPickEv((s) => !s)} className="text-[12px] font-medium text-accent"
+              disabled={!data.response}>＋ Link evidence</button>
+          )}
         </div>
         {!data.response && <div className="text-[12px] text-txt3">Answer the question first, then link evidence.</div>}
         {data.evidence.map((e) => (
@@ -114,6 +140,21 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         )}
       </Card>
 
+      {/* answer history — written on every save; used to be invisible */}
+      {(data.revisions?.length ?? 0) > 1 && (
+        <Card>
+          <div className="eyebrow mb-2">Answer history · {data.revisions.length} revisions</div>
+          {data.revisions.map((r) => (
+            <div key={r.rev_no} className="flex items-baseline gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+              <span className="font-mono text-[11px] text-txt3">v{r.rev_no}</span>
+              <Pill tone={r.response_value ?? "na"}>{(r.response_value ?? "—").toUpperCase()}</Pill>
+              <span className="min-w-0 flex-1 truncate text-txt2">{r.comment}</span>
+              <span className="shrink-0 text-[11px] text-txt3">{(r.created_at ?? "").slice(0, 10)}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
       {/* review thread */}
       <Card>
         <div className="eyebrow mb-3">Review thread</div>
@@ -130,13 +171,15 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
               </div>
             ))}
           </div>}
-        <div className="flex items-center gap-2">
-          <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-bd px-2 py-2 text-[12.5px]">
-            {["action", "validation", "remark", "ask"].map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
-          <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Reply on the thread…" className={inputCls} />
-          <button disabled={!msg.trim() || postMsg.isPending} onClick={() => postMsg.mutate()} className="btn btn-primary disabled:opacity-50">Send</button>
-        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-bd px-2 py-2 text-[12.5px]">
+              {["action", "validation", "remark", "ask"].map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+            <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Reply on the thread…" className={inputCls} />
+            <button disabled={!msg.trim() || postMsg.isPending} onClick={() => postMsg.mutate()} className="btn btn-primary disabled:opacity-50">Send</button>
+          </div>
+        )}
       </Card>
 
       {/* findings */}
@@ -146,7 +189,7 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
           {f.likelihood && f.impact && <div className="font-mono text-[12px] text-txt2">L {f.likelihood} × I {f.impact} = {f.likelihood * f.impact}</div>}
         </div>
       ))}
-      {showFinding ? (
+      {!canEdit ? null : showFinding ? (
         <Card>
           <div className="eyebrow mb-2">Raise a finding</div>
           <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Finding title…" className={inputCls} />
@@ -225,6 +268,7 @@ function InviteModal({ aid, onClose }: { aid: string; onClose: () => void }) {
 export default function Workspace() {
   const { id } = useParams();
   const qc = useQueryClient();
+  const canEdit = useCan()("audits", "edit");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
   const [openQ, setOpenQ] = useState<string | null>(null);
   const [invite, setInvite] = useState(false);
@@ -234,6 +278,10 @@ export default function Workspace() {
   const prefill = useMutation({
     mutationFn: () => api.post(`/assessments/${id}/prefill`),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["grid", id] }); qc.invalidateQueries({ queryKey: ["assessment", id] }); },
+  });
+  const setStatus = useMutation({
+    mutationFn: (status: string) => api.patch(`/assessments/${id}`, { status }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["assessment", id] }),
   });
   if (det.isLoading || grid.isLoading || !det.data) return <Loading />;
   const d = det.data;
@@ -248,16 +296,30 @@ export default function Workspace() {
       <div className="mb-1 mt-2 flex items-end gap-3">
         <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{d.bank_name} — {d.title}</h1>
         <Pill tone={d.status}>{d.status.replace(/_/g, " ")}</Pill>
+        {/* The audit lifecycle was unreachable: PATCH /assessments/{id} existed but nothing
+            called it, so every audit stayed "draft" forever. */}
+        {canEdit && (
+          <select value={d.status} aria-label="Audit status"
+            onChange={(e) => setStatus.mutate(e.target.value)}
+            className="rounded-md border border-bd bg-paper px-2 py-1 text-[12.5px] text-txt2 outline-none focus:border-accent">
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+        )}
       </div>
       <p className="mb-4 flex flex-wrap items-center gap-x-1 gap-y-2 text-[13.5px] text-txt2">
         {d.total_questions} controls · {d.answered} answered · score <b className="tnum">{d.score_pct}%</b> · verdict{" "}
         <b className={d.predicted_verdict === "Satisfactory" ? "text-ok" : "text-warn"}>{d.predicted_verdict}</b>
         {d.open_high_findings > 0 && <> · {d.open_high_findings} open High</>}
-        <button onClick={() => prefill.mutate()} disabled={prefill.isPending} className="btn ml-2 py-1.5 disabled:opacity-50">
-          {prefill.isPending ? "Prefilling…" : "Prefill from library"}
-        </button>
-        <button onClick={() => setInvite(true)} className="btn py-1.5">Invite auditor</button>
-        <a href={`/api/assessments/${id}/export.xlsx`} className="btn py-1.5">Export ↓</a>
+        {canEdit && (
+          <button onClick={() => prefill.mutate()} disabled={prefill.isPending} className="btn ml-2 py-1.5 disabled:opacity-50">
+            {prefill.isPending ? "Prefilling…" : "Prefill from library"}
+          </button>
+        )}
+        {canEdit && <button onClick={() => setInvite(true)} className="btn py-1.5">Invite auditor</button>}
+        <button onClick={() => downloadFile(`/assessments/${id}/export.xlsx`, `${det.data.bank_name ?? "assessment"}.xlsx`)}
+          className="btn py-1.5">Export ↓</button>
       </p>
 
       <div className="mb-4 flex flex-wrap gap-2">

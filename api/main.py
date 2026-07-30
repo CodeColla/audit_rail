@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -7,7 +8,8 @@ from sqlalchemy import text
 from api.config import settings
 from api.database import engine, reflect_schema
 from api.routers import (assessments, auth, dashboard, documents, evidence,
-                         library, notifications, people, policies, tasks, templates)
+                         library, lookups, notifications, people, policies, registers, roles,
+                         signing, tasks, templates)
 
 
 def _preflight() -> None:
@@ -21,7 +23,7 @@ def _preflight() -> None:
         raise RuntimeError(
             f"Cannot reach PostgreSQL at {engine.url.render_as_string(hide_password=True)} "
             f"({e.__class__.__name__}).\n"
-            "  Start it with:  docker compose up -d   (host port 5433)"
+            "  Start it with:  docker compose up -d   (host port 5434)"
         ) from e
     if not seeded:
         raise RuntimeError(
@@ -81,10 +83,26 @@ app.include_router(policies.router, prefix="/api")
 app.include_router(assessments.router, prefix="/api")
 app.include_router(people.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
+app.include_router(registers.router, prefix="/api")
 app.include_router(tasks.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(notifications.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
+app.include_router(roles.router, prefix="/api")
+app.include_router(lookups.router, prefix="/api")
+
+# PUBLIC, unauthenticated: the attestation magic link. Safe by construction — every
+# row is derived from the token (see api/routers/signing.py). Mounted under /api so the
+# SPA's Vite proxy reaches it; the user-facing link is the SPA page /sign/{token}.
+app.include_router(signing.router, prefix="/api")
+
+
+# Test-only hooks for the browser suite — states a browser cannot reach (e.g. a password
+# that is 30 days old). Off unless E2E_TEST_HOOKS=1, which only playwright.config.ts sets.
+if os.environ.get("E2E_TEST_HOOKS") == "1":
+    from api.routers import e2e_hooks
+    app.include_router(e2e_hooks.router, prefix="/api")
+    print("  E2E_TEST_HOOKS enabled — /api/e2e/* is mounted. Never enable this in production.")
 
 
 @app.get("/")

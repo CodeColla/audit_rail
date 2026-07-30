@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
 export default function Login() {
@@ -14,6 +14,8 @@ export default function Login() {
     e.preventDefault();
     setBusy(true); setErr("");
     try {
+      // If the account belongs to several organisations the server picks the first
+      // deterministically; the sidebar switcher moves between them afterwards.
       await login(email, password);
       nav("/");
     } catch {
@@ -51,7 +53,10 @@ export default function Login() {
             </button>
           </form>
         </div>
-        <p className="mt-3 text-center text-[11.5px] text-txt3">Dev login is prefilled · password “audit_rail”.</p>
+        <p className="mt-3 text-center text-[12px] text-txt3">
+          New here? <Link to="/signup" className="underline">Create an organisation</Link>
+        </p>
+        <p className="mt-1 text-center text-[11.5px] text-txt3">Dev login is prefilled · password “audit_rail”.</p>
       </div>
     </div>
   );

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { get } from "../lib/api";
+import { useCan } from "../lib/auth";
 import { Bar, Loading, PageHead, Pill, Table, Td } from "../lib/ui";
 
 type Assessment = {
@@ -10,6 +11,7 @@ type Assessment = {
 
 export default function Audits() {
   const nav = useNavigate();
+  const can = useCan();
   const { data, isLoading } = useQuery({ queryKey: ["assessments"], queryFn: () => get<Assessment[]>("/assessments") });
   if (isLoading) return <Loading />;
   const rows = data ?? [];
@@ -18,7 +20,9 @@ export default function Audits() {
     <>
       <PageHead eyebrow="Assessments" title="Audits"
         lead="Every bank audit as a live workspace: import a checklist, pre-fill from your control library, chase evidence, export back."
-        action={<Link to="/audits/import" className="btn btn-primary">Import checklist</Link>} />
+        action={can("audits", "add")
+          ? <Link to="/audits/import" className="btn btn-primary">Import checklist</Link>
+          : undefined} />
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">
           No assessments yet. Create one from an imported template.

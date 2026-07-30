@@ -1,0 +1,139 @@
+import { useEffect, useRef, useState } from "react";
+import { downloadFile, fetchBlob } from "../lib/api";
+
+/**
+ * Preview any artifact the app stores, without leaving the page.
+ *
+ * Dispatch by type:
+ *   PDF    — the browser's own viewer in an <iframe>
+ *   images — <img>
+ *   DOCX   — docx-preview renders the OOXML into a div
+ *   XLSX   — SheetJS converts the first sheets to HTML tables
+ *   other  — an honest "can't preview this" with a download button
+ *
+ * Everything is fetched through axios (`fetchBlob`), because these routes need the
+ * Authorization header — a bare <iframe src="/api/…"> would 401. Office rendering is
+ * approximate by design: it costs no server dependency, which a headless-LibreOffice
+ * pipeline would (see docs/phase4).
+ */
+
+type Kind = "pdf" | "image" | "docx" | "xlsx" | "text" | "unsupported";
+
+function classify(contentType: string, filename: string): Kind {
+  const ct = (contentType || "").toLowerCase();
+  const ext = (filename.split(".").pop() ?? "").toLowerCase();
+  if (ct.includes("pdf") || ext === "pdf") return "pdf";
+  if (ct.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext))
+    return "image";
+  if (ext === "docx" || ct.includes("wordprocessingml")) return "docx";
+  if (["xlsx", "xls", "csv"].includes(ext) || ct.includes("spreadsheetml") || ct.includes("ms-excel"))
+    return "xlsx";
+  if (ct.startsWith("text/") || ["txt", "md", "log", "json"].includes(ext)) return "text";
+  return "unsupported";
+}
+
+export function FilePreview({ url, name, className }:
+  { url: string; name?: string; className?: string }) {
+  const host = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  const [kind, setKind] = useState<Kind>("unsupported");
+  const [objectUrl, setObjectUrl] = useState("");
+  const [filename, setFilename] = useState(name ?? "");
+  const [text, setText] = useState("");
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    let revoke = () => {};
+    setState("loading"); setText(""); setMessage("");
+
+    (async () => {
+      try {
+        const inline = url.includes("?") ? `${url}&disposition=inline` : `${url}?disposition=inline`;
+        const f = await fetchBlob(inline);
+        if (cancelled) { f.revoke(); return; }
+        revoke = f.revoke;
+        const k = classify(f.contentType, name ?? f.filename);
+        setKind(k); setObjectUrl(f.objectUrl); setFilename(name ?? f.filename);
+
+        if (k === "docx") {
+          const { renderAsync } = await import("docx-preview");
+          if (host.current) {
+            host.current.innerHTML = "";
+            await renderAsync(f.blob, host.current, undefined,
+              { className: "docx", inWrapper: false, ignoreWidth: true });
+          }
+        } else if (k === "xlsx") {
+          const XLSX = await import("xlsx");
+          const wb = XLSX.read(await f.blob.arrayBuffer(), { type: "array" });
+          const html = wb.SheetNames.slice(0, 5).map((sn) =>
+            `<h4>${sn}</h4>${XLSX.utils.sheet_to_html(wb.Sheets[sn])}`).join("");
+          if (host.current) host.current.innerHTML = html;
+        } else if (k === "text") {
+          setText((await f.blob.text()).slice(0, 200_000));
+        }
+        if (!cancelled) setState("ready");
+      } catch (e: any) {
+        if (!cancelled) {
+          setMessage(e?.response?.status === 403
+            ? "You do not have permission to view this file."
+            : "This file could not be loaded.");
+          setState("error");
+        }
+      }
+    })();
+
+    return () => { cancelled = true; revoke(); };
+  }, [url, name]);
+
+  const Download = () => (
+    <button onClick={() => downloadFile(url, filename)} className="btn py-1.5">
+      Download{filename ? ` ${filename}` : ""} ↓
+    </button>
+  );
+
+  if (state === "loading")
+    return <div className={className}><div className="p-6 text-[13px] text-txt3">Loading preview…</div></div>;
+
+  if (state === "error")
+    return (
+      <div className={className}>
+        <div className="rounded-md border border-dashed border-bd p-6 text-center">
+          <p className="text-[13px] text-txt2">{message}</p>
+          <div className="mt-3"><Download /></div>
+        </div>
+      </div>
+    );
+
+  return (
+    <div className={className}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="truncate text-[12.5px] font-medium">{filename}</span>
+        <Download />
+      </div>
+
+      {kind === "pdf" && (
+        <iframe title={filename} src={objectUrl}
+          className="h-[70vh] w-full rounded-md border border-bd bg-paper" />
+      )}
+      {kind === "image" && (
+        <img src={objectUrl} alt={filename}
+          className="max-h-[70vh] w-auto rounded-md border border-bd bg-paper" />
+      )}
+      {(kind === "docx" || kind === "xlsx") && (
+        <div ref={host}
+          className="file-preview max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4" />
+      )}
+      {kind === "text" && (
+        <pre className="max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4 font-mono text-[12px] leading-relaxed">
+          {text}
+        </pre>
+      )}
+      {kind === "unsupported" && (
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+          There's no in-page preview for this file type — download it to view.
+        </div>
+      )}
+    </div>
+  );
+}

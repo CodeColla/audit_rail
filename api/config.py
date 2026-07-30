@@ -22,11 +22,11 @@ class Settings(BaseSettings):
     )
 
     # ── Database ────────────────────────────────────────────────────────────
-    # PostgreSQL (docker-compose.yml). Host port is 5433, not 5432 — Probo's
-    # stack already holds 5432 on this machine. db/schema.sql stays the
-    # canonical schema (no ORM models).
+    # PostgreSQL (docker-compose.yml). Host port is 5434: Probo holds 5432 and
+    # emp_erp_mcp holds 5433 on this machine. db/schema.sql stays the canonical
+    # schema (no ORM models).
     database_url: str = (
-        "postgresql+psycopg://audit:audit@localhost:5433/audit_rail"
+        "postgresql+psycopg://audit:audit@localhost:5434/audit_rail"
     )
 
     # ── API server ──────────────────────────────────────────────────────────

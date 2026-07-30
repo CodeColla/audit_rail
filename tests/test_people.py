@@ -148,7 +148,7 @@ def test_cross_tenant_manager_rejected(app_client):
     h = _h(app_client)
     other_tenant, other_person = str(uuid.uuid4()), str(uuid.uuid4())
     with engine.begin() as c:
-        c.execute(sqltext("INSERT INTO tenants VALUES (:i,'Other','other','active',:n)"),
+        c.execute(sqltext("INSERT INTO tenants (id,name,slug,status,created_at) VALUES (:i,'Other','other','active',:n)"),
                   {"i": other_tenant, "n": "2026-07-16T00:00:00Z"})
         c.execute(sqltext(
             "INSERT INTO people (id,tenant_id,full_name,email) VALUES (:i,:t,'Foreign',"

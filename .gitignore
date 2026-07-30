@@ -11,3 +11,6 @@ webui/dist/
 *SandBoxSafeFile
 data
 docs
+webui/playwright-report/
+webui/test-results/
+webui/e2e/.auth/

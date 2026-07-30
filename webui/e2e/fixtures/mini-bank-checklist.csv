@@ -1,0 +1,7 @@
+S.No,Domain,Question
+1,Governance,Do you maintain a documented information security policy approved by management?
+2,Governance,How often are your information security policies reviewed and updated?
+3,Access Control,Do you enforce multi-factor authentication for all administrative access?
+4,Access Control,Do you perform periodic user access reviews for privileged accounts?
+5,Business Continuity,Do you have a documented business continuity and disaster recovery plan?
+6,Incident Management,Do you have an incident response plan with defined roles and escalation paths?

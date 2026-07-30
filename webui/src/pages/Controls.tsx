@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { get } from "../lib/api";
 import { Card, cn, Drawer, Loading, PageHead, Pill, Table, Td } from "../lib/ui";
@@ -10,6 +11,11 @@ type Control = {
   domain_code: string; domain_name: string; mapped_count: number;
 };
 type MappedPoint = { bank_name: string; number: string; text: string; confidence: number; status: string };
+type LinkedRisk = {
+  id: string; reference: string | null; title: string;
+  inherent_score: number | null; residual_score: number | null; treatment: string | null; status: string;
+};
+type LinkedObligation = { id: string; requirement: string; regulator: string | null; status: string };
 type Xwalk = {
   columns: { id: string; bank_name: string; version_label: string }[];
   rows: { control_id: string; code: string; statement: string; domain_code: string; cells: Record<string, string[]> }[];
@@ -20,7 +26,7 @@ const lifecycleLabel = (c: Control) =>
   : c.lifecycle === "one_time" ? "One-time" : "Per audit";
 
 function ControlDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-  const { data } = useQuery({ queryKey: ["control", id], queryFn: () => get<Control & { mapped_points: MappedPoint[] }>(`/library/controls/${id}`) });
+  const { data } = useQuery({ queryKey: ["control", id], queryFn: () => get<Control & { mapped_points: MappedPoint[]; linked_risks: LinkedRisk[]; linked_obligations: LinkedObligation[] }>(`/library/controls/${id}`) });
   if (!data) return <Drawer open onClose={onClose} title="Loading…"><div /></Drawer>;
   return (
     <Drawer open onClose={onClose} sub={`STANDARD CONTROL · ${data.code}`} title={data.statement}>
@@ -50,6 +56,35 @@ function ControlDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           </div>
         ))}
       </Card>
+      {(data.linked_risks?.length ?? 0) > 0 && (
+        <Card>
+          <div className="eyebrow mb-2.5">Risks this control treats</div>
+          {data.linked_risks.map((r) => (
+            <div key={r.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+              {r.reference && <span className="font-mono text-txt3">{r.reference}</span>}
+              <span className="min-w-0 flex-1 truncate font-medium">{r.title}</span>
+              {r.inherent_score != null && (
+                <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-txt2">
+                  {r.inherent_score}{r.residual_score != null && ` → ${r.residual_score}`}
+                </span>)}
+              <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{r.status.charAt(0) + r.status.slice(1).toLowerCase()}</Pill>
+            </div>
+          ))}
+        </Card>
+      )}
+      {(data.linked_obligations?.length ?? 0) > 0 && (
+        <Card>
+          <div className="eyebrow mb-2.5">Obligations this control satisfies</div>
+          {data.linked_obligations.map((o) => (
+            <div key={o.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+              {o.regulator && <span className="shrink-0 rounded bg-ink px-1.5 py-0.5 text-[10px] font-bold text-white">{o.regulator}</span>}
+              <span className="min-w-0 flex-1 truncate">{o.requirement}</span>
+              <Pill tone={o.status === "COMPLIANT" ? "ok" : o.status === "NON_COMPLIANT" ? "bad" : "warn"}>
+                {o.status.replace(/_/g, " ").toLowerCase()}</Pill>
+            </div>
+          ))}
+        </Card>
+      )}
     </Drawer>
   );
 }
@@ -57,7 +92,11 @@ function ControlDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 export default function Controls() {
   const [tab, setTab] = useState<"framework" | "crosswalk">("framework");
   const [domain, setDomain] = useState<string>("");
-  const [openId, setOpenId] = useState<string | null>(null);
+  // P4-S3: the control drawer is addressable — /controls/view/:id
+  const { id: routeId } = useParams();
+  const nav = useNavigate();
+  const openId = routeId ?? null;
+  const setOpenId = (next: string | null) => nav(next ? `/controls/view/${next}` : "/controls");
 
   const domains = useQuery({ queryKey: ["domains"], queryFn: () => get<Domain[]>("/library/domains") });
   const controls = useQuery({ queryKey: ["controls", domain], queryFn: () => get<Control[]>(`/library/controls${domain ? `?domain_code=${domain}` : ""}`) });

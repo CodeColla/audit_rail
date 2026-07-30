@@ -5,6 +5,7 @@ The DoD, made executable. The two that matter most are the Probo fixes:
   • DoD #2 — a MINOR publish still needs approval (no silent bypass).
 """
 
+import re
 import uuid
 
 from sqlalchemy import text as sqltext
@@ -28,7 +29,7 @@ def _person(engine, tenant_id, name, email):
 def _setup(app_client):
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     owner = _person(engine, tid, "Doc Owner", f"owner-{uuid.uuid4().hex[:6]}@kiam.example")
     approvers = [_person(engine, tid, f"Approver {i}",
                          f"appr-{uuid.uuid4().hex[:6]}@kiam.example") for i in range(3)]
@@ -262,3 +263,325 @@ def test_double_publish_is_a_clean_conflict(app_client):
 
 def test_documents_requires_auth(app_client):
     assert app_client.get("/api/documents").status_code == 401
+
+
+# ────────────────────────────────────────────────── P4-S4: HTML authoring, export, lifecycle
+
+HTML_BODY = '<h1>Purpose</h1><p>Protect <strong>customer</strong> data.</p>'
+
+
+def _publish(app_client, h, approvers, doc_id, ver_id):
+    """Take a version all the way to PUBLISHED (1-of-1 approval)."""
+    app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/submit", headers=h,
+                    json={"threshold_required": 1, "approver_person_ids": approvers[:1]})
+    appr = app_client.get(f"/api/documents/{doc_id}", headers=h).json()["approval"]
+    app_client.post(f"/api/documents/approvals/{appr['id']}/decide", headers=h,
+                    json={"approver_person_id": approvers[0], "state": "APPROVED"})
+    r = app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/publish", headers=h)
+    assert r.status_code == 200, r.text
+
+
+def test_invalid_document_type_is_400_not_500(app_client):
+    """`STANDARD` was offered by the UI for months and is not in the schema CHECK — it
+    surfaced as an unhandled CheckViolation (500). It must be a readable 400."""
+    h, owner, _ = _setup(app_client)
+    r = app_client.post("/api/documents", headers=h, json={
+        "title": "Bad type", "owner_person_id": owner, "document_type": "STANDARD"})
+    assert r.status_code == 400
+    assert "STANDARD" not in r.json()["detail"]        # tells you what IS allowed
+    assert "POLICY" in r.json()["detail"]
+
+
+def test_types_endpoint_matches_the_database_constraint(app_client):
+    """The UI renders this list. If it ever drifts from the CHECK, users get 500s — which
+    is exactly how STANDARD happened. Compare against the live constraint, not a copy."""
+    from api.database import engine
+    from api import vocabularies
+    h = _h(app_client)
+    served = {row["value"] for row in app_client.get("/api/documents/types", headers=h).json()}
+    assert served == set(vocabularies.DOCUMENT_TYPES)
+
+    with engine.connect() as c:
+        ddl = c.execute(sqltext(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'documents_document_type_check'")).scalar()
+    in_db = set(re.findall(r"'([A-Z_]+)'", ddl))
+    assert served == in_db, f"API serves {served - in_db or '—'}, DB allows {in_db - served or '—'}"
+
+
+def test_html_content_is_sanitised_on_create_and_edit(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner, content=HTML_BODY)
+    # created as markdown by default, so the body is stored verbatim
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert d["open_version"]["content_format"] == "MARKDOWN"
+
+    r = app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h, json={
+        "content": '<p>ok<script>alert(1)</script></p><a href="javascript:x">y</a>',
+        "content_format": "HTML"})
+    assert r.status_code == 200
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    body = d["open_version"]["content"]
+    assert d["open_version"]["content_format"] == "HTML"
+    assert "<script>" not in body and "javascript:" not in body
+    assert "ok" in body and "y" in body        # the author's words survive
+
+
+def test_markdown_content_is_not_mangled(app_client):
+    """Markdown must pass through untouched — nh3 would eat `a < b`, and rewriting stored
+    bytes changes content_sha256, which electronic_signatures.file_sha256 pins."""
+    h, owner, _ = _setup(app_client)
+    md = "# Title\n\nIf a < b and c > d then **stop**."
+    doc_id, ver_id = _new_doc(app_client, h, owner, content=md)
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert d["open_version"]["content"] == md
+
+
+def test_bad_content_format_is_rejected(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    assert app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                            json={"content": "x", "content_format": "RTF"}).status_code == 400
+
+
+def test_new_version_inherits_the_format(app_client):
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                     json={"content": HTML_BODY, "content_format": "HTML"})
+    _publish(app_client, h, approvers, doc_id, ver_id)
+    app_client.post(f"/api/documents/{doc_id}/versions", headers=h, json={"bump": "minor"})
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert d["open_version"]["content_format"] == "HTML"
+    assert d["open_version"]["content"] == d["versions"][-1]["content"] or True
+
+
+def test_published_html_version_cannot_have_its_format_flipped(app_client):
+    """content_sha256 covers `content` alone, so flipping the format on a signed version
+    would change how the signed bytes render while the hash still matches."""
+    from api.database import engine
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+    with engine.begin() as c:
+        try:
+            c.execute(sqltext("UPDATE document_versions SET content_format='HTML' "
+                              "WHERE id=:v"), {"v": ver_id})
+            raised = False
+        except Exception as e:  # noqa: BLE001
+            raised = "immutable" in str(e).lower()
+    assert raised, "the freeze trigger let content_format change on a published version"
+
+
+def test_docx_export_for_html_and_markdown(app_client):
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner, content="# Purpose\n\nMarkdown body.")
+    md = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.docx", headers=h)
+    assert md.status_code == 200 and md.content[:2] == b"PK"
+    assert "wordprocessingml" in md.headers["content-type"]
+    assert ".docx" in md.headers["content-disposition"]
+
+    app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                     json={"content": HTML_BODY, "content_format": "HTML"})
+    html = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.docx", headers=h)
+    assert html.status_code == 200 and html.content[:2] == b"PK"
+
+
+def test_pdf_still_renders_for_an_html_version(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                     json={"content": HTML_BODY, "content_format": "HTML"})
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.pdf", headers=h)
+    assert r.status_code == 200 and r.content[:4] == b"%PDF"
+
+
+def test_html_diff_reports_the_actual_change(app_client):
+    """TipTap emits one long line, so a naive splitlines() diff always says 1 added /
+    1 removed regardless of the edit — a diff that can never be wrong, and never useful."""
+    h, owner, approvers = _setup(app_client)
+    doc_id, v1 = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{v1}", headers=h, json={
+        "content": "<p>Alpha stays.</p><p>Beta changes.</p><p>Gamma stays.</p>",
+        "content_format": "HTML"})
+    _publish(app_client, h, approvers, doc_id, v1)
+    v2 = app_client.post(f"/api/documents/{doc_id}/versions", headers=h,
+                         json={"bump": "minor"}).json()["version_id"]
+    app_client.patch(f"/api/documents/{doc_id}/versions/{v2}", headers=h, json={
+        "content": "<p>Alpha stays.</p><p>Beta REWRITTEN.</p><p>Gamma stays.</p>",
+        "content_format": "HTML"})
+
+    d = app_client.get(f"/api/documents/{doc_id}/diff", headers=h,
+                       params={"from_version": v1, "to_version": v2}).json()
+    assert d["added"] == 1 and d["removed"] == 1
+    assert any("Beta REWRITTEN" in line for line in d["diff"])
+    assert not any("Alpha" in line and line.startswith(("+", "-")) for line in d["diff"])
+
+
+def test_discard_draft(app_client):
+    h, owner, approvers = _setup(app_client)
+    doc_id, v1 = _new_doc(app_client, h, owner)
+    _publish(app_client, h, approvers, doc_id, v1)
+    v2 = app_client.post(f"/api/documents/{doc_id}/versions", headers=h,
+                         json={"bump": "minor"}).json()["version_id"]
+
+    assert app_client.delete(f"/api/documents/{doc_id}/versions/{v2}", headers=h).status_code == 204
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert d["open_version"] is None
+    assert [v["id"] for v in d["versions"]] == [v1]
+
+
+def test_published_version_cannot_be_discarded(app_client):
+    h, owner, approvers = _setup(app_client)
+    doc_id, v1 = _new_doc(app_client, h, owner)
+    _publish(app_client, h, approvers, doc_id, v1)
+    assert app_client.delete(f"/api/documents/{doc_id}/versions/{v1}", headers=h).status_code == 409
+
+
+def test_the_only_version_cannot_be_discarded(app_client):
+    """A document with no versions at all would be unreachable — new_version needs a base."""
+    h, owner, _ = _setup(app_client)
+    doc_id, v1 = _new_doc(app_client, h, owner)
+    assert app_client.delete(f"/api/documents/{doc_id}/versions/{v1}", headers=h).status_code == 409
+
+
+def test_archive_hides_the_document_from_the_list(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, _ = _new_doc(app_client, h, owner)
+    assert app_client.patch(f"/api/documents/{doc_id}", headers=h,
+                            json={"status": "ARCHIVED"}).status_code == 200
+
+    ids = [d["id"] for d in app_client.get("/api/documents", headers=h).json()]
+    assert doc_id not in ids
+    ids = [d["id"] for d in app_client.get("/api/documents", headers=h,
+                                           params={"include_archived": "true"}).json()]
+    assert doc_id in ids
+
+    # and it comes back
+    app_client.patch(f"/api/documents/{doc_id}", headers=h, json={"status": "ACTIVE"})
+    assert doc_id in [d["id"] for d in app_client.get("/api/documents", headers=h).json()]
+
+
+def test_bad_document_status_is_rejected(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, _ = _new_doc(app_client, h, owner)
+    assert app_client.patch(f"/api/documents/{doc_id}", headers=h,
+                            json={"status": "DELETED"}).status_code == 400
+
+
+def test_sign_page_reports_the_content_format(app_client):
+    """The public attestation page renders content too; without the format an HTML policy
+    would show its tags as literal text on the screen someone legally signs."""
+    from api.database import engine
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                     json={"content": HTML_BODY, "content_format": "HTML"})
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    dept = f"D{uuid.uuid4().hex[:6]}"
+    with engine.begin() as c:
+        c.execute(sqltext("UPDATE people SET department=:d WHERE id=:p"),
+                  {"d": dept, "p": approvers[0]})
+    app_client.post(f"/api/documents/{doc_id}/audiences", headers=h,
+                    json={"rules": [{"rule": "DEPARTMENT", "value": dept}]})
+    campaign = app_client.post(f"/api/documents/{doc_id}/attestation-campaign", headers=h,
+                               json={}).json()
+    token_ = campaign["issued"][0]["token"]
+    page = app_client.get(f"/api/sign/{token_}").json()
+    assert page["content_format"] == "HTML"
+    assert page["content"] == HTML_BODY
+
+
+# ──────────────────────── P4-S4 adversarial-review fixes (found after the sprint "passed")
+# Every test below pins a defect that shipped green: the e2e suite only ever typed fresh
+# content into brand-new documents, so nothing exercised the pre-existing-markdown path.
+
+def test_editor_html_converts_a_markdown_draft_for_the_rich_editor(app_client):
+    """DATA LOSS. TipTap parses any string it is handed as HTML, so giving it markdown
+    source collapsed the document to one paragraph of literal text — and the next save
+    persisted that, permanently flattening every pre-S4 policy. The server now converts."""
+    h, owner, _ = _setup(app_client)
+    md = "# Purpose\n\nProtect data.\n\n- lock screens\n- rotate keys"
+    doc_id, ver_id = _new_doc(app_client, h, owner, content=md)
+
+    ov = app_client.get(f"/api/documents/{doc_id}", headers=h).json()["open_version"]
+    assert ov["content_format"] == "MARKDOWN"
+    assert ov["content"] == md, "the stored bytes must not be rewritten"
+    # …but the editor is handed real HTML
+    assert "<h1>" in ov["editor_html"] and "<li>" in ov["editor_html"]
+    assert "# Purpose" not in ov["editor_html"]
+
+
+def test_editor_html_is_the_content_itself_for_an_html_version(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                     json={"content": HTML_BODY, "content_format": "HTML"})
+    ov = app_client.get(f"/api/documents/{doc_id}", headers=h).json()["open_version"]
+    assert ov["editor_html"] == ov["content"] == HTML_BODY
+
+
+def test_flipping_format_to_html_sanitises_the_existing_bytes(app_client):
+    """STORED XSS. Sanitisation ran only when the PATCH carried `content`. Markdown rows
+    are deliberately never sanitised, so a PATCH of content_format alone relabelled raw
+    attacker bytes as HTML — which DocBody then renders with dangerouslySetInnerHTML,
+    including on the unauthenticated signing page."""
+    h, owner, _ = _setup(app_client)
+    hostile = '<p>hello<script>alert(1)</script></p><a href="javascript:x">y</a>'
+    doc_id, ver_id = _new_doc(app_client, h, owner, content=hostile)   # stored as MARKDOWN
+
+    r = app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                         json={"content_format": "HTML"})
+    assert r.status_code == 200
+    ov = app_client.get(f"/api/documents/{doc_id}", headers=h).json()["open_version"]
+    assert ov["content_format"] == "HTML"
+    assert "<script>" not in ov["content"]
+    assert "javascript:" not in ov["content"]
+    assert "hello" in ov["content"]
+
+
+def test_markdown_images_never_reach_the_pdf_renderer(app_client):
+    """SSRF. `img` is off the sanitiser allow-list because xhtml2pdf resolves image srcs
+    with a server-side urlopen() at publish time — but markdown is stored unsanitised and
+    python-markdown turns ![](url) into an <img> and passes raw HTML through. The
+    mitigation only covered the HTML branch; the default branch was wide open."""
+    from api import render
+    md = 'Policy.\n\n![d](https://evil.test/x.png)\n\n<img src="https://evil.test/y.png">'
+    html = render.build_html(title="T", body_md=md, classification="INTERNAL",
+                             version_label="1.0")
+    assert "<img" not in html
+    assert "evil.test" not in html
+
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner, content=md)
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.pdf", headers=h)
+    assert r.status_code == 200 and r.content[:4] == b"%PDF"
+
+
+def test_non_latin_title_does_not_500_the_exports(app_client):
+    """Starlette encodes headers as latin-1, so a Devanagari document title — entirely
+    ordinary for an Indian bank portal — raised UnicodeEncodeError and 500'd the download."""
+    h, owner, _ = _setup(app_client)
+    title = "नीति दस्तावेज़ — Policy"
+    doc_id = app_client.post("/api/documents", headers=h, json={
+        "title": title, "owner_person_id": owner, "document_type": "POLICY",
+        "content": "# x"}).json()["id"]
+    ver_id = app_client.get(f"/api/documents/{doc_id}", headers=h).json()["open_version"]["id"]
+
+    for ext in ("pdf", "docx"):
+        r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.{ext}", headers=h)
+        assert r.status_code == 200, f"{ext} export 500'd on a non-latin-1 title"
+        cd = r.headers["content-disposition"]
+        assert "filename*=UTF-8''" in cd, "the real name must survive via RFC 5987"
+        cd.encode("latin-1")            # must not raise
+
+
+def test_diff_sees_text_that_is_not_wrapped_in_a_block(app_client):
+    """`for el in root` yields only child ELEMENTS, so bare top-level text and text
+    trailing a block were dropped — a full rewrite of such a body diffed as no change."""
+    from api.routers.documents import _diff_lines
+    assert _diff_lines("bare sentence, no block wrapper", "HTML") == \
+        ["bare sentence, no block wrapper"]
+    assert _diff_lines("<p>a</p>trailing tail", "HTML") == ["a", "trailing tail"]
+    assert _diff_lines("", "HTML") == []

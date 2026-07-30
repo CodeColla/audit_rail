@@ -54,7 +54,7 @@ def _seed_library(engine, tenant_id):
 def test_controls_and_crosswalk(app_client):
     from api.database import engine, t
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     am_ctl, cs_ctl = _seed_library(engine, tid)
     tok = token(app_client, "member@kiam.example", "secret2")
     h = {"Authorization": f"Bearer {tok}"}

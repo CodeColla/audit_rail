@@ -9,14 +9,15 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, insert, select
 
 from api import activity, storage
-from api.auth import Principal, get_current_user, require_roles
+from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
-from api.util import IsoDate, add_months, now_iso, review_status, today_iso
+from api.util import IsoDate, StrictModel, add_months, now_iso, review_status, today_iso
 
 router = APIRouter(prefix="/policies", tags=["policies"])
 
 
-class PolicyIn(BaseModel):
+class PolicyIn(StrictModel):
     title: str
     description: str | None = None
     owner_member_id: str | None = None
@@ -25,7 +26,7 @@ class PolicyIn(BaseModel):
 
 
 @router.get("")
-def list_policies(user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+def list_policies(user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)):
     pol = t("policies")
     today = today_iso()
     rows = conn.execute(
@@ -37,7 +38,7 @@ def list_policies(user: Principal = Depends(get_current_user), conn=Depends(get_
 
 
 @router.post("", status_code=201)
-def create_policy(body: PolicyIn, user: Principal = Depends(get_current_user)):
+def create_policy(body: PolicyIn, user: Principal = Depends(require("documents", "add"))):
     pid, now = str(uuid.uuid4()), now_iso()
     with engine.begin() as conn:
         conn.execute(insert(t("policies")).values(
@@ -52,7 +53,7 @@ def create_policy(body: PolicyIn, user: Principal = Depends(get_current_user)):
 
 @router.get("/{policy_id}")
 def policy_detail(
-    policy_id: str, user: Principal = Depends(get_current_user), conn=Depends(get_conn)
+    policy_id: str, user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)
 ):
     pol, pv, files = t("policies"), t("policy_versions"), t("files")
     row = conn.execute(
@@ -79,7 +80,7 @@ async def add_version(
     notes: str | None = Form(None),
     roll_review: bool = Form(True, description="advance next_review_at by the cadence"),
     file: UploadFile = File(...),
-    user: Principal = Depends(get_current_user),
+    user: Principal = Depends(require("documents", "edit")),
 ):
     pol = t("policies")
     with engine.begin() as conn:
@@ -116,7 +117,7 @@ async def add_version(
 
 
 @router.post("/{policy_id}/review")
-def mark_reviewed(policy_id: str, user: Principal = Depends(get_current_user)):
+def mark_reviewed(policy_id: str, user: Principal = Depends(require("documents", "edit"))):
     """Record a review: roll next_review_at forward by the policy's cadence."""
     pol = t("policies")
     with engine.begin() as conn:
@@ -137,7 +138,7 @@ def mark_reviewed(policy_id: str, user: Principal = Depends(get_current_user)):
 
 @router.delete("/{policy_id}", status_code=204)
 def delete_policy(
-    policy_id: str, user: Principal = Depends(require_roles("admin", "manager"))
+    policy_id: str, user: Principal = Depends(require("documents", "delete"))
 ):
     pol, pv, files = t("policies"), t("policy_versions"), t("files")
     with engine.begin() as conn:

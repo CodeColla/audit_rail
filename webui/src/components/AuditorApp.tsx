@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, get } from "../lib/api";
+import { api, downloadFile, get } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { Card, cn, Drawer, inputCls, Loading, Pill, Table, Td } from "../lib/ui";
 
@@ -57,7 +57,8 @@ function AuditorDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClos
           : data.evidence.map((e) => (
             <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
               <span className="grid h-7 w-7 place-items-center rounded-md bg-info-bg text-info">▣</span>
-              <a href={`/api/evidence/${e.id}/file`} target="_blank" className="text-[12.5px] font-medium hover:text-accent">{e.title}</a>
+              <button onClick={() => downloadFile(`/evidence/${e.id}/file`, e.title)}
+                className="text-left text-[12.5px] font-medium hover:text-accent">{e.title}</button>
             </div>
           ))}
       </Card>

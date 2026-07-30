@@ -12,30 +12,49 @@ from sqlalchemy import func, insert, select, update
 
 from api import activity, scoring, storage
 from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
 from api.mapping import best_control, classify, toks
 from api.scoring import config_for_template
-from api.util import now_iso
+from api.util import StrictModel, now_iso
 from api.xlsx_io import parse_checklist
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
 
+def _own_template(conn, tenant_id: str, template_id: str) -> None:
+    """404 unless this template belongs to the caller's tenant.
+
+    Sub-resources (questions, proposals, scoring) used to key only off the path id, so an
+    authenticated member holding another tenant's template UUID could read its bank
+    questions and mappings. RLS is inert today (the app connects as the table owner), so
+    this app-level check IS the boundary — see docs/phase3.
+    """
+    if conn.execute(select(t("templates").c.id).where(
+            t("templates").c.id == template_id,
+            t("templates").c.tenant_id == tenant_id)).first() is None:
+        raise HTTPException(404, "template not found")
+
+
 # --------------------------------------------------------------- read
 
 @router.get("")
-def list_templates(user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+def list_templates(user: Principal = Depends(require("audits", "view")), conn=Depends(get_conn)):
     templates, questions = t("templates"), t("questions")
+    # scope the counts to this tenant's templates — it used to group over every tenant's
+    # questions on each call
     counts = dict(conn.execute(
-        select(questions.c.template_id, func.count()).group_by(questions.c.template_id)
-    ).all())
+        select(questions.c.template_id, func.count())
+        .join(templates, questions.c.template_id == templates.c.id)
+        .where(templates.c.tenant_id == user.tenant_id)
+        .group_by(questions.c.template_id)).all())
     rows = conn.execute(select(templates).where(templates.c.tenant_id == user.tenant_id)
                         .order_by(templates.c.created_at)).mappings()
     return [{**dict(r), "question_count": counts.get(r["id"], 0)} for r in rows]
 
 
 @router.get("/{template_id}")
-def get_template(template_id: str, user: Principal = Depends(get_current_user),
+def get_template(template_id: str, user: Principal = Depends(require("audits", "view")),
                  conn=Depends(get_conn)):
     templates, sections = t("templates"), t("template_sections")
     row = conn.execute(select(templates).where(
@@ -50,7 +69,8 @@ def get_template(template_id: str, user: Principal = Depends(get_current_user),
 
 @router.get("/{template_id}/questions")
 def list_questions(template_id: str, limit: int = Query(200, le=1000), offset: int = 0,
-                   user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+                   user: Principal = Depends(require("audits", "view")), conn=Depends(get_conn)):
+    _own_template(conn, user.tenant_id, template_id)
     questions, sections = t("questions"), t("template_sections")
     q = (select(questions, sections.c.title.label("section_title"))
          .join(sections, questions.c.section_id == sections.c.id, isouter=True)
@@ -84,7 +104,7 @@ async def import_checklist(
     section_col: int | None = Form(None),
     header_row: int | None = Form(None),
     file: UploadFile = File(...),
-    user: Principal = Depends(get_current_user),
+    user: Principal = Depends(require("audits", "add")),
 ):
     data = await file.read()
     try:
@@ -154,8 +174,9 @@ async def import_checklist(
 
 
 @router.get("/{template_id}/proposals")
-def list_proposals(template_id: str, user: Principal = Depends(get_current_user),
+def list_proposals(template_id: str, user: Principal = Depends(require("audits", "view")),
                    conn=Depends(get_conn)):
+    _own_template(conn, user.tenant_id, template_id)
     q, qcm, c = t("questions"), t("question_control_map"), t("controls")
     rows = conn.execute(
         select(q.c.id.label("question_id"), q.c.number, q.c.text,
@@ -168,17 +189,18 @@ def list_proposals(template_id: str, user: Principal = Depends(get_current_user)
     return [dict(r) for r in rows]
 
 
-class ConfirmIn(BaseModel):
+class ConfirmIn(StrictModel):
     confirm_high_confidence: float | None = None   # bulk-confirm ≥ this score
     decisions: list[dict] | None = None            # [{question_id, action, control_id?}]
 
 
 @router.post("/{template_id}/proposals/confirm")
 def confirm_proposals(template_id: str, body: ConfirmIn,
-                      user: Principal = Depends(get_current_user)):
+                      user: Principal = Depends(require("audits", "edit"))):
     qcm, q = t("question_control_map"), t("questions")
     confirmed = rejected = 0
     with engine.begin() as conn:
+        _own_template(conn, user.tenant_id, template_id)
         member_id = conn.execute(select(t("tenant_members").c.id).where(
             t("tenant_members").c.tenant_id == user.tenant_id,
             t("tenant_members").c.user_id == user.user_id)).scalar()
@@ -208,18 +230,19 @@ def confirm_proposals(template_id: str, body: ConfirmIn,
 # --------------------------------------------------------------- scoring config
 
 @router.get("/{template_id}/scoring")
-def get_scoring(template_id: str, user: Principal = Depends(get_current_user),
+def get_scoring(template_id: str, user: Principal = Depends(require("audits", "view")),
                 conn=Depends(get_conn)):
+    _own_template(conn, user.tenant_id, template_id)
     return config_for_template(conn, template_id)
 
 
-class ScoringIn(BaseModel):
+class ScoringIn(StrictModel):
     config: dict
 
 
 @router.put("/{template_id}/scoring")
 def set_scoring(template_id: str, body: ScoringIn,
-                user: Principal = Depends(get_current_user)):
+                user: Principal = Depends(require("audits", "edit"))):
     import json
     sc = t("scoring_configs")
     with engine.begin() as conn:

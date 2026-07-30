@@ -21,6 +21,14 @@ openpyxl>=3.1
 Markdown>=3.5
 xhtml2pdf>=0.2.16
 
+# P4-S4: documents are authored as HTML now.
+# nh3 sanitises it server-side on every save — stored HTML rendered in a browser is an XSS
+# vector, and the editor is not the security boundary. (nh3 is the maintained Rust-backed
+# successor to bleach, which is deprecated and points at it.)
+nh3>=0.2
+# DOCX export, alongside the existing PDF. lxml comes in via xhtml2pdf and parses the HTML.
+python-docx>=1.1
+
 # Dev/test
 pytest>=8.0
 httpx>=0.28          # Starlette TestClient

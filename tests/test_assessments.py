@@ -7,25 +7,31 @@ from sqlalchemy import text as sqltext
 from tests.conftest import token
 
 
-def _seed(engine, tenant_id):
-    """A template with 2 questions; q1 mapped to a stock-answered control."""
+def _seed(engine, tenant_id, suffix=""):
+    """A template with 2 questions; q1 mapped to a stock-answered control.
+
+    `suffix` keeps control codes unique: the test database is session-scoped, so a second
+    call with the same codes trips UNIQUE (tenant_id, code).
+    """
     now = "2026-07-11T00:00:00Z"
     ids = {k: str(uuid.uuid4()) for k in
            ("ctl1", "ctl2", "tpl", "sec", "q1", "q2", "m1", "m2")}
+    c1, c2 = f"ASM 1.a{suffix}", f"ASM 2.a{suffix}"
+    ids["code1"], ids["code2"] = c1, c2
     with engine.begin() as c:
         dom = c.execute(sqltext("SELECT id FROM domains WHERE code='AM' AND tenant_id=:t"),
                         {"t": tenant_id}).scalar()
         c.execute(sqltext(
             "INSERT INTO controls (id,tenant_id,domain_id,code,statement,lifecycle,"
             "applicability,stock_response,stock_comment,status,created_at,updated_at) "
-            "VALUES (:i,:t,:d,'ASM 1.a','ISP','one_time','applicable','yes',"
+            "VALUES (:i,:t,:d,:code,'ISP','one_time','applicable','yes',"
             "'KIAM maintains a documented ISP.','active',:n,:n)"),
-            {"i": ids["ctl1"], "t": tenant_id, "d": dom, "n": now})
+            {"i": ids["ctl1"], "t": tenant_id, "d": dom, "n": now, "code": c1})
         c.execute(sqltext(
             "INSERT INTO controls (id,tenant_id,domain_id,code,statement,lifecycle,"
             "applicability,status,created_at,updated_at) VALUES "
-            "(:i,:t,:d,'ASM 2.a','MFA','one_time','applicable','active',:n,:n)"),
-            {"i": ids["ctl2"], "t": tenant_id, "d": dom, "n": now})
+            "(:i,:t,:d,:code,'MFA','one_time','applicable','active',:n,:n)"),
+            {"i": ids["ctl2"], "t": tenant_id, "d": dom, "n": now, "code": c2})
         c.execute(sqltext("INSERT INTO templates (id,tenant_id,bank_name,title,"
                           "version_label,status,created_at) VALUES "
                           "(:i,:t,'Kotak','KSL VRA','V3.0','active',:n)"),
@@ -51,7 +57,7 @@ def _seed(engine, tenant_id):
 def test_full_workspace_roundtrip(app_client):
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     ids = _seed(engine, tid)
     mtok = token(app_client, "member@kiam.example", "secret2")
     atok = token(app_client, "admin@kiam.example", "secret1")
@@ -132,3 +138,45 @@ def test_full_workspace_roundtrip(app_client):
 
 def test_assessment_requires_auth(app_client):
     assert app_client.get("/api/assessments").status_code == 401
+
+
+# ────────────────────────────────────────────────────────────── P4-S5: rejected mappings
+
+def test_a_rejected_mapping_never_prefills_or_shows_as_the_control(app_client):
+    """Rejecting a proposed mapping means "this bank point is not about that control".
+
+    Before P4-S5, `_best_controls` sorted 'confirmed' ahead of everything else but never
+    EXCLUDED 'rejected' — so a question whose only mapping had been rejected still showed
+    that control in the grid and prefilled its stock answer, putting an answer the reviewer
+    had explicitly refused in front of a bank auditor.
+    """
+    from api.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-rej")
+
+    # reject q1's only mapping, and give q2's control a stock answer so the *other* half
+    # of the behaviour (a live mapping still prefills) stays proven in the same test
+    with engine.begin() as c:
+        c.execute(sqltext("UPDATE question_control_map SET status='rejected' WHERE id=:m"),
+                  {"m": ids["m1"]})
+        c.execute(sqltext("UPDATE controls SET stock_response='no', "
+                          "stock_comment='MFA not yet enforced.' WHERE id=:c"),
+                  {"c": ids["ctl2"]})
+
+    h = {"Authorization": f"Bearer {token(app_client, 'member@kiam.example', 'secret2')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "Rejected-map audit"}
+                          ).json()["id"]
+
+    pf = app_client.post(f"/api/assessments/{aid}/prefill", headers=h).json()
+    assert pf["prefilled"] == 1, "only q2 should prefill; q1's mapping was rejected"
+
+    grid = {row["number"]: row for row in
+            app_client.get(f"/api/assessments/{aid}/questions", headers=h).json()}
+    assert grid["1"]["response_value"] is None
+    assert grid["1"]["workflow_status"] == "open"
+    assert grid["1"]["mapped_control"] is None, "a rejected control must not be shown as mapped"
+    # the live mapping still works
+    assert grid["2"]["response_value"] == "no"
+    assert grid["2"]["mapped_control"] == ids["code2"]

@@ -1,6 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, get } from "../lib/api";
+import { api, errText, get } from "../lib/api";
+import { useCan } from "../lib/auth";
 import {
   Card, cn, Drawer, inputCls, Loading, Modal, PageHead, Pill, Table, Td,
 } from "../lib/ui";
@@ -66,7 +67,7 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
       qc.invalidateQueries({ queryKey: ["departments"] });
       onClose();
     },
-    onError: (e: any) => setErr(e?.response?.data?.detail ?? "Could not save."),
+    onError: (e: any) => setErr(errText(e, "Could not save.")),
   });
 
   const depts = [...new Set((people.data ?? []).map((p) => p.department).filter(Boolean))];
@@ -131,7 +132,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       return api.post("/people/import", fd).then((r) => r.data);
     },
     onSuccess: (d) => { setResult(d); qc.invalidateQueries({ queryKey: ["people"] }); },
-    onError: (e: any) => setErr(e?.response?.data?.detail ?? "Import failed."),
+    onError: (e: any) => setErr(errText(e, "Import failed.")),
   });
 
   return (
@@ -229,6 +230,7 @@ function PersonDrawer({ id, onClose, onEdit }:
 const CHIPS = ["All", "Active", "No login", "Ending soon", "Inactive"] as const;
 
 export default function People() {
+  const can = useCan();
   const [chip, setChip] = useState<(typeof CHIPS)[number]>("All");
   const [dept, setDept] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
@@ -268,7 +270,9 @@ export default function People() {
         action={
           <div className="flex gap-2">
             <button onClick={() => setImporting(true)} className="btn">Import CSV</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add person</button>
+            {can("people", "add") && (
+              <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add person</button>
+            )}
           </div>} />
 
       {people.length === 0 ? (

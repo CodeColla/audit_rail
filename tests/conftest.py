@@ -1,6 +1,6 @@
 """Test fixtures — an isolated PostgreSQL database seeded with one tenant + users.
 
-Requires Postgres to be up:  docker compose up -d   (host port 5433)
+Requires Postgres to be up:  docker compose up -d   (host port 5434)
 
 We use a dedicated `audit_rail_test` database (created on demand) and reset its
 `public` schema at the start of the session, so tests never touch dev data.
@@ -9,6 +9,7 @@ DATABASE_URL is set before any `api.*` import so the engine singleton binds to i
 
 import os
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -19,13 +20,25 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 NOW = "2026-07-16T00:00:00Z"
-PG_USER, PG_PASS, PG_HOST, PG_PORT = "audit", "audit", "localhost", "5433"
+PG_USER, PG_PASS, PG_HOST, PG_PORT = "audit", "audit", "localhost", "5434"
 ADMIN_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/audit_rail"
 TEST_DB = "audit_rail_test"
 TEST_URL = os.environ.get(
     "TEST_DATABASE_URL",
     f"postgresql+psycopg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{TEST_DB}",
 )
+
+# ── point the app at the TEST database, at conftest IMPORT time ────────────────────────
+# This must happen here, not inside the fixture. pytest imports conftest before any test
+# module, but test modules are imported at COLLECTION time — before fixtures run. So a test
+# file with a module-level `from api.x import ...` would construct api.config.settings (and
+# therefore api.database.engine) while DATABASE_URL still pointed at the DEV database, and
+# the whole session would then run against dev data: seeded logins would 401 and seeds would
+# collide. Setting it here makes module-level api imports safe.
+os.environ["DATABASE_URL"] = TEST_URL
+os.environ.setdefault("JWT_SECRET", "test-secret-not-for-production-use")
+os.environ["SCHEDULER_ENABLED"] = "false"
+os.environ.setdefault("VAULT_DIR", tempfile.mkdtemp(prefix="ar-test-vault-"))
 
 
 def _ensure_test_database() -> None:
@@ -49,13 +62,7 @@ def _ensure_test_database() -> None:
 
 @pytest.fixture(scope="session")
 def app_client():
-    _ensure_test_database()
-    os.environ["DATABASE_URL"] = TEST_URL
-    os.environ["JWT_SECRET"] = "test-secret-not-for-production-use"
-    os.environ["SCHEDULER_ENABLED"] = "false"
-
-    import tempfile
-    os.environ["VAULT_DIR"] = tempfile.mkdtemp(prefix="ar-test-vault-")
+    _ensure_test_database()   # env already points at it — see the note above
 
     from _db import apply_schema, reset_schema  # noqa: E402  (after env is set)
 
@@ -67,7 +74,8 @@ def app_client():
         from api.auth import hash_password  # noqa: E402
 
         tid, admin_id, member_id = (str(uuid.uuid4()) for _ in range(3))
-        conn.execute(text("INSERT INTO tenants VALUES (:i,:n,:s,:st,:c)"),
+        conn.execute(text("INSERT INTO tenants (id,name,slug,status,created_at) "
+                          "VALUES (:i,:n,:s,:st,:c)"),
                      {"i": tid, "n": "KIAM", "s": "kiam", "st": "active", "c": NOW})
         for uid_, email, name, pw, admin_flag in [
             (admin_id, "admin@kiam.example", "Admin", "secret1", 1),
@@ -80,7 +88,8 @@ def app_client():
                 {"i": uid_, "e": email, "f": name, "p": hash_password(pw),
                  "a": "local", "ia": admin_flag, "s": "active", "c": NOW})
         for uid_, role in [(admin_id, "admin"), (member_id, "member")]:
-            conn.execute(text("INSERT INTO tenant_members VALUES (:i,:t,:u,:r,:c)"),
+            conn.execute(text("INSERT INTO tenant_members (id,tenant_id,user_id,role,"
+                              "created_at) VALUES (:i,:t,:u,:r,:c)"),
                          {"i": str(uuid.uuid4()), "t": tid, "u": uid_,
                           "r": role, "c": NOW})
         conn.execute(text(

@@ -16,10 +16,10 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, func, insert, select, update
 
 from api import activity, scoring
-from api.auth import (Principal, create_guest_token, get_caller,
-                      get_current_user, require_roles)
+from api.auth import Principal, create_guest_token, get_caller, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
-from api.util import IsoDate, now_iso, today_iso
+from api.util import IsoDate, StrictModel, now_iso, today_iso
 from api.xlsx_io import build_answers_workbook
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
@@ -55,7 +55,14 @@ def _access(conn, caller: Principal, assessment_id: str) -> dict:
 
 
 def _best_controls(conn, template_id: str) -> dict:
-    """question_id -> best-matching control (confirmed first, then confidence)."""
+    """question_id -> best-matching control (confirmed first, then confidence).
+
+    REJECTED mappings are excluded outright, not merely ranked last (P4-S5). Rejecting a
+    proposed mapping is a person saying "this bank point is not about that control"; if it
+    stayed in the pool, a question whose only mapping was rejected would still show that
+    control in the grid AND prefill its stock answer into the audit — putting an answer the
+    reviewer explicitly refused in front of a bank auditor.
+    """
     qcm, q, c = t("question_control_map"), t("questions"), t("controls")
     rows = conn.execute(
         select(q.c.id.label("qid"), c.c.id.label("cid"), c.c.code, c.c.statement,
@@ -63,7 +70,7 @@ def _best_controls(conn, template_id: str) -> dict:
                qcm.c.confidence, qcm.c.status)
         .join(qcm, qcm.c.question_id == q.c.id)
         .join(c, qcm.c.control_id == c.c.id)
-        .where(q.c.template_id == template_id)
+        .where(q.c.template_id == template_id, qcm.c.status != "rejected")
     ).mappings().all()
     best: dict = {}
     for r in sorted(rows, key=lambda x: (0 if x["status"] == "confirmed" else 1,
@@ -105,7 +112,7 @@ def _progress(conn, assessment_id, template_id):
 
 # --------------------------------------------------------------- assessments
 
-class AssessmentIn(BaseModel):
+class AssessmentIn(StrictModel):
     template_id: str
     title: str
     bank_name: str | None = None
@@ -116,7 +123,7 @@ class AssessmentIn(BaseModel):
 
 
 @router.post("", status_code=201)
-def create_assessment(body: AssessmentIn, user: Principal = Depends(get_current_user)):
+def create_assessment(body: AssessmentIn, user: Principal = Depends(require("audits", "add"))):
     tmpl = t("templates")
     with engine.begin() as conn:
         tpl = conn.execute(select(tmpl).where(
@@ -140,7 +147,7 @@ def create_assessment(body: AssessmentIn, user: Principal = Depends(get_current_
 
 
 @router.get("")
-def list_assessments(user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+def list_assessments(user: Principal = Depends(require("audits", "view")), conn=Depends(get_conn)):
     a = t("assessments")
     rows = conn.execute(select(a).where(a.c.tenant_id == user.tenant_id)
                         .order_by(a.c.created_at.desc())).mappings().all()
@@ -162,19 +169,26 @@ def assessment_detail(assessment_id: str, caller: Principal = Depends(get_caller
             "predicted_verdict": row["verdict"] or verdict}
 
 
-class StatusIn(BaseModel):
+class StatusIn(StrictModel):
     status: str | None = None
     verdict: str | None = None
     verdict_notes: str | None = None
 
 
+ASSESSMENT_STATUSES = ("draft", "in_progress", "submitted", "in_review",
+                       "verdict_issued", "closed")
+
+
 @router.patch("/{assessment_id}")
 def update_assessment(assessment_id: str, body: StatusIn,
-                      user: Principal = Depends(get_current_user)):
+                      user: Principal = Depends(require("audits", "edit"))):
     a = t("assessments")
     vals = {k: v for k, v in body.model_dump().items() if v is not None}
     if not vals:
         raise HTTPException(400, "nothing to update")
+    # the column has a CHECK; without this a typo'd status surfaced as a raw 500
+    if "status" in vals and vals["status"] not in ASSESSMENT_STATUSES:
+        raise HTTPException(400, f"status must be one of {', '.join(ASSESSMENT_STATUSES)}")
     with engine.begin() as conn:
         _access(conn, user, assessment_id)
         conn.execute(update(a).where(a.c.id == assessment_id).values(**vals))
@@ -185,7 +199,7 @@ def update_assessment(assessment_id: str, body: StatusIn,
 
 
 @router.post("/{assessment_id}/prefill")
-def prefill(assessment_id: str, user: Principal = Depends(get_current_user)):
+def prefill(assessment_id: str, user: Principal = Depends(require("audits", "edit"))):
     """Answer once: fill responses from mapped controls' stock answers."""
     with engine.begin() as conn:
         row = _access(conn, user, assessment_id)
@@ -293,7 +307,7 @@ def questions_grid(assessment_id: str, status: str | None = Query(None),
 
 # --------------------------------------------------------------- responses
 
-class ResponseIn(BaseModel):
+class ResponseIn(StrictModel):
     response_value: str  # yes | partial | no | na
     comment: str | None = None
     na_justification: str | None = None
@@ -301,7 +315,7 @@ class ResponseIn(BaseModel):
 
 @router.put("/{assessment_id}/responses/{question_id}")
 def upsert_response(assessment_id: str, question_id: str, body: ResponseIn,
-                    user: Principal = Depends(get_current_user)):
+                    user: Principal = Depends(require("audits", "edit"))):
     if body.response_value == "na" and not body.na_justification:
         raise HTTPException(400, "N/A responses require a justification")
     with engine.begin() as conn:
@@ -368,10 +382,14 @@ def response_detail(assessment_id: str, question_id: str,
             .join(re_, re_.c.evidence_id == ev.c.id)
             .where(re_.c.response_id == rr["id"])).mappings()]
     rm = t("review_messages")
+    # A question with no response row has no thread of its own. Comparing to None here
+    # would render as `response_id IS NULL`, which is the schema's marker for an
+    # ASSESSMENT-level remark — so every unanswered question used to show (and absorb)
+    # the whole assessment-level conversation.
     messages = [dict(x) for x in conn.execute(
         select(rm).where(rm.c.assessment_id == assessment_id,
-                         rm.c.response_id == (rr["id"] if rr else None))
-        .order_by(rm.c.created_at)).mappings()]
+                         rm.c.response_id == rr["id"])
+        .order_by(rm.c.created_at)).mappings()] if rr else []
     fnd, fa = t("findings"), t("finding_assessments")
     findings = [dict(x) for x in conn.execute(
         select(fnd).select_from(fnd.join(fa, fa.c.finding_id == fnd.c.id))
@@ -386,13 +404,13 @@ def response_detail(assessment_id: str, question_id: str,
     }
 
 
-class LinkEvidenceIn(BaseModel):
+class LinkEvidenceIn(StrictModel):
     evidence_id: str
 
 
 @router.post("/{assessment_id}/responses/{question_id}/evidence")
 def link_evidence(assessment_id: str, question_id: str, body: LinkEvidenceIn,
-                  user: Principal = Depends(get_current_user)):
+                  user: Principal = Depends(require("audits", "edit"))):
     with engine.begin() as conn:
         _access(conn, user, assessment_id)
         resp = t("responses")
@@ -417,7 +435,7 @@ def link_evidence(assessment_id: str, question_id: str, body: LinkEvidenceIn,
 
 # --------------------------------------------------------------- review threads
 
-class MessageIn(BaseModel):
+class MessageIn(StrictModel):
     kind: str  # remark | ask | action | validation
     body: str
     question_id: str | None = None
@@ -429,12 +447,22 @@ def post_message(assessment_id: str, body: MessageIn,
     if body.kind not in ("remark", "ask", "action", "validation"):
         raise HTTPException(400, "invalid message kind")
     with engine.begin() as conn:
-        _access(conn, caller, assessment_id)
+        row = _access(conn, caller, assessment_id)
         resp_id = None
         if body.question_id:
             resp_id = conn.execute(select(t("responses").c.id).where(
                 t("responses").c.assessment_id == assessment_id,
                 t("responses").c.question_id == body.question_id)).scalar()
+            if resp_id is None:
+                # No answer yet, but the message IS about this question — an auditor
+                # asking before we've responded is normal. Open the response row now so
+                # the thread hangs off it; leaving response_id NULL would file this as an
+                # assessment-level remark and surface it on every other question.
+                resp_id = str(uuid.uuid4())
+                conn.execute(insert(t("responses")).values(
+                    id=resp_id, tenant_id=row["tenant_id"], assessment_id=assessment_id,
+                    question_id=body.question_id, workflow_status="open",
+                    updated_by_user_id=caller.user_id, updated_at=now_iso()))
         mid = str(uuid.uuid4())
         conn.execute(insert(t("review_messages")).values(
             id=mid, assessment_id=assessment_id, response_id=resp_id,
@@ -453,7 +481,7 @@ def post_message(assessment_id: str, body: MessageIn,
 
 # --------------------------------------------------------------- findings
 
-class FindingIn(BaseModel):
+class FindingIn(StrictModel):
     title: str
     response_id: str | None = None
     description: str | None = None
@@ -497,7 +525,7 @@ def list_findings(assessment_id: str, caller: Principal = Depends(get_caller),
         .order_by(fnd.c.risk_score.desc().nullslast())).mappings()]
 
 
-class FindingPatch(BaseModel):
+class FindingPatch(StrictModel):
     status: str | None = None
     owner_member_id: str | None = None
     due_at: IsoDate = None
@@ -505,7 +533,7 @@ class FindingPatch(BaseModel):
 
 @router.patch("/{assessment_id}/findings/{finding_id}")
 def update_finding(assessment_id: str, finding_id: str, body: FindingPatch,
-                   user: Principal = Depends(get_current_user)):
+                   user: Principal = Depends(require("audits", "edit"))):
     vals = {k: v for k, v in body.model_dump().items() if v is not None}
     if not vals:
         raise HTTPException(400, "nothing to update")
@@ -527,7 +555,7 @@ def update_finding(assessment_id: str, finding_id: str, body: FindingPatch,
 
 # --------------------------------------------------------------- auditor guests
 
-class GuestIn(BaseModel):
+class GuestIn(StrictModel):
     email: str
     full_name: str
     firm: str | None = None
@@ -536,7 +564,7 @@ class GuestIn(BaseModel):
 
 @router.post("/{assessment_id}/guests", status_code=201)
 def invite_guest(assessment_id: str, body: GuestIn,
-                 user: Principal = Depends(require_roles("admin", "manager"))):
+                 user: Principal = Depends(require("users", "add"))):
     with engine.begin() as conn:
         _access(conn, user, assessment_id)
         users = t("users")
@@ -556,10 +584,11 @@ def invite_guest(assessment_id: str, body: GuestIn,
         gid = existing or str(uuid.uuid4())
         if existing:
             conn.execute(update(g).where(g.c.id == gid).values(
-                revoked_at=None, expires_at=body.expires_at))
+                revoked_at=None, expires_at=body.expires_at, firm=body.firm))
         else:
             conn.execute(insert(g).values(
-                id=gid, assessment_id=assessment_id, user_id=user_id, role="auditor",
+                id=gid, assessment_id=assessment_id, tenant_id=user.tenant_id,
+                user_id=user_id, role="auditor", firm=body.firm,
                 invited_by_member_id=_member_id(conn, user.tenant_id, user.user_id),
                 invited_at=now_iso(), expires_at=body.expires_at))
     token = create_guest_token(user_id=user_id, assessment_id=assessment_id,
@@ -571,7 +600,7 @@ def invite_guest(assessment_id: str, body: GuestIn,
 
 
 @router.get("/{assessment_id}/guests")
-def list_guests(assessment_id: str, user: Principal = Depends(get_current_user),
+def list_guests(assessment_id: str, user: Principal = Depends(require("audits", "view")),
                 conn=Depends(get_conn)):
     _access(conn, user, assessment_id)
     g, users = t("assessment_guests"), t("users")
@@ -583,7 +612,7 @@ def list_guests(assessment_id: str, user: Principal = Depends(get_current_user),
 
 @router.delete("/{assessment_id}/guests/{guest_id}", status_code=204)
 def revoke_guest(assessment_id: str, guest_id: str,
-                 user: Principal = Depends(require_roles("admin", "manager"))):
+                 user: Principal = Depends(require("users", "delete"))):
     with engine.begin() as conn:
         _access(conn, user, assessment_id)
         g = t("assessment_guests")

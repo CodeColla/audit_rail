@@ -35,7 +35,7 @@ def _upload(client, tok, title, valid_until, control_ids=""):
 def test_upload_status_download_link_delete(app_client):
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     ctl = _a_control(engine, tid)
     tok_member = token(app_client, "member@kiam.example", "secret2")
     h = {"Authorization": f"Bearer {tok_member}"}

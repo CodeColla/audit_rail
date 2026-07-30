@@ -51,14 +51,24 @@ body {
   }
 }
 
-/* rendered markdown for documents (Sprint 2) */
+/* Rendered document body (Sprint 2 markdown; P4-S4 authored HTML). One stylesheet serves
+   the read view, the public signing page and the inside of the TipTap editor, so what you
+   type looks like what gets published. */
 .doc-md {
   @apply text-[14px] leading-relaxed text-ink;
 }
 .doc-md h1 { @apply mb-2 mt-6 text-[22px] font-semibold tracking-[-0.01em] first:mt-0; }
 .doc-md h2 { @apply mb-2 mt-6 text-[17px] font-semibold; }
 .doc-md h3 { @apply mb-1.5 mt-4 text-[15px] font-semibold; }
+.doc-md h4 { @apply mb-1 mt-3.5 text-[14px] font-semibold; }
+.doc-md h5 { @apply mb-1 mt-3 text-[13px] font-semibold; }
+.doc-md h6 { @apply mb-1 mt-3 text-[12.5px] font-semibold uppercase tracking-wide text-txt2; }
 .doc-md p { @apply my-2.5; }
+/* TipTap wraps every list item's text in its own <p>; without this each bullet inherits
+   the paragraph margins above and the list renders comically loose. */
+.doc-md li > p { @apply my-0; }
+.doc-md pre { @apply my-3 overflow-x-auto rounded-md bg-canvas p-3 font-mono text-[12.5px] leading-normal; }
+.doc-md pre code { @apply bg-transparent p-0 text-[12.5px]; }
 .doc-md ul { @apply my-2.5 list-disc pl-5; }
 .doc-md ol { @apply my-2.5 list-decimal pl-5; }
 .doc-md li { @apply my-1; }
@@ -69,3 +79,11 @@ body {
 .doc-md th, .doc-md td { @apply border border-bd px-2.5 py-1.5 text-left; }
 .doc-md th { @apply bg-canvas font-semibold; }
 .doc-md hr { @apply my-5 border-bd; }
+
+/* rendered DOCX / XLSX inside FilePreview (P4-S3) — the libraries emit bare HTML */
+.file-preview table { @apply my-2 w-full border-collapse text-[12.5px]; }
+.file-preview th, .file-preview td { @apply border border-bd px-2 py-1 text-left; }
+.file-preview th { @apply bg-canvas font-semibold; }
+.file-preview h4 { @apply mb-1 mt-4 text-[13px] font-semibold text-txt2 first:mt-0; }
+.file-preview p { @apply my-1.5 text-[13px] leading-relaxed; }
+.file-preview img { @apply max-w-full; }

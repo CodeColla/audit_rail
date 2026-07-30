@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, update
 
 from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
 from api.util import now_iso
 
@@ -12,20 +13,24 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 @router.get("")
 def list_notifications(unread: bool = Query(False),
-                       user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+                       user: Principal = Depends(require("dashboard", "view")), conn=Depends(get_conn)):
     n = t("notifications")
-    q = select(n).where(n.c.user_id == user.user_id).order_by(n.c.created_at.desc())
+    # scope by tenant too: a user who belongs to two tenants was shown both tenants'
+    # notifications in whichever workspace they happened to be in
+    q = (select(n).where(n.c.user_id == user.user_id, n.c.tenant_id == user.tenant_id)
+         .order_by(n.c.created_at.desc()))
     if unread:
         q = q.where(n.c.read_at.is_(None))
     return [dict(x) for x in conn.execute(q.limit(50)).mappings()]
 
 
 @router.post("/{notification_id}/read")
-def mark_read(notification_id: str, user: Principal = Depends(get_current_user)):
+def mark_read(notification_id: str, user: Principal = Depends(require("dashboard", "view"))):
     n = t("notifications")
     with engine.begin() as conn:
         if conn.execute(select(n.c.id).where(
-                n.c.id == notification_id, n.c.user_id == user.user_id)).first() is None:
+                n.c.id == notification_id, n.c.user_id == user.user_id,
+                n.c.tenant_id == user.tenant_id)).first() is None:
             raise HTTPException(404, "notification not found")
         conn.execute(update(n).where(n.c.id == notification_id).values(read_at=now_iso()))
     return {"ok": True}

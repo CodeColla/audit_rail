@@ -1,0 +1,98 @@
+So we are back to discission now, i have gone via the menus and have a lot of suggetions and changes. So lets go in planning mode,
+understand my issues/changes/suggetions and lets plan this point by point in proper sprit wise structure to impliment it.
+Once done we will test it using the playwright method, we did earlier.
+
+So go throguh it nd lets plan first stricly then we will start the execution.
+
+
+First lets discuss the menus u have made 
+
+1) Dashboard -->  Keep it as it is for now, will work on this later
+
+
+2) People. In pepople it is a able view, and has Add Person features, but in addind i dont see any login details to attach that user. More info on the User is written below.
+
+    # Organisation/User Level
+    - have a Sign In Option, where the password will be AlphaNumberic Min 8 Charectes. The Password will have a backend change Policy lets say after 1month the user will be asked to chage the password, with out that he can login.
+    he should not repeat his pre 3 passwords. For this we can design a user_password, mapping table which will have lvel column sying 0-2 , Basically0 being current , 1 being pre, 2 being before that.
+
+    - Each User that Logins in , will have some levels.
+        a) SuperAdmin-  When someone opens the app for the Firt time by clicking Create Account, there will be an option for that User
+        to Detaul make an Organisation with the OrganisationGST number, by this we will be able to make sure that no Same org is Created Twice.
+        The Super Admin on Creating Org can have option to create more Organisations. But again these Orgs should have a GST Number which is unique in the Org table.
+        For this im thinking that the Org table will have a Column lets say GSTN which has unique entey, and every entry of org has a SuperAdmin id mapped from the Usertable.
+
+        b) Admin - this admin user can only have access to a single org, for which he is the Admin of. He has all the Access of Create User/Policy/etc etc. Basically he can be
+        considered as the Complince Dept Head who has all data add/delete/modify access to his org.
+
+        c) Users -  Users in the Level where the user has access to only the thing he has the Role for. For eg if the User has only role for the Policy menu for Add , View and
+        modify, then he only have access to that particular menu. More Design of the Role and Scope we will define below.  
+
+
+    - In this we will have to make a Role part which is mapped to the user, so when we create a User, we make role as check box of menus.
+
+        
+
+3) Audits : Audits import feature is fine, where the excel import is there, but there is no re assign option to the core modules in this. 
+   For eg when i import a sheet of controls, it auto assigned couple of our master controls to the points of excel sheet with a conf value, but now i actually wanted to change it auto assigned
+   control to some other control. that option was not possible. 
+   In the Edit option of the Audit point, i cannot preview any of the files i have uploaded . there is no option to preview file in this overall .
+   Files uploaded can be xcel, doc, pdf so based on the file make it a generic preview section.
+   
+   When i select on a single audit for edit, i see the Point audit it is linked to like GRP 5.a master control, u can give the master control description there on hover or something.
+   Also in the Export excel, the evidence column should have the evidence link to it.
+
+4) Controls: For now controls is my own master list of controls accross multiple domains, for multiple points, which down the line i will always link with the Audit points manually or auto using AI
+as mentiined above in Audit Point , In this 1 thing i want is to add a control in any domain if i want to manually, so u can have a Add control button in this.
+When i select on the control on right a page slides out with the linking poiints, we can make this view a bit big with any file attachents we have given. Also 1 more thing i can attach an evidence
+or policy to a control level, so when i map it with any checklist point , it will be visible in the AUdit itself. Only the diff will be it will show Evidence or Polichy mapped via controls.
+But if i add the evidence or policy on the poiint level then it will show as mapped at checkpoiint level.
+
+In this i think we should add link jumping as well, like if i see a Mapped Points in the control, i click on it i should be able to go oon the Mapped Point edit page based on what all permissions i have.
+In this i think our URL defining should be firm with params like /controls/veiw/<controlid> or something like this. 
+
+5) Registers: In this we have Registers types 
+    A) Risks
+    B) Assets
+    C) Data Inventory (more like Database, S3 Storage, etc etc)
+    D) third Parties /vendors (Like Cloud )
+    E) Incidents (any risk that has occured, and what action we took for it, with Evidence attachment maybe)
+ 
+
+   u can hide the obligations menu for now. I dont know where or how i will use this.
+
+   Comment about all this menu is that in reallity these should have been seperate menus rather than being in a single registers menu like
+
+   Risks --> All the Risks occured who reported / found them, what was the proof for the risk that occured like any report or anything. linking it with control is fine 
+   There should be a provision for the Category of risk to be a drop down, rather than manual entry, cause if spelling is wrong or anything then it will be an issue.
+    File attachment for the Risk, any supporting doc basically.
+
+
+   Assets --> This should have more info based on type if it is Physical then maybe it will be PC, Server, Monitor, etc. with serial number, model number, and photo as evidence.
+   if virtual then it maybe a VM or a docker container, or a subsription, which hass info like ip or something like that which is not standard. Virtual may not require any photo.
+
+   Data Inventory: the Classification is correct, we can add more info like type, if its a database, or s3 Storage, or any application, etc etc. Cause the Data Inventory can be any of the mentiond kind.
+
+
+    Third Party : As seen the Category is manual wrtie it shiuld be a dropdown , but im not sure wth will this Third Party part help with,?? need to discuss on this later.
+
+    Incidents: Basically any incorrect Incidents occured, with the reason evidence as image/pdf or anything like that. for eg DB container crashed, what was the Review, and what was done to fix it all 
+     with the peoples comments and all. Current edit page is fine, but it think more info can be logged in this.
+
+
+
+6) Documents: This is a good part to have a on portal edit doc type feature, rn i can wrtie an entire policy in this / procedure . plan or govenranace doc, only diff is that the edit part or add new part is horrible.
+We need to make it a proper editable doc type view, likle how google docs or sheets is. So it feels like a online docs or sheet editing. current view for editing the doc and policy is a bit horrible.
+for this there should be an option for export in Doc/pdf options as well. So need to decide what type of lib to use in this.
+In this the version mangement and the publish the doc/policy/Plan/govenranace after approval needs to be well designed first properly. So this can be a very in hand meny
+
+
+
+7) Evidences: This is where i will bulk upload files and then assign it to any Controls i feel like. i can edit the valid till or valid until type date and stuff. Evidence in bulk upload will take the file name of the file as its name
+that also i can edit. 
+
+
+8) In tasks any thing that i have to do, lets say any policy is about to expire, any activity like table cleaning is to be planned every 3months or year or so, this should be able to add here with re occure time,
+and link the tasks to controls.
+
+

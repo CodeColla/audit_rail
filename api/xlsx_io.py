@@ -7,6 +7,7 @@ Export: build a clean answers workbook from an assessment's responses.
 
 from __future__ import annotations
 
+import csv
 import io
 import re
 
@@ -36,10 +37,68 @@ def _header_role(val: str):
     return None, 0
 
 
-def _find_header(ws, scan_rows: int = 12):
-    """Return (header_row_idx, {role: col_idx}) by scanning the first rows."""
+_INTERROGATIVE = (
+    "do ", "does ", "did ", "is ", "are ", "was ", "were ", "has ", "have ", "how ",
+    "what ", "which ", "when ", "where ", "why ", "who ", "can ", "could ", "would ",
+    "list ", "describe ", "provide ", "explain ", "specify ", "state ", "confirm ",
+    "share ", "detail ", "mention ",
+)
+
+
+def _question_score(v) -> float:
+    """How much a cell reads like a CHECKLIST QUESTION rather than an answer or a label.
+
+    Length alone is not enough: a vendor's answer ("Security policies are reviewed
+    annually…") is just as long as the question it answers, and picking the answer column
+    imports the wrong text entirely. Interrogative shape is what separates them.
+    """
+    s = str(v).strip() if v is not None else ""
+    if len(s) < 12 or " " not in s:
+        return 0.0
+    if s.endswith("?"):
+        return 1.0
+    if s.lower().startswith(_INTERROGATIVE):
+        return 0.9
+    return 0.35 if len(s) >= 25 else 0.0        # prose, but not obviously a question
+
+
+def _column_quality(ws, header_row: int, col: int, sample: int = 30) -> float:
+    """Fraction of the cells BELOW a header that actually read like questions.
+
+    Header words alone are not enough to identify the question column: banks label answer
+    columns things like "Control Applicability (Yes/No)", which matches the 'control' hint
+    but is full of "Yes". Looking at the data underneath is what tells them apart.
+    """
+    seen, score = 0, 0.0
+    for r in range(header_row + 1, min(header_row + 1 + sample, (ws.max_row or 0) + 1)):
+        row = ws[r]
+        v = row[col].value if col < len(row) else None
+        if v is None or not str(v).strip():
+            continue
+        seen += 1
+        score += _question_score(v)
+    return score / seen if seen else 0.0
+
+
+def _find_header(ws, scan_rows: int = 12, min_quality: float = 0.5):
+    """Return (header_row_idx, {role: col_idx}) by scanning the first rows.
+
+    Two passes: first trust the header words, but only if the column beneath them really
+    holds questions; otherwise fall back to whichever column in the scan window has the
+    most question-like content. Without the second pass, sheets whose real header sits
+    below a title row (or which have no header at all) imported 'S.No.' / 'Yes' as the
+    question text.
+    """
+    best_fallback = (0.0, None, None)          # (quality, row, col)
+
     for r in range(1, min(scan_rows, ws.max_row or 1) + 1):
         cells = [_norm(c.value) for c in ws[r]]
+        # track the best-looking data column under this row, for the fallback pass
+        for i in range(len(cells)):
+            qual = _column_quality(ws, r, i)
+            if qual > best_fallback[0]:
+                best_fallback = (qual, r, i)
+
         joined = " | ".join(cells)
         if not any(h in joined for h in _QUESTION_HINTS):
             continue
@@ -50,28 +109,80 @@ def _find_header(ws, scan_rows: int = 12):
                 continue
             role, strength = _header_role(val)
             if role == "question":
-                if strength > q_strength:
+                # prefer a stronger header word, but only among columns that hold questions
+                if strength > q_strength and _column_quality(ws, r, i) >= min_quality:
                     q_best, q_strength = i, strength
             elif role and role not in cols:
                 cols[role] = i
         if q_best is not None:
             cols["question"] = q_best
             return r, cols
+
+    qual, r, i = best_fallback
+    if r is not None and qual >= min_quality:
+        return r, {"question": i}
     return None, {}
+
+
+def _is_csv(data: bytes) -> bool:
+    """XLSX is a zip archive, so it always starts with 'PK'. Anything else we treat as text."""
+    return not data[:2] == b"PK"
+
+
+def _workbook_from_csv(data: bytes):
+    """Turn CSV bytes into an in-memory workbook so ONE parsing path serves both formats.
+
+    The UI has always advertised `accept=".xlsx,.csv"`, but the parser was openpyxl-only
+    and a CSV died with an opaque BadZipFile. Sniffing the delimiter handles the
+    comma/semicolon/tab variants banks actually send.
+    """
+    text = data.decode("utf-8-sig", errors="replace")
+    try:
+        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except csv.Error:
+        dialect = csv.excel
+    wb = Workbook()
+    ws = wb.active
+    for row in csv.reader(io.StringIO(text), dialect):
+        ws.append(row if row else [None])
+    return wb
 
 
 def parse_checklist(data: bytes, sheet: str | None = None,
                     question_col: int | None = None, number_col: int | None = None,
                     section_col: int | None = None, header_row: int | None = None):
     """Return (meta, rows). rows = [{number, section, text}] with section forward-filled."""
-    # not read_only: in read_only mode ws.max_row can be None for some files
-    wb = load_workbook(io.BytesIO(data), read_only=False, data_only=True)
-    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.active
+    if _is_csv(data):
+        wb = _workbook_from_csv(data)
+    else:
+        # not read_only: in read_only mode ws.max_row can be None for some files
+        wb = load_workbook(io.BytesIO(data), read_only=False, data_only=True)
+
+    if sheet:
+        if sheet not in wb.sheetnames:
+            # Silently falling back to the active sheet imported the WRONG data on a typo.
+            raise ValueError(
+                f"no sheet named {sheet!r}; this file has: {', '.join(wb.sheetnames)}")
+        ws = wb[sheet]
+    else:
+        ws = wb.active
 
     if question_col is None:
         header_row, cols = _find_header(ws)
+        if header_row is None and not sheet:
+            # The active sheet is often a leftover empty "Sheet2" — the real checklist is
+            # on another tab. Try them all before giving up.
+            for cand in wb.worksheets:
+                if cand is ws:
+                    continue
+                hr, c = _find_header(cand)
+                if hr is not None:
+                    ws, header_row, cols = cand, hr, c
+                    break
         if header_row is None:
-            raise ValueError("could not detect a question column; pass question_col")
+            raise ValueError(
+                "could not detect a question column — pass question_col (a column letter), "
+                f"or name the sheet. Sheets in this file: {', '.join(wb.sheetnames)}")
     else:
         cols = {"question": question_col}
         if number_col is not None:

@@ -1,9 +1,11 @@
 import { FormEvent, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { FilePreview } from "../components/FilePreview";
 import { Trash2 } from "lucide-react";
 import { api, get } from "../lib/api";
-import { inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
-import { useAuth } from "../lib/auth";
+import { inputCls, Loading, Modal, PageHead, Pill, Table, Td, Drawer } from "../lib/ui";
+import { useCan } from "../lib/auth";
 
 type Ev = {
   id: string; title: string; evidence_type: string; issued_at: string | null; valid_until: string | null;
@@ -68,14 +70,18 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
 
 export default function Evidence() {
   const qc = useQueryClient();
-  const { user } = useAuth();
   const [modal, setModal] = useState(false);
   const { data, isLoading } = useQuery({ queryKey: ["evidence"], queryFn: () => get<Ev[]>("/evidence") });
   const del = useMutation({
     mutationFn: (id: string) => api.delete(`/evidence/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["evidence"] }),
   });
-  const canDelete = user?.role === "admin" || user?.role === "manager";
+  const can = useCan();
+  const canDelete = can("evidence", "delete");
+  // P4-S3: /evidence/view/:id opens the artifact in place instead of downloading blindly
+  const { id: openId } = useParams();
+  const nav = useNavigate();
+  const open = (data ?? []).find((e) => e.id === openId) ?? null;
   if (isLoading) return <Loading />;
   const rows = data ?? [];
 
@@ -83,13 +89,16 @@ export default function Evidence() {
     <>
       <PageHead eyebrow="Evidence vault" title="Evidence"
         lead="Typed, dated artifacts linked to controls. Banks ask for recent proof — freshness is tracked here."
-        action={<button onClick={() => setModal(true)} className="btn btn-primary">＋ Upload evidence</button>} />
+        action={can("evidence", "add")
+          ? <button onClick={() => setModal(true)} className="btn btn-primary">＋ Upload evidence</button>
+          : undefined} />
       {rows.length === 0 ? <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">No evidence yet — upload your first artifact.</div> : (
         <Table head={["Artifact", "Type", "Issued", "Valid until", "Links", "Status", ""]}>
           {rows.map((e) => (
             <tr key={e.id} className="hover:bg-canvas">
               <Td className="font-medium">
-                <a href={`/api/evidence/${e.id}/file`} target="_blank" className="hover:text-accent">{e.title}</a>
+                <button onClick={() => nav(`/evidence/view/${e.id}`)}
+                  className="text-left hover:text-accent">{e.title}</button>
               </Td>
               <Td><span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{e.evidence_type.replace(/_/g, " ")}</span></Td>
               <Td className="font-mono text-txt2">{e.issued_at ?? "—"}</Td>
@@ -97,12 +106,23 @@ export default function Evidence() {
               <Td className="tnum">{e.linked_controls} controls</Td>
               <Td><Pill tone={e.status}>{e.status}</Pill></Td>
               <Td>{canDelete && (
-                <button onClick={() => del.mutate(e.id)} className="grid h-7 w-7 place-items-center rounded-md border border-bd text-txt2 hover:border-bad hover:text-bad" title="Delete">
+                <button onClick={() => { if (confirm(`Delete "${e.title}"? This also removes the stored file and cannot be undone.`)) del.mutate(e.id); }} className="grid h-7 w-7 place-items-center rounded-md border border-bd text-txt2 hover:border-bad hover:text-bad" title="Delete">
                   <Trash2 size={14} />
                 </button>)}</Td>
             </tr>
           ))}
         </Table>
+      )}
+      {open && (
+        <Drawer open onClose={() => nav("/evidence")} sub={`EVIDENCE · ${open.evidence_type}`}
+          title={open.title}>
+          <div className="flex flex-wrap gap-2 text-[12.5px] text-txt2">
+            <Pill tone={open.status}>{open.status}</Pill>
+            {open.issued_at && <span>issued {open.issued_at}</span>}
+            {open.valid_until && <span>· valid until {open.valid_until}</span>}
+          </div>
+          <FilePreview url={`/evidence/${open.id}/file`} name={open.title} />
+        </Drawer>
       )}
       <UploadModal open={modal} onClose={() => setModal(false)} />
     </>

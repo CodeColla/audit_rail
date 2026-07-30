@@ -22,17 +22,22 @@ Two things the DB enforces for us, not the app (see db/schema.sql):
 from __future__ import annotations
 
 import difflib
+import hashlib
+import secrets
 import uuid
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from pydantic import BaseModel
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 
-from api import activity, render, storage
+from api import activity, docx_export, render, storage, vocabularies
 from api.auth import Principal, get_current_user
+from api.html_sanitize import sanitize_document_html
+from api.permissions import require
 from api.database import engine, get_conn, t
-from api.util import IsoDate, add_months, now_iso, review_status, today_iso
+from api.util import (IsoDate, StrictModel, add_months, now_iso, now_plus_days,
+                      review_status, today_iso)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -86,12 +91,26 @@ def _latest_approval(conn, version_id: str):
             "can_publish": a["status"] == "APPROVED"}
 
 
+def _disposition(disposition: str, filename: str) -> str:
+    """A Content-Disposition header that survives a non-English document title.
+
+    Starlette encodes response headers as latin-1, so interpolating a title raw meant any
+    character above U+00FF — Devanagari, Tamil, a stray curly quote — raised
+    UnicodeEncodeError and 500'd the download. RFC 5987 gives the real name via filename*
+    and keeps an ASCII filename= for older clients.
+    """
+    clean = "".join(ch for ch in filename if ch.isprintable() and ch not in '"\\/').strip()
+    ascii_name = clean.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    return (f'{disposition}; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(clean, safe='')}")
+
+
 def _render_and_store(conn, user: Principal, doc: dict, ver: dict) -> str:
     """Render the version to PDF, save it to the vault, return the new file_id."""
     pdf, _engine = render.render_pdf(
         title=doc["title"], body_md=ver["content"] or "",
         classification=doc["classification"], version_label=ver["version_label"],
-        status="PUBLISHED")
+        status="PUBLISHED", content_format=ver["content_format"])
     key, sha, size = storage.save(user.tenant_id, pdf,
                                   f"{doc['title']}-v{ver['version_label']}.pdf")
     file_id = str(uuid.uuid4())
@@ -106,24 +125,60 @@ def _render_and_store(conn, user: Principal, doc: dict, ver: dict) -> str:
 
 # ------------------------------------------------------------------ documents
 
-class DocumentIn(BaseModel):
+class DocumentIn(StrictModel):
     title: str
     document_type: str = "POLICY"
     classification: str = "INTERNAL"
     owner_person_id: str
     description: str | None = None
     review_cadence_months: int | None = 12
-    content: str | None = None          # optional starting markdown for v1.0
+    content: str | None = None          # optional starting body for v1.0
+    content_format: str = "MARKDOWN"
+
+
+def _clean(content: str | None, fmt: str) -> str | None:
+    """Sanitise on the way in, but only what is actually HTML.
+
+    Markdown must pass through untouched: nh3 would eat `a < b` and any literal angle
+    bracket, and rewriting stored bytes changes content_sha256 — which
+    electronic_signatures.file_sha256 pins.
+    """
+    if content is None:
+        return None
+    return sanitize_document_html(content) if fmt == "HTML" else content
+
+
+def _check_format(fmt: str) -> str:
+    if fmt not in ("MARKDOWN", "HTML"):
+        raise HTTPException(400, "content_format must be MARKDOWN or HTML")
+    return fmt
+
+
+# Declared before /{doc_id} on purpose — FastAPI matches in order, and otherwise "types"
+# would be read as a document id.
+@router.get("/types")
+def document_types(user: Principal = Depends(get_current_user)):
+    """The document types the database will actually accept.
+
+    Served rather than hardcoded in the SPA: a stale copy in the UI is how "STANDARD" —
+    never a valid value — reached users as a 500 CheckViolation.
+    """
+    return [{"value": v, "label": v.replace("_", " ").title()}
+            for v in vocabularies.DOCUMENT_TYPES]
 
 
 @router.get("")
 def list_documents(document_type: str | None = Query(None), status: str | None = Query(None),
-                   q: str | None = Query(None),
-                   user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+                   q: str | None = Query(None), include_archived: bool = Query(False),
+                   user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)):
     d, ppl, dv = t("documents"), t("people"), t("document_versions")
     stmt = (select(d, ppl.c.full_name.label("owner_name"))
             .join(ppl, d.c.owner_person_id == ppl.c.id)
             .where(d.c.tenant_id == user.tenant_id).order_by(d.c.title))
+    # NB: the `status` param below filters the latest VERSION's status; this one is the
+    # document's own lifecycle. They are different axes and must not be conflated.
+    if not include_archived:
+        stmt = stmt.where(d.c.status != "ARCHIVED")
     if document_type:
         stmt = stmt.where(d.c.document_type == document_type)
     if q:
@@ -148,8 +203,13 @@ def list_documents(document_type: str | None = Query(None), status: str | None =
 
 
 @router.post("", status_code=201)
-def create_document(body: DocumentIn, user: Principal = Depends(get_current_user)):
+def create_document(body: DocumentIn, user: Principal = Depends(require("documents", "add"))):
     ppl = t("people")
+    fmt = _check_format(body.content_format)
+    # validated here so a bad type is a readable 400, not a 500 CheckViolation from Postgres
+    if body.document_type not in vocabularies.DOCUMENT_TYPES:
+        raise HTTPException(400, f"document_type must be one of: "
+                                 f"{', '.join(vocabularies.DOCUMENT_TYPES)}")
     with engine.begin() as conn:
         if conn.execute(select(ppl.c.id).where(
                 ppl.c.id == body.owner_person_id,
@@ -165,7 +225,7 @@ def create_document(body: DocumentIn, user: Principal = Depends(get_current_user
         # every document starts life as a v1.0 DRAFT to author into
         conn.execute(insert(t("document_versions")).values(
             id=ver_id, tenant_id=user.tenant_id, document_id=doc_id, major=1, minor=0,
-            content=body.content or "", status="DRAFT",
+            content=_clean(body.content, fmt) or "", content_format=fmt, status="DRAFT",
             created_by_member_id=_member_id(conn, user.tenant_id, user.user_id),
             created_at=now, updated_at=now))
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
@@ -175,7 +235,7 @@ def create_document(body: DocumentIn, user: Principal = Depends(get_current_user
 
 
 @router.get("/{doc_id}")
-def document_detail(doc_id: str, user: Principal = Depends(get_current_user),
+def document_detail(doc_id: str, user: Principal = Depends(require("documents", "view")),
                     conn=Depends(get_conn)):
     doc = _doc(conn, user, doc_id)
     ppl = t("people")
@@ -184,25 +244,38 @@ def document_detail(doc_id: str, user: Principal = Depends(get_current_user),
     versions = _versions(conn, doc_id)
     draft = next((v for v in versions if v["status"] in OPEN), None)
     approval = _latest_approval(conn, draft["id"]) if draft else None
+    if draft:
+        # The rich editor cannot be handed markdown: TipTap parses whatever string it is
+        # given as HTML, so markdown source collapses into one paragraph of literal text
+        # and saving that back would destroy the document. Convert here — server-side,
+        # with the same md_to_html the PDF has always used — so the editor only ever sees
+        # HTML and "save as HTML" is honest rather than a relabelling of markdown bytes.
+        draft = {**draft, "editor_html": (
+            draft["content"] if draft["content_format"] == "HTML"
+            else sanitize_document_html(render.md_to_html(draft["content"] or "")))}
     return {**doc, "owner": dict(owner) if owner else None,
             "review_status": review_status(doc["next_review_at"], today_iso()),
             "versions": versions, "open_version": draft, "approval": approval}
 
 
-class DocumentPatch(BaseModel):
+class DocumentPatch(StrictModel):
     title: str | None = None
     classification: str | None = None
     owner_person_id: str | None = None
     description: str | None = None
     review_cadence_months: int | None = None
+    status: str | None = None           # ACTIVE | ARCHIVED — retire without deleting
 
 
 @router.patch("/{doc_id}")
 def update_document(doc_id: str, body: DocumentPatch,
-                    user: Principal = Depends(get_current_user)):
+                    user: Principal = Depends(require("documents", "edit"))):
     vals = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not vals:
         raise HTTPException(400, "nothing to update")
+    if "status" in vals and vals["status"] not in ("ACTIVE", "ARCHIVED"):
+        raise HTTPException(400, "status must be ACTIVE or ARCHIVED")
+    vals["updated_at"] = now_iso()
     with engine.begin() as conn:
         _doc(conn, user, doc_id)
         conn.execute(update(t("documents")).where(
@@ -215,14 +288,15 @@ def update_document(doc_id: str, body: DocumentPatch,
 
 # ------------------------------------------------------------------ versions
 
-class VersionEdit(BaseModel):
+class VersionEdit(StrictModel):
     content: str | None = None
     changelog: str | None = None
+    content_format: str | None = None
 
 
 @router.patch("/{doc_id}/versions/{version_id}")
 def edit_version(doc_id: str, version_id: str, body: VersionEdit,
-                 user: Principal = Depends(get_current_user)):
+                 user: Principal = Depends(require("documents", "edit"))):
     vals = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not vals:
         raise HTTPException(400, "nothing to update")
@@ -235,17 +309,30 @@ def edit_version(doc_id: str, version_id: str, body: VersionEdit,
             raise HTTPException(404, "version not found")
         if v["status"] != "DRAFT":
             raise HTTPException(409, "only a DRAFT version can be edited")
+        # Sanitise against the format this save will LEAVE the row in, and sanitise the
+        # bytes that will actually be stored — which may be the EXISTING content.
+        #
+        # Doing this only `if "content" in vals` was a hole: markdown rows are deliberately
+        # never sanitised, so a PATCH carrying content_format:"HTML" alone reclassified
+        # never-cleaned bytes as HTML. DocBody then renders them through
+        # dangerouslySetInnerHTML — including on the unauthenticated signing page.
+        fmt = _check_format(vals.get("content_format", v["content_format"]))
+        if fmt == "HTML":
+            vals["content"] = _clean(vals.get("content", v["content"]), fmt)
+        elif "content" in vals:
+            vals["content"] = _clean(vals["content"], fmt)
+        vals["updated_at"] = now_iso()
         conn.execute(update(dv).where(dv.c.id == version_id).values(**vals))
     return {"ok": True}
 
 
-class NewVersion(BaseModel):
+class NewVersion(StrictModel):
     bump: str = "minor"        # minor | major
 
 
 @router.post("/{doc_id}/versions", status_code=201)
 def new_version(doc_id: str, body: NewVersion,
-                user: Principal = Depends(get_current_user)):
+                user: Principal = Depends(require("documents", "add"))):
     if body.bump not in ("minor", "major"):
         raise HTTPException(400, "bump must be 'minor' or 'major'")
     dv = t("document_versions")
@@ -263,22 +350,52 @@ def new_version(doc_id: str, body: NewVersion,
         ver_id, now = str(uuid.uuid4()), now_iso()
         conn.execute(insert(dv).values(
             id=ver_id, tenant_id=user.tenant_id, document_id=doc_id,
-            major=major, minor=minor, content=base["content"], status="DRAFT",
+            major=major, minor=minor,
+            # carry the base's format forward — re-sanitising here would rewrite the bytes
+            # of a row whose hash a signature may already pin
+            content=base["content"], content_format=base["content_format"], status="DRAFT",
             created_by_member_id=_member_id(conn, user.tenant_id, user.user_id),
             created_at=now, updated_at=now))
     return {"version_id": ver_id, "version_label": f"{major}.{minor}"}
 
 
+@router.delete("/{doc_id}/versions/{version_id}", status_code=204)
+def discard_draft(doc_id: str, version_id: str,
+                  user: Principal = Depends(require("documents", "edit"))):
+    """Throw away an unwanted draft, returning the document to its published version.
+
+    Gated on documents.edit, not .delete: `document_versions.status` has no DISCARDED
+    member, and an Editor (who holds every action but delete) must be able to abandon
+    their own draft.
+    """
+    dv = t("document_versions")
+    with engine.begin() as conn:
+        _doc(conn, user, doc_id)
+        v = conn.execute(select(dv).where(
+            dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
+        if v is None:
+            raise HTTPException(404, "version not found")
+        if v["status"] != "DRAFT":
+            raise HTTPException(409, "only a DRAFT version can be discarded")
+        if len(_versions(conn, doc_id)) == 1:
+            raise HTTPException(409, "a document must keep at least one version")
+        conn.execute(delete(dv).where(dv.c.id == version_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="document.draft_discarded", entity_type="document", entity_id=doc_id,
+                 detail={"version": v["version_label"]})
+    return Response(status_code=204)
+
+
 # ------------------------------------------------------------------ approval (M-of-N)
 
-class SubmitIn(BaseModel):
+class SubmitIn(StrictModel):
     threshold_required: int
     approver_person_ids: list[str]
 
 
 @router.post("/{doc_id}/versions/{version_id}/submit", status_code=201)
 def submit_for_approval(doc_id: str, version_id: str, body: SubmitIn,
-                        user: Principal = Depends(get_current_user)):
+                        user: Principal = Depends(require("documents", "edit"))):
     approvers = list(dict.fromkeys(body.approver_person_ids))   # de-dup, keep order
     if not approvers:
         raise HTTPException(400, "pick at least one approver")
@@ -328,7 +445,7 @@ def submit_for_approval(doc_id: str, version_id: str, body: SubmitIn,
             "approvers": len(approvers)}
 
 
-class DecideIn(BaseModel):
+class DecideIn(StrictModel):
     approver_person_id: str
     state: str                 # APPROVED | REJECTED | ABSTAINED
     comment: str | None = None
@@ -336,7 +453,7 @@ class DecideIn(BaseModel):
 
 @router.post("/approvals/{approval_id}/decide")
 def decide(approval_id: str, body: DecideIn,
-           user: Principal = Depends(get_current_user)):
+           user: Principal = Depends(require("documents", "approve"))):
     if body.state not in ("APPROVED", "REJECTED", "ABSTAINED"):
         raise HTTPException(400, "state must be APPROVED, REJECTED or ABSTAINED")
     ap, dec, dv = (t("document_approvals"), t("document_approval_decisions"),
@@ -383,7 +500,7 @@ def decide(approval_id: str, body: DecideIn,
 
 
 @router.post("/{doc_id}/versions/{version_id}/publish")
-def publish(doc_id: str, version_id: str, user: Principal = Depends(get_current_user)):
+def publish(doc_id: str, version_id: str, user: Principal = Depends(require("documents", "publish"))):
     dv = t("document_versions")
     with engine.begin() as conn:
         doc = _doc(conn, user, doc_id)
@@ -408,8 +525,16 @@ def publish(doc_id: str, version_id: str, user: Principal = Depends(get_current_
         file_id = _render_and_store(conn, user, doc, dict(v))
         # supersede whatever was published before (content unchanged → freeze allows)
         if doc["current_published_version_id"]:
-            conn.execute(update(dv).where(
-                dv.c.id == doc["current_published_version_id"]).values(status="SUPERSEDED"))
+            old_vid = doc["current_published_version_id"]
+            conn.execute(update(dv).where(dv.c.id == old_vid).values(status="SUPERSEDED"))
+            # kill any still-live attestation links for the superseded version — nobody should
+            # sign outdated content; a fresh campaign will re-request against the new version.
+            ds, st = t("document_signatures"), t("signing_tokens")
+            conn.execute(update(st).where(
+                st.c.consumed_at.is_(None), st.c.revoked_at.is_(None),
+                st.c.document_signature_id.in_(
+                    select(ds.c.id).where(ds.c.document_version_id == old_vid))
+            ).values(revoked_at=now))
         conn.execute(update(dv).where(dv.c.id == version_id).values(
             status="PUBLISHED", published_at=now, file_id=file_id))
         upd = {"current_published_version_id": version_id}
@@ -427,43 +552,270 @@ def publish(doc_id: str, version_id: str, user: Principal = Depends(get_current_
 
 @router.get("/{doc_id}/versions/{version_id}/render.pdf")
 def render_version(doc_id: str, version_id: str,
-                   user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+                   disposition: str = Query("attachment", pattern="^(attachment|inline)$"),
+                   user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)):
     doc = _doc(conn, user, doc_id)
     dv, files = t("document_versions"), t("files")
     v = conn.execute(select(dv).where(
         dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
     if v is None:
         raise HTTPException(404, "version not found")
+    # A controlled document should arrive named, not as "render.pdf" — the title and
+    # version are what someone files it under.
+    headers = {"Content-Disposition": _disposition(
+        disposition, f'{doc["title"][:80]} v{v["version_label"]}.pdf')}
     if v["file_id"]:                                    # published → serve the stored PDF
         key = conn.execute(select(files.c.storage_key).where(
             files.c.id == v["file_id"])).scalar()
         path = storage.path_for(key)
         if path.exists():
             data = path.read_bytes()
-            return Response(data, media_type="application/pdf")
+            return Response(data, media_type="application/pdf", headers=headers)
     # draft preview → render on the fly
     pdf, _ = render.render_pdf(title=doc["title"], body_md=v["content"] or "",
                                classification=doc["classification"],
-                               version_label=v["version_label"], status=v["status"])
-    return Response(pdf, media_type="application/pdf")
+                               version_label=v["version_label"], status=v["status"],
+                               content_format=v["content_format"])
+    return Response(pdf, media_type="application/pdf", headers=headers)
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+@router.get("/{doc_id}/versions/{version_id}/render.docx")
+def render_version_docx(doc_id: str, version_id: str,
+                        disposition: str = Query("attachment", pattern="^(attachment|inline)$"),
+                        user: Principal = Depends(require("documents", "view")),
+                        conn=Depends(get_conn)):
+    """Word export. Always rendered on the fly — only the PDF is the controlled artefact
+    stored against the version, and `document_versions` has just the one `file_id`."""
+    doc = _doc(conn, user, doc_id)
+    dv = t("document_versions")
+    v = conn.execute(select(dv).where(
+        dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
+    if v is None:
+        raise HTTPException(404, "version not found")
+    data = docx_export.render_docx(
+        title=doc["title"], body_html=v["content"] or "",
+        classification=doc["classification"], version_label=v["version_label"],
+        status=v["status"], content_format=v["content_format"])
+    return Response(data, media_type=DOCX_MIME, headers={
+        "Content-Disposition": _disposition(
+            disposition, f'{doc["title"][:80]} v{v["version_label"]}.docx')})
+
+
+def _diff_lines(content: str | None, fmt: str) -> list[str]:
+    """One comparable line per block.
+
+    TipTap serialises a whole document onto a single line, so a raw splitlines() diff of
+    HTML always reports exactly 1 added and 1 removed no matter what changed — a diff that
+    can never be wrong and is therefore useless. Project HTML to block-level text instead.
+    """
+    if fmt != "HTML":
+        return (content or "").splitlines()
+    from lxml import html as lhtml  # noqa: PLC0415 — only needed on the HTML branch
+    root = lhtml.fragment_fromstring(content or "", create_parent="div")
+    # Iterating `for el in root` yields only child ELEMENTS. Bare text at the top level
+    # (root.text) and text trailing a block (el.tail) were dropped entirely, so a version
+    # whose body was not wrapped in block tags diffed as "no change at all".
+    parts = [root.text or ""]
+    for el in root:
+        parts.append(el.text_content() or "")
+        parts.append(el.tail or "")
+    return [line for p in parts if (line := " ".join(p.split()))]
 
 
 @router.get("/{doc_id}/diff")
 def diff_versions(doc_id: str, from_version: str = Query(...), to_version: str = Query(...),
-                  user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+                  user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)):
     _doc(conn, user, doc_id)
     dv = t("document_versions")
     def load(vid):
-        r = conn.execute(select(dv.c.content, dv.c.version_label).where(
+        r = conn.execute(select(dv.c.content, dv.c.version_label, dv.c.content_format).where(
             dv.c.id == vid, dv.c.document_id == doc_id)).mappings().first()
         if r is None:
             raise HTTPException(404, "version not found")
         return r
     a, b = load(from_version), load(to_version)
     diff = list(difflib.unified_diff(
-        (a["content"] or "").splitlines(), (b["content"] or "").splitlines(),
+        _diff_lines(a["content"], a["content_format"]),
+        _diff_lines(b["content"], b["content_format"]),
         fromfile=f"v{a['version_label']}", tofile=f"v{b['version_label']}", lineterm=""))
     added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
     return {"from": a["version_label"], "to": b["version_label"],
             "added": added, "removed": removed, "diff": diff}
+
+
+# ------------------------------------------------------------------ attestation (M9b · D-SIGN)
+# Audiences say WHO must sign; a campaign fans out a magic link per person; coverage %
+# is computed LIVE from the audience (never stored), so a new hire lowers it immediately.
+
+def _audience_targets(conn, tenant_id: str, doc_id: str) -> list[dict]:
+    """Active people the document's audience rules currently resolve to (live from people).
+    Mirrors v_document_expected_signers' matching, but without needing a published version —
+    so it doubles as the audience-builder preview and the campaign target list."""
+    q = text("""
+      SELECT DISTINCT p.id, p.full_name, p.department, p.email
+        FROM document_audiences a
+        JOIN v_people_effective_state p ON p.tenant_id = a.tenant_id
+         AND p.effective_state = 'ACTIVE'
+         AND ( a.rule = 'ALL_EMPLOYEES'
+            OR (a.rule = 'DEPARTMENT' AND p.department = a.value)
+            OR (a.rule = 'EXPLICIT'   AND p.id = a.person_id) )
+       WHERE a.document_id = :doc AND a.tenant_id = :tid
+       ORDER BY p.full_name""")
+    return [dict(r) for r in conn.execute(q, {"doc": doc_id, "tid": tenant_id}).mappings()]
+
+
+def _default_consent(title: str, version_label: str) -> str:
+    return (f"I confirm that I have read and understood “{title}” "
+            f"(version {version_label}) and I agree to comply with it.")
+
+
+class AudienceRule(StrictModel):
+    rule: str                       # ALL_EMPLOYEES | DEPARTMENT | EXPLICIT
+    value: str | None = None        # department name, when rule=DEPARTMENT
+    person_id: str | None = None    # the person, when rule=EXPLICIT
+
+
+class AudienceIn(StrictModel):
+    rules: list[AudienceRule]
+
+
+@router.get("/{doc_id}/audiences")
+def list_audiences(doc_id: str, user: Principal = Depends(require("documents", "view")),
+                   conn=Depends(get_conn)):
+    _doc(conn, user, doc_id)
+    da = t("document_audiences")
+    rules = [dict(r) for r in conn.execute(
+        select(da).where(da.c.document_id == doc_id).order_by(da.c.created_at)).mappings()]
+    return {"rules": rules, "targeted": len(_audience_targets(conn, user.tenant_id, doc_id))}
+
+
+@router.post("/{doc_id}/audiences")
+def set_audiences(doc_id: str, body: AudienceIn,
+                  user: Principal = Depends(require("documents", "edit"))):
+    # normalise + validate each rule's shape (mirrors the da_rule_shape CHECK, with a
+    # friendly 400 instead of a raw constraint error)
+    clean: list[tuple] = []
+    explicit_ids: set[str] = set()
+    for r in body.rules:
+        if r.rule == "ALL_EMPLOYEES":
+            clean.append(("ALL_EMPLOYEES", None, None))
+        elif r.rule == "DEPARTMENT":
+            if not (r.value or "").strip():
+                raise HTTPException(400, "a DEPARTMENT rule needs a department name")
+            clean.append(("DEPARTMENT", r.value.strip(), None))
+        elif r.rule == "EXPLICIT":
+            if not r.person_id:
+                raise HTTPException(400, "an EXPLICIT rule needs a person")
+            explicit_ids.add(r.person_id)
+            clean.append(("EXPLICIT", None, r.person_id))
+        else:
+            raise HTTPException(400, f"unknown audience rule {r.rule!r}")
+    clean = list(dict.fromkeys(clean))          # drop exact duplicates
+    with engine.begin() as conn:
+        _doc(conn, user, doc_id)
+        if explicit_ids:                        # every EXPLICIT person must be in this tenant
+            found = set(conn.execute(select(t("people").c.id).where(
+                t("people").c.tenant_id == user.tenant_id,
+                t("people").c.id.in_(explicit_ids))).scalars())
+            if explicit_ids - found:
+                raise HTTPException(400, "some people are not in this organisation")
+        da = t("document_audiences")
+        conn.execute(delete(da).where(da.c.document_id == doc_id))
+        now = now_iso()
+        for rule, value, pid in clean:
+            conn.execute(insert(da).values(
+                id=str(uuid.uuid4()), tenant_id=user.tenant_id, document_id=doc_id,
+                rule=rule, value=value, person_id=pid, created_at=now))
+        targeted = len(_audience_targets(conn, user.tenant_id, doc_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="document.audience_set", entity_type="document", entity_id=doc_id,
+                 detail={"rules": len(clean), "targeted": targeted})
+    return {"ok": True, "targeted": targeted}
+
+
+class CampaignIn(StrictModel):
+    due_days: int = 30
+    expires_days: int = 30
+    consent_text: str | None = None
+
+
+@router.post("/{doc_id}/attestation-campaign", status_code=201)
+def start_attestation_campaign(doc_id: str, body: CampaignIn,
+                               user: Principal = Depends(require("documents", "edit"))):
+    ds, st, dv = t("document_signatures"), t("signing_tokens"), t("document_versions")
+    with engine.begin() as conn:
+        doc = _doc(conn, user, doc_id)
+        vid = doc["current_published_version_id"]
+        if not vid:
+            raise HTTPException(400, "publish a version before requesting attestations")
+        ver = conn.execute(select(dv).where(dv.c.id == vid)).mappings().first()
+        targets = _audience_targets(conn, user.tenant_id, doc_id)
+        if not targets:
+            raise HTTPException(400, "set an audience with at least one active person first")
+        consent = (body.consent_text or "").strip() or _default_consent(
+            doc["title"], ver["version_label"])
+        now, due, expires = now_iso(), now_plus_days(body.due_days), now_plus_days(body.expires_days)
+        issued = []
+        for p in targets:
+            sig = conn.execute(select(ds).where(
+                ds.c.document_version_id == vid, ds.c.person_id == p["id"])).mappings().first()
+            if sig and sig["state"] == "SIGNED":
+                continue                        # already attested this exact version
+            if sig is None:
+                sig_id = str(uuid.uuid4())
+                conn.execute(insert(ds).values(
+                    id=sig_id, tenant_id=user.tenant_id, document_version_id=vid,
+                    person_id=p["id"], state="REQUESTED", requested_at=now, due_at=due))
+            else:                               # reissue: one live link per person
+                sig_id = sig["id"]
+                conn.execute(update(ds).where(ds.c.id == sig_id).values(due_at=due))
+                conn.execute(update(st).where(
+                    st.c.document_signature_id == sig_id,
+                    st.c.consumed_at.is_(None), st.c.revoked_at.is_(None)).values(revoked_at=now))
+            raw = secrets.token_urlsafe(32)     # 256-bit; the raw value lives ONLY in the link
+            conn.execute(insert(st).values(
+                id=str(uuid.uuid4()), tenant_id=user.tenant_id,
+                token_hash=hashlib.sha256(raw.encode()).hexdigest(), purpose="ATTEST",
+                document_signature_id=sig_id, sent_to_email=p["email"], consent_text=consent,
+                issued_at=now, expires_at=expires))
+            issued.append({"person_id": p["id"], "full_name": p["full_name"],
+                           "email": p["email"], "token": raw, "sign_path": f"/sign/{raw}"})
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="document.attestation_campaign", entity_type="document_version",
+                 entity_id=vid, detail={"issued": len(issued)})
+    return {"version_label": ver["version_label"], "issued": issued,
+            "already_signed": len(targets) - len(issued)}
+
+
+@router.get("/{doc_id}/coverage")
+def coverage(doc_id: str, user: Principal = Depends(require("documents", "view")), conn=Depends(get_conn)):
+    doc = _doc(conn, user, doc_id)
+    vid = doc["current_published_version_id"]
+    if not vid:
+        return {"published": False, "version_label": None, "expected": 0, "signed": 0,
+                "outstanding": 0, "coverage_pct": None, "people": []}
+    cov = conn.execute(text(
+        "SELECT version_label, expected, signed, outstanding, coverage_pct "
+        "FROM v_document_coverage WHERE version_id = :v"), {"v": vid}).mappings().first()
+    people = [dict(r) for r in conn.execute(text("""
+        SELECT x.person_id, p.full_name, p.department, p.email,
+               coalesce(s.state, 'OUTSTANDING') AS state, s.signed_at, s.due_at
+          FROM v_document_expected_signers x
+          JOIN people p ON p.id = x.person_id
+          LEFT JOIN document_signatures s
+                 ON s.document_version_id = x.document_version_id AND s.person_id = x.person_id
+         WHERE x.document_version_id = :v
+         ORDER BY (s.state = 'SIGNED'), p.full_name"""), {"v": vid}).mappings()]
+    dv = t("document_versions")
+    ver_label = conn.execute(select(dv.c.version_label).where(dv.c.id == vid)).scalar()
+    return {"published": True,
+            "version_label": cov["version_label"] if cov else ver_label,
+            "expected": cov["expected"] if cov else 0,
+            "signed": cov["signed"] if cov else 0,
+            "outstanding": cov["outstanding"] if cov else 0,
+            "coverage_pct": float(cov["coverage_pct"]) if cov and cov["coverage_pct"] is not None else None,
+            "people": people}

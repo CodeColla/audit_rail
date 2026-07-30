@@ -31,7 +31,7 @@ def _recurring_control(engine, tenant_id, code):
 def test_generate_complete_and_dashboard(app_client):
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     _recurring_control(engine, tid, "TSK 1.a")
     atok = token(app_client, "admin@kiam.example", "secret1")
     ah = {"Authorization": f"Bearer {atok}"}
@@ -63,7 +63,7 @@ def test_overdue_and_dashboard_queue(app_client):
     """A backdated run must surface as overdue in the dashboard."""
     from api.database import engine
     with engine.connect() as c:
-        tid = c.execute(sqltext("SELECT id FROM tenants LIMIT 1")).scalar()
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
         member = c.execute(sqltext(
             "SELECT id FROM tenant_members WHERE tenant_id=:t LIMIT 1"),
             {"t": tid}).scalar()
@@ -98,7 +98,7 @@ def test_overdue_and_dashboard_queue(app_client):
     q = d["queues"]
     assert any("Overdue drill" == t["title"] for t in q["overdue_tasks"])
     assert any(e["status"] in ("expiring", "expired") for e in q["expiring_evidence"])
-    assert any(p["review_status"] in ("overdue", "due_soon") for p in q["policies_due"])
+    assert any(p["review_status"] in ("overdue", "due_soon") for p in q["documents_due"])
     assert "overall_readiness_pct" in d["kpis"]
 
     # the overdue flip generated a notification for the assignee

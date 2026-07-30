@@ -9,9 +9,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, insert, select
 
 from api import activity, tasks_engine
-from api.auth import Principal, get_current_user, require_roles
+from api.auth import Principal, get_current_user
+from api.permissions import require
 from api.database import engine, get_conn, t
-from api.util import IsoDate, now_iso, today_iso
+from api.util import IsoDate, StrictModel, now_iso, today_iso
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -31,7 +32,7 @@ def _next_run(conn, task_id):
 
 
 @router.post("/generate")
-def generate(user: Principal = Depends(require_roles("admin", "manager"))):
+def generate(user: Principal = Depends(require("tasks", "edit"))):
     with engine.begin() as conn:
         created = tasks_engine.generate_tasks(conn, user.tenant_id)
         flipped = tasks_engine.mark_overdue(conn)
@@ -40,7 +41,7 @@ def generate(user: Principal = Depends(require_roles("admin", "manager"))):
             "people_deactivated": retired}
 
 
-class TaskIn(BaseModel):
+class TaskIn(StrictModel):
     title: str
     description: str | None = None
     cadence_months: int | None = None
@@ -51,7 +52,7 @@ class TaskIn(BaseModel):
 
 
 @router.post("", status_code=201)
-def create_task(body: TaskIn, user: Principal = Depends(get_current_user)):
+def create_task(body: TaskIn, user: Principal = Depends(require("tasks", "add"))):
     tid = str(uuid.uuid4())
     with engine.begin() as conn:
         conn.execute(insert(t("tasks")).values(
@@ -69,7 +70,7 @@ def create_task(body: TaskIn, user: Principal = Depends(get_current_user)):
 
 
 @router.get("")
-def list_tasks(mine: bool = Query(False), user: Principal = Depends(get_current_user),
+def list_tasks(mine: bool = Query(False), user: Principal = Depends(require("tasks", "view")),
                conn=Depends(get_conn)):
     tasks = t("tasks")
     q = select(tasks).where(tasks.c.tenant_id == user.tenant_id,
@@ -88,7 +89,7 @@ def list_tasks(mine: bool = Query(False), user: Principal = Depends(get_current_
 
 @router.get("/calendar")
 def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
-             user: Principal = Depends(get_current_user), conn=Depends(get_conn)):
+             user: Principal = Depends(require("tasks", "view")), conn=Depends(get_conn)):
     """Task runs due within the given YYYY-MM (for the month grid)."""
     tasks, runs = t("tasks"), t("task_runs")
     rows = conn.execute(
@@ -101,7 +102,7 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
 
 
 @router.get("/{task_id}")
-def task_detail(task_id: str, user: Principal = Depends(get_current_user),
+def task_detail(task_id: str, user: Principal = Depends(require("tasks", "view")),
                 conn=Depends(get_conn)):
     tasks, runs = t("tasks"), t("task_runs")
     task = conn.execute(select(tasks).where(
@@ -113,14 +114,14 @@ def task_detail(task_id: str, user: Principal = Depends(get_current_user),
     return {**dict(task), "runs": [dict(r) for r in run_rows]}
 
 
-class CompleteIn(BaseModel):
+class CompleteIn(StrictModel):
     evidence_id: str | None = None
     notes: str | None = None
 
 
 @router.post("/{task_id}/runs/{run_id}/complete")
 def complete(task_id: str, run_id: str, body: CompleteIn,
-             user: Principal = Depends(get_current_user)):
+             user: Principal = Depends(require("tasks", "edit"))):
     with engine.begin() as conn:
         member_id = _member_id(conn, user.tenant_id, user.user_id)
         if body.evidence_id:  # must be tenant's evidence

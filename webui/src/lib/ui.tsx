@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
 import { twMerge } from "tailwind-merge";
 import clsx, { ClassValue } from "clsx";
 
@@ -82,17 +82,20 @@ export function Bar({ pct, muted }: { pct: number; muted?: boolean }) {
 
 export function Drawer({ open, onClose, title, sub, children }:
   { open: boolean; onClose: () => void; title: ReactNode; sub?: ReactNode; children: ReactNode }) {
+  useCloseOnEscape(open, onClose);
   if (!open) return null;
   return (
     <>
       <div className="fixed inset-0 z-40 bg-[rgba(14,26,43,0.36)]" onClick={onClose} />
-      <aside className="fixed right-0 top-0 z-50 flex h-full w-[min(560px,94vw)] flex-col overflow-y-auto border-l border-bd bg-canvas shadow-drawer">
+      <aside role="dialog" aria-modal="true" aria-labelledby="drawer-title"
+        className="fixed right-0 top-0 z-50 flex h-full w-[min(560px,94vw)] flex-col overflow-y-auto border-l border-bd bg-canvas shadow-drawer">
         <div className="sticky top-0 z-10 flex items-start gap-3 border-b border-bd bg-paper px-5 py-4">
           <div className="flex-1">
             {sub && <div className="font-mono text-[12px] font-semibold text-accent">{sub}</div>}
-            <h3 className="mt-0.5 text-[15px] font-semibold leading-snug">{title}</h3>
+            <h3 id="drawer-title" className="mt-0.5 text-[15px] font-semibold leading-snug">{title}</h3>
           </div>
-          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-md border border-bd text-txt2 hover:bg-canvas">✕</button>
+          <button onClick={onClose} aria-label="Close"
+            className="grid h-9 w-9 place-items-center rounded-md border border-bd text-txt2 hover:bg-canvas">✕</button>
         </div>
         <div className="flex flex-col gap-4 p-5">{children}</div>
       </aside>
@@ -100,17 +103,44 @@ export function Drawer({ open, onClose, title, sub, children }:
   );
 }
 
-export function Modal({ open, onClose, title, children }:
-  { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode }) {
+/**
+ * Escape closes the topmost overlay. Both Drawer and Modal were dismissible only by the ✕ or
+ * a backdrop click, which is the one keyboard convention every user already knows.
+ */
+function useCloseOnEscape(open: boolean, onClose: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+}
+
+/**
+ * `size` widens the dialog for content that needs it (e.g. the role permission matrix).
+ *
+ * The body scrolls INSIDE the dialog and the whole thing is capped at 90vh. Without that,
+ * a tall dialog centred with `place-items-center` overflows past the top and bottom of the
+ * viewport with nothing to scroll — its footer buttons become literally unclickable.
+ */
+export function Modal({ open, onClose, title, children, size = "md" }:
+  { open: boolean; onClose: () => void; title: ReactNode; children: ReactNode;
+    size?: "md" | "lg" | "xl" }) {
+  useCloseOnEscape(open, onClose);
   if (!open) return null;
+  const width = { md: "max-w-md", lg: "max-w-2xl", xl: "max-w-4xl" }[size];
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-[rgba(14,26,43,0.44)] p-4" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl border border-bd bg-paper shadow-drawer" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between border-b border-bd px-5 py-3.5">
-          <h3 className="text-[15px] font-semibold">{title}</h3>
-          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-md border border-bd text-txt2 hover:bg-canvas">✕</button>
+    <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-[rgba(14,26,43,0.44)] p-4"
+      onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-labelledby="modal-title"
+        className={cn("flex max-h-[90vh] w-full flex-col rounded-xl border border-bd bg-paper shadow-drawer", width)}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex shrink-0 items-center justify-between border-b border-bd px-5 py-3.5">
+          <h3 id="modal-title" className="text-[15px] font-semibold">{title}</h3>
+          <button onClick={onClose} aria-label="Close"
+            className="grid h-8 w-8 place-items-center rounded-md border border-bd text-txt2 hover:bg-canvas">✕</button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   );

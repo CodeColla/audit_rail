@@ -19,6 +19,8 @@ import html as _html
 import io
 import re
 
+from api.html_sanitize import sanitize_document_html
+
 # ── markdown -> HTML ────────────────────────────────────────────────────────
 try:
     import markdown as _md
@@ -59,9 +61,36 @@ th, td { border: 1px solid #D5D9DE; padding: 4pt 6pt; text-align: left; font-siz
 """
 
 
+DEFAULT_ORG = "KIAM INTL PVT LTD"
+
+
+def doc_meta(*, title: str, classification: str, version_label: str,
+             org: str = DEFAULT_ORG, status: str = "DRAFT") -> dict:
+    """The letterhead facts, shared by the PDF and the DOCX so the two agree."""
+    return {
+        "org": org, "title": title, "classification": classification,
+        "version_label": version_label, "status": status,
+        "header_line": f"{title} · v{version_label} · {status}",
+        "footer_line": (f"{org} · {title} v{version_label} · Classification: "
+                        f"{classification} · This document is controlled; "
+                        f"printed copies are uncontrolled."),
+    }
+
+
 def build_html(*, title: str, body_md: str, classification: str, version_label: str,
-               org: str = "KIAM INTL PVT LTD", status: str = "DRAFT") -> str:
-    body = md_to_html(body_md)
+               org: str = DEFAULT_ORG, status: str = "DRAFT",
+               content_format: str = "MARKDOWN") -> str:
+    # P4-S4: authored content is HTML now, but everything written earlier is markdown and
+    # stays that way. Feeding HTML through md_to_html is NOT identity — python-markdown
+    # reflows it — so the branch is required, not merely an optimisation.
+    body = (body_md or "") if content_format == "HTML" else md_to_html(body_md)
+    # Sanitise the RENDERED html, whatever its source. HTML content was already cleaned on
+    # write (this is idempotent and cheap), but markdown is deliberately stored raw — and
+    # python-markdown both passes inline HTML straight through and turns ![](url) into an
+    # <img>. xhtml2pdf resolves image srcs with a server-side urllib urlopen (see
+    # xhtml2pdf/files.py), so without this a markdown policy could make *publishing* fetch
+    # an author-controlled URL. Sanitising only the HTML branch left that wide open.
+    body = sanitize_document_html(body)
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <style>{_PAGE_CSS}</style></head><body>
 <div class="hdr">
@@ -123,10 +152,11 @@ def _minimal_pdf(title: str) -> bytes:
 
 
 def render_pdf(*, title: str, body_md: str, classification: str, version_label: str,
-               status: str = "DRAFT") -> tuple[bytes, str]:
+               status: str = "DRAFT", content_format: str = "MARKDOWN") -> tuple[bytes, str]:
     """Return (pdf_bytes, engine_name)."""
     html = build_html(title=title, body_md=body_md, classification=classification,
-                      version_label=version_label, status=status)
+                      version_label=version_label, status=status,
+                      content_format=content_format)
     for name, fn in (("weasyprint", _weasyprint), ("xhtml2pdf", _xhtml2pdf)):
         data = fn(html)
         if data and data[:4] == b"%PDF":

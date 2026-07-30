@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Create the audit_rail schema in PostgreSQL and seed it.
 
-Postgres runs via docker-compose (host port 5433 — Probo holds 5432).
+Postgres runs via docker-compose (host port 5434 — Probo holds 5432, emp_erp_mcp 5433).
 Connection comes from DATABASE_URL / api/config.py.
 
 Seeds:
@@ -91,22 +91,64 @@ def main() -> None:
 
         # ── tenant + users ───────────────────────────────────────────────────
         tenant_id = uid()
+        # P4: an organisation is keyed by its GSTIN, and owned by a Super Admin.
+        from api.gstin import checksum  # noqa: E402
+        gst = "27AAPFU0939F1Z" + checksum("27AAPFU0939F1Z")
         conn.execute(text(
-            "INSERT INTO tenants VALUES (:i,:n,:s,:st,:c)"),
-            {"i": tenant_id, "n": "KIAM INTL PVT LTD", "s": "kiam",
+            "INSERT INTO tenants (id,name,slug,gst_number,status,created_at) "
+            "VALUES (:i,:n,:s,:g,:st,:c)"),
+            {"i": tenant_id, "n": "KIAM INTL PVT LTD", "s": "kiam", "g": gst,
              "st": "active", "c": NOW})
+        first_admin = None
         for email, name, role in [
             ("sumit.t@iesglabs.com", "Sumit", "admin"),
             ("intern@kiam.example", "Compliance Intern", "member"),
         ]:
             user_id = uid()
+            if role == "admin" and first_admin is None:
+                first_admin = user_id
             conn.execute(text(
                 "INSERT INTO users (id,email,full_name,auth_provider,is_platform_admin,"
                 "status,created_at) VALUES (:i,:e,:f,:a,:p,:s,:c)"),
                 {"i": user_id, "e": email, "f": name, "a": "local",
                  "p": 1 if role == "admin" else 0, "s": "invited", "c": NOW})
-            conn.execute(text("INSERT INTO tenant_members VALUES (:i,:t,:u,:r,:c)"),
+            conn.execute(text("INSERT INTO tenant_members (id,tenant_id,user_id,role,"
+                              "created_at) VALUES (:i,:t,:u,:r,:c)"),
                          {"i": uid(), "t": tenant_id, "u": user_id, "r": role, "c": NOW})
+        conn.execute(text("UPDATE tenants SET super_admin_user_id=:u WHERE id=:t"),
+                     {"u": first_admin, "t": tenant_id})
+
+        # P4-S2: seed the system roles and point each membership at the right one.
+        # Raw SQL on purpose. seed_roles() goes through the reflected metadata, and
+        # metadata.reflect() opens a SECOND connection — which blocks forever behind the
+        # schema locks this very transaction is still holding (DROP/CREATE SCHEMA above).
+        from api.permissions import LEGACY_ROLE_MAP, SYSTEM_ROLES  # noqa: E402
+        by_name = {}
+        for role_name, spec in SYSTEM_ROLES.items():
+            rid = uid()
+            by_name[role_name] = rid
+            conn.execute(text("INSERT INTO roles (id,tenant_id,name,description,is_system,"
+                              "created_at) VALUES (:i,:t,:n,:d,1,:c)"),
+                         {"i": rid, "t": tenant_id, "n": role_name,
+                          "d": spec["description"], "c": NOW})
+            for module, action in sorted(spec["permissions"]()):
+                conn.execute(text("INSERT INTO role_permissions (role_id,module,action) "
+                                  "VALUES (:r,:m,:a)"),
+                             {"r": rid, "m": module, "a": action})
+        for legacy, role_name in LEGACY_ROLE_MAP.items():
+            conn.execute(text("UPDATE tenant_members SET role_id=:r "
+                              "WHERE tenant_id=:t AND role=:legacy"),
+                         {"r": by_name[role_name], "t": tenant_id, "legacy": legacy})
+
+        # P4-S3: starting dropdown vocabularies (raw SQL, same reflection caveat as above).
+        from api.vocabularies import KINDS  # noqa: E402
+        for kind, (_label, defaults) in KINDS.items():
+            for i, value in enumerate(defaults):
+                conn.execute(text("INSERT INTO lookup_values (id,tenant_id,kind,value,"
+                                  "sort_order,is_active,created_at) "
+                                  "VALUES (:i,:t,:k,:v,:o,1,:c)"),
+                             {"i": uid(), "t": tenant_id, "k": kind, "v": value,
+                              "o": i, "c": NOW})
 
         # ── unified domains ──────────────────────────────────────────────────
         for i, (code, name) in enumerate(UNIFIED_DOMAINS):

@@ -4,7 +4,8 @@ SQLAlchemy Core over the canonical schema in db/schema.sql (PostgreSQL).
 There are no ORM models on purpose: the DDL is the single source of truth, and
 the reflected `metadata` gives typed Table objects for Core queries.
 
-Postgres runs via docker-compose.yml on host port 5433 (Probo holds 5432).
+Postgres runs via docker-compose.yml on host port 5434 (Probo holds 5432,
+emp_erp_mcp holds 5433).
 Alembic joins when the v2 schema lands (see docs/phase3).
 """
 
