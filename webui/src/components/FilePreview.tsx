@@ -19,6 +19,10 @@ import { downloadFile, fetchBlob } from "../lib/api";
 
 type Kind = "pdf" | "image" | "docx" | "xlsx" | "text" | "unsupported";
 
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+   .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
 function classify(contentType: string, filename: string): Kind {
   const ct = (contentType || "").toLowerCase();
   const ext = (filename.split(".").pop() ?? "").toLowerCase();
@@ -53,7 +57,12 @@ export function FilePreview({ url, name, className }:
         const f = await fetchBlob(inline);
         if (cancelled) { f.revoke(); return; }
         revoke = f.revoke;
-        const k = classify(f.contentType, name ?? f.filename);
+        // The server-supplied filename FIRST. `name` is the evidence TITLE at every call
+        // site, and a title like "ISO 27001 Certificate" carries no extension — so this
+        // used to throw away the one reliable signal and leave dispatch resting entirely
+        // on whatever MIME the uploader's browser happened to send. `f.filename` comes
+        // from Content-Disposition, which the API builds from files.original_name.
+        const k = classify(f.contentType, f.filename || name || "");
         setKind(k); setObjectUrl(f.objectUrl); setFilename(name ?? f.filename);
 
         if (k === "docx") {
@@ -66,8 +75,15 @@ export function FilePreview({ url, name, className }:
         } else if (k === "xlsx") {
           const XLSX = await import("xlsx");
           const wb = XLSX.read(await f.blob.arrayBuffer(), { type: "array" });
+          // `sn` is a worksheet name straight out of an uploaded file, and it lands in
+          // innerHTML. Unescaped, a workbook with a sheet called
+          //   <img src=x onerror=…>
+          // (31 chars is plenty) executes script in a page whose localStorage holds the
+          // JWT — stored XSS with session theft, triggered by previewing evidence someone
+          // else uploaded. sheet_to_html escapes its own cell output; this interpolation
+          // was ours to escape.
           const html = wb.SheetNames.slice(0, 5).map((sn) =>
-            `<h4>${sn}</h4>${XLSX.utils.sheet_to_html(wb.Sheets[sn])}`).join("");
+            `<h4>${escapeHtml(sn)}</h4>${XLSX.utils.sheet_to_html(wb.Sheets[sn])}`).join("");
           if (host.current) host.current.innerHTML = html;
         } else if (k === "text") {
           setText((await f.blob.text()).slice(0, 200_000));

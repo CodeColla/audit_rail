@@ -125,6 +125,28 @@ test.describe("export", () => {
     expect(bytes.subarray(0, 2).toString()).toBe("PK");
     expect(bytes.length).toBeGreaterThan(5000);
   });
+
+  test("titles with a semicolon, a percent sign or non-Latin text still download", async ({ page }) => {
+    // Three real bugs at once: Starlette encodes response headers as latin-1 (a Devanagari
+    // title 500'd); the client's filename regex stopped at the first semicolon, even one
+    // legitimately inside the quoted value; and it ran the filename through
+    // decodeURIComponent, which throws on a lone '%' that isn't valid percent-encoding.
+    await newDoc(page, `E2E; Policy 50% ready — नीति ${uniq()}`);
+
+    const [pdf] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: /Export PDF/ }).click(),
+    ]);
+    expect(await pdf.failure(), "PDF export must not fail on this title").toBeNull();
+    expect(pdf.suggestedFilename()).toMatch(/\.pdf$/);
+
+    const [docx] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: /Export DOCX/ }).click(),
+    ]);
+    expect(await docx.failure(), "DOCX export must not fail on this title").toBeNull();
+    expect(docx.suggestedFilename()).toMatch(/\.docx$/);
+  });
 });
 
 test.describe("lifecycle", () => {
@@ -163,5 +185,64 @@ test.describe("lifecycle", () => {
     await page.getByRole("button", { name: "Restore", exact: true }).click();
     await page.goto("/documents");
     await expect(page.getByRole("cell", { name: title })).toBeVisible();
+  });
+
+  test("'Show archived' is the only way back to an archived document from the list", async ({ page }) => {
+    // The API grew include_archived, but nothing in the SPA sent it — archiving a
+    // document removed it from the only screen that links to its detail page, so its own
+    // Restore button became permanently unreachable except by a remembered URL.
+    const title = `E2E Archive Toggle ${uniq()}`;
+    await newDoc(page, title);
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+
+    await page.goto("/documents");
+    await expect(page.getByRole("cell", { name: title })).toHaveCount(0);
+
+    await page.getByRole("checkbox", { name: "Show archived" }).check();
+    const row = page.getByRole("cell", { name: title });
+    await expect(row).toBeVisible();
+    await expect(page.getByText("Archived").first()).toBeVisible();
+
+    await row.click();
+    await page.getByRole("button", { name: "Restore", exact: true }).click();
+  });
+
+  test("switching tabs with unsaved edits warns before discarding them", async ({ page }) => {
+    await newDoc(page, `E2E Unsaved ${uniq()}`);
+    const editor = await openEditor(page);
+    await editor.pressSequentially("edit that is never saved");
+
+    // the tab's accessible name is "versions (N)" — a count suffix, not a static label
+    const versionsTab = page.getByRole("button", { name: /^versions/ });
+    page.once("dialog", (d) => d.dismiss());     // stay on Content
+    await versionsTab.click();
+    await expect(page.locator(".ProseMirror")).toBeVisible();
+    await expect(editor).toContainText("edit that is never saved");
+
+    page.once("dialog", (d) => d.accept());       // leave anyway
+    await versionsTab.click();
+    await expect(page.locator(".ProseMirror")).toHaveCount(0);
+  });
+
+  test("Edit works from a tab other than Content", async ({ page }) => {
+    // onEdit used to flip `editing` without switching the tab back to "content" — the
+    // Editor only renders on that tab, so clicking Edit from Versions/Approvals visibly
+    // did nothing.
+    await newDoc(page, `E2E Edit-from-tab ${uniq()}`);
+    await page.getByRole("button", { name: /^versions/ }).click();
+    await expect(page.locator(".ProseMirror")).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+    await expect(page.locator(".ProseMirror")).toBeVisible();
+  });
+
+  test("exporting while editing warns the download may be stale", async ({ page }) => {
+    await newDoc(page, `E2E Stale Export ${uniq()}`);
+    const editor = await openEditor(page);
+    await editor.pressSequentially("unsaved change");
+
+    await expect(page.getByText(/Export downloads the last SAVED draft/)).toBeVisible();
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText(/Export downloads the last SAVED draft/)).toHaveCount(0);
   });
 });

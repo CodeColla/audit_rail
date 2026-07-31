@@ -74,6 +74,12 @@ def add_months(iso_date: str, months: int) -> str:
     return f"{y2:04d}-{m2:02d}-{d2:02d}"
 
 
+def add_days(iso_date: str, days: int) -> str:
+    """Add whole days to a YYYY-MM-DD date. P4-S9's DAILY/WEEKLY task recurrence —
+    `add_months` has no day-granularity sibling, so WEEKLY is `add_days(..., interval * 7)`."""
+    return (dt.date.fromisoformat(iso_date[:10]) + dt.timedelta(days=days)).isoformat()
+
+
 def _days_until(iso_date: str | None, today: str) -> int | None:
     if not iso_date:
         return None

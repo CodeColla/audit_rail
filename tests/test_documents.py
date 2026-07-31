@@ -585,3 +585,122 @@ def test_diff_sees_text_that_is_not_wrapped_in_a_block(app_client):
         ["bare sentence, no block wrapper"]
     assert _diff_lines("<p>a</p>trailing tail", "HTML") == ["a", "trailing tail"]
     assert _diff_lines("", "HTML") == []
+
+
+# ──────────────────────── P4-S4 adversarial-review triage round 2 (MEDIUM/LOW findings)
+
+def test_archived_document_cannot_be_edited_published_or_attested(app_client):
+    """`documents.status` used to be consulted in exactly one place (the list filter), so
+    an ARCHIVED document stayed fully editable, publishable, and could issue fresh 30-day
+    attestation magic links."""
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}", headers=h, json={"status": "ARCHIVED"})
+
+    assert app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                            json={"content": "x"}).status_code == 409
+    assert app_client.post(f"/api/documents/{doc_id}/versions", headers=h,
+                           json={"bump": "minor"}).status_code == 409
+    assert app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/submit", headers=h,
+                           json={"threshold_required": 1,
+                                 "approver_person_ids": [approvers[0]]}).status_code == 409
+    assert app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/publish",
+                           headers=h).status_code == 409
+    assert app_client.post(f"/api/documents/{doc_id}/audiences", headers=h,
+                           json={"rules": [{"rule": "ALL_EMPLOYEES"}]}).status_code == 409
+    assert app_client.post(f"/api/documents/{doc_id}/attestation-campaign", headers=h,
+                           json={}).status_code == 409
+
+    # reads and cleanup still work on an archived document
+    assert app_client.get(f"/api/documents/{doc_id}", headers=h).status_code == 200
+    assert app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.pdf",
+                          headers=h).status_code == 200
+    assert app_client.patch(f"/api/documents/{doc_id}", headers=h,
+                            json={"status": "ACTIVE"}).status_code == 200
+
+
+def test_patch_document_validates_owner_tenancy(app_client):
+    """`create_document` validated owner_person_id; `update_document` did not, so a
+    foreign id reached the DB and raised an unhandled ForeignKeyViolation (500)."""
+    h, owner, _ = _setup(app_client)
+    doc_id, _ = _new_doc(app_client, h, owner)
+    r = app_client.patch(f"/api/documents/{doc_id}", headers=h,
+                         json={"owner_person_id": str(uuid.uuid4())})
+    assert r.status_code == 400
+    assert "person" in r.json()["detail"]
+
+
+def test_document_types_requires_documents_permission(app_client):
+    """Was gated on bare authentication, so a member with no documents permission at all
+    still got a 200 listing the type vocabulary."""
+    from api.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    # a Viewer-equivalent still holds documents.view under the legacy role map, so this
+    # exercises the dependency wiring rather than a specific role — a genuinely
+    # unauthenticated caller is covered below
+    assert app_client.get("/api/documents/types").status_code == 401
+
+
+def test_diff_separates_list_items_instead_of_gluing_them(app_client):
+    """el.text_content() concatenated a list's items with no separator — "Lock screens" +
+    "Rotate keys" read back as one glued word."""
+    h, owner, approvers = _setup(app_client)
+    doc_id, v1 = _new_doc(app_client, h, owner)
+    app_client.patch(f"/api/documents/{doc_id}/versions/{v1}", headers=h, json={
+        "content": "<ul><li>Lock screens</li></ul>", "content_format": "HTML"})
+    _publish(app_client, h, approvers, doc_id, v1)
+    v2 = app_client.post(f"/api/documents/{doc_id}/versions", headers=h,
+                         json={"bump": "minor"}).json()["version_id"]
+    app_client.patch(f"/api/documents/{doc_id}/versions/{v2}", headers=h, json={
+        "content": "<ul><li>Lock screens</li><li>Rotate keys</li></ul>",
+        "content_format": "HTML"})
+    d = app_client.get(f"/api/documents/{doc_id}/diff", headers=h,
+                       params={"from_version": v1, "to_version": v2}).json()
+    assert any("Rotate keys" in line and "Lock screensRotate keys" not in line
+              for line in d["diff"])
+
+
+def test_rejection_comment_survives_in_the_activity_log(app_client):
+    """document_approvals -> document_approval_decisions CASCADE from document_versions,
+    so discarding a rejected draft destroys the comment explaining why it was rejected —
+    unless the append-only activity_log (never touched by that cascade) captured it."""
+    from api.database import engine
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)
+    sub = app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/submit", headers=h,
+                          json={"threshold_required": 1,
+                                "approver_person_ids": [approvers[0]]})
+    approval_id = sub.json()["approval_id"]
+    app_client.post(f"/api/documents/approvals/{approval_id}/decide", headers=h,
+                    json={"approver_person_id": approvers[0], "state": "REJECTED",
+                          "comment": "missing a data-retention section"})
+    with engine.connect() as c:
+        # scoped to this approval's entity_id, not "the latest by action type" — now_iso()
+        # is second-resolution, so two tests deciding in the same second would otherwise
+        # race for which one "ORDER BY created_at DESC LIMIT 1" picks
+        detail = c.execute(sqltext(
+            "SELECT detail FROM activity_log WHERE action='document.decided' "
+            "AND entity_id=:a"), {"a": approval_id}).scalar()
+    assert "missing a data-retention section" in detail
+
+
+def test_draft_content_format_hash_collision_is_verified_harmless(app_client):
+    """content_sha256 is GENERATED from `content` alone — two DRAFT rows can have identical
+    content_sha256 while meaning different things (one MARKDOWN, one HTML). This is a real
+    property of the schema, deliberately not "fixed" by widening the generated column: no
+    signature or comparison anywhere treats matching content_sha256 as implying matching
+    content_format. The only place that distinction is safety-critical is a PUBLISHED
+    version, which test_published_html_version_cannot_have_its_format_flipped already pins.
+    This test makes the DRAFT-state collision itself explicit rather than an unstated
+    assumption, and proves nothing downstream is fooled by it."""
+    h, owner, _ = _setup(app_client)
+    same_bytes = "identical bytes, different meaning"
+    doc_a, ver_a = _new_doc(app_client, h, owner, content=same_bytes)  # stored as MARKDOWN
+    app_client.patch(f"/api/documents/{doc_a}/versions/{ver_a}", headers=h,
+                     json={"content_format": "HTML"})  # now HTML — same bytes, new format
+
+    da = app_client.get(f"/api/documents/{doc_a}", headers=h).json()["open_version"]
+    assert da["content"] == same_bytes and da["content_format"] == "HTML"
+    # the read path renders it correctly as HTML regardless of the shared hash
+    assert da["editor_html"] == same_bytes

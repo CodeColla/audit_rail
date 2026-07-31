@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { get } from "../lib/api";
-import { Card, cn, Drawer, Loading, PageHead, Pill, Table, Td } from "../lib/ui";
+import { useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, errText, get } from "../lib/api";
+import { useCan } from "../lib/auth";
+import { OwnerSelect } from "./Registers";
+import { cn, inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
 
 type Domain = { id: string; code: string; name: string; control_count: number };
 type Control = {
@@ -10,103 +12,125 @@ type Control = {
   applicability: string; reactivation_trigger: string | null; stock_response: string | null;
   domain_code: string; domain_name: string; mapped_count: number;
 };
-type MappedPoint = { bank_name: string; number: string; text: string; confidence: number; status: string };
-type LinkedRisk = {
-  id: string; reference: string | null; title: string;
-  inherent_score: number | null; residual_score: number | null; treatment: string | null; status: string;
-};
-type LinkedObligation = { id: string; requirement: string; regulator: string | null; status: string };
 type Xwalk = {
   columns: { id: string; bank_name: string; version_label: string }[];
   rows: { control_id: string; code: string; statement: string; domain_code: string; cells: Record<string, string[]> }[];
 };
 
+const LIFECYCLE = ["one_time", "recurring", "per_audit"] as const;
+
 const lifecycleLabel = (c: Control) =>
   c.lifecycle === "recurring" ? `Recurring · ${c.recurrence_months}mo`
   : c.lifecycle === "one_time" ? "One-time" : "Per audit";
 
-function ControlDrawer({ id, onClose }: { id: string; onClose: () => void }) {
-  const { data } = useQuery({ queryKey: ["control", id], queryFn: () => get<Control & { mapped_points: MappedPoint[]; linked_risks: LinkedRisk[]; linked_obligations: LinkedObligation[] }>(`/library/controls/${id}`) });
-  if (!data) return <Drawer open onClose={onClose} title="Loading…"><div /></Drawer>;
+// ─────────────────────────────────────────────────────── add control
+function AddControlModal({ domains, onClose }: { domains: Domain[]; onClose: () => void }) {
+  const qc = useQueryClient();
+  const nav = useNavigate();
+  const [f, setF] = useState({
+    domain_id: domains[0]?.id ?? "", code: "", statement: "", lifecycle: "per_audit",
+    recurrence_months: "", applicability: "applicable", na_justification: "",
+    reactivation_trigger: "", owner_person_id: "",
+  });
+  const [err, setErr] = useState("");
+  const set = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
+
+  const create = useMutation({
+    mutationFn: () => api.post("/library/controls", {
+      ...f, recurrence_months: f.recurrence_months ? +f.recurrence_months : null }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["controls"] });
+      qc.invalidateQueries({ queryKey: ["domains"] });
+      nav(`/controls/view/${r.data.id}`);
+    },
+    onError: (e: any) => setErr(errText(e, "Could not create.")),
+  });
+
+  const disabled = create.isPending || !f.domain_id || !f.code.trim() || !f.statement.trim()
+    || (f.lifecycle === "recurring" && !f.recurrence_months)
+    || (f.applicability === "not_applicable" && !f.na_justification.trim());
+
   return (
-    <Drawer open onClose={onClose} sub={`STANDARD CONTROL · ${data.code}`} title={data.statement}>
-      <div className="flex flex-wrap gap-2">
-        <Pill tone="na">{lifecycleLabel(data)}</Pill>
-        <Pill tone={data.applicability === "applicable" ? "applicable" : "na"}>
-          {data.applicability === "applicable" ? "Applicable" : "Not applicable · dormant"}
-        </Pill>
-      </div>
-      {data.applicability !== "applicable" && (
-        <Card className="border-l-[3px] border-l-na">
-          <div className="eyebrow mb-1">Dormant · reactivation trigger</div>
-          <Pill tone="warn">{data.reactivation_trigger}</Pill>
-          <p className="mt-2 text-[11.5px] text-txt3">Kept in the framework; reactivates automatically when this becomes true.</p>
-        </Card>
-      )}
-      <Card>
-        <div className="eyebrow mb-2.5">Mapped bank points — answer once, reuse everywhere</div>
-        {data.mapped_points.length === 0 && <div className="text-[12.5px] text-txt3">No bank points mapped yet.</div>}
-        {data.mapped_points.map((m, i) => (
-          <div key={i} className="flex items-start gap-2.5 border-t border-bd py-2.5 first:border-t-0">
-            <span className="min-w-[70px] shrink-0 rounded bg-ink px-2 py-0.5 text-center text-[11px] font-bold text-white">{m.bank_name.slice(0, 10)}</span>
-            <div>
-              <div className="text-[12.5px] leading-snug">{m.text}</div>
-              <div className="font-mono text-[11px] text-txt3">point {m.number} · {(m.confidence * 100).toFixed(0)}% · {m.status}</div>
-            </div>
+    <Modal open onClose={onClose} title="New control" size="lg">
+      <div className="flex flex-col gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-[13px] font-medium">Domain
+            <select value={f.domain_id} onChange={set("domain_id")} className={inputCls + " mt-1"}>
+              {domains.length === 0 && <option value="">Loading…</option>}
+              {domains.map((d) => <option key={d.id} value={d.id}>{d.code} — {d.name}</option>)}
+            </select>
+          </label>
+          <label className="text-[13px] font-medium">Reference code *
+            <input value={f.code} onChange={set("code")} className={inputCls + " mt-1"}
+              placeholder="AM 4.a" /></label>
+        </div>
+        <label className="text-[13px] font-medium">Statement *
+          <textarea value={f.statement} onChange={set("statement")}
+            className={cn(inputCls, "mt-1 min-h-[64px]")}
+            placeholder="Strong password policy is enforced for all systems." /></label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-[13px] font-medium">Lifecycle
+            <select value={f.lifecycle} onChange={set("lifecycle")} className={inputCls + " mt-1"}>
+              {LIFECYCLE.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}
+            </select>
+          </label>
+          {f.lifecycle === "recurring" && (
+            <label className="text-[13px] font-medium">Recurrence (months) *
+              <input type="number" min={1} value={f.recurrence_months}
+                onChange={set("recurrence_months")} className={inputCls + " mt-1"} />
+            </label>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-[13px] font-medium">Applicability
+            <select value={f.applicability} onChange={set("applicability")} className={inputCls + " mt-1"}>
+              <option value="applicable">Applicable</option>
+              <option value="not_applicable">Not applicable</option>
+            </select>
+          </label>
+          <label className="text-[13px] font-medium">Owner
+            <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} />
+          </label>
+        </div>
+        {f.applicability === "not_applicable" && (
+          <div className="grid grid-cols-2 gap-3 rounded-md border border-bd bg-canvas p-2.5">
+            <label className="text-[13px] font-medium">Why not applicable? *
+              <textarea value={f.na_justification} onChange={set("na_justification")}
+                className={cn(inputCls, "mt-1 min-h-[44px]")} /></label>
+            <label className="text-[13px] font-medium">Reactivation trigger
+              <input value={f.reactivation_trigger} onChange={set("reactivation_trigger")}
+                className={inputCls + " mt-1"} placeholder="e.g. Cloud adoption" /></label>
           </div>
-        ))}
-      </Card>
-      {(data.linked_risks?.length ?? 0) > 0 && (
-        <Card>
-          <div className="eyebrow mb-2.5">Risks this control treats</div>
-          {data.linked_risks.map((r) => (
-            <div key={r.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
-              {r.reference && <span className="font-mono text-txt3">{r.reference}</span>}
-              <span className="min-w-0 flex-1 truncate font-medium">{r.title}</span>
-              {r.inherent_score != null && (
-                <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-txt2">
-                  {r.inherent_score}{r.residual_score != null && ` → ${r.residual_score}`}
-                </span>)}
-              <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{r.status.charAt(0) + r.status.slice(1).toLowerCase()}</Pill>
-            </div>
-          ))}
-        </Card>
-      )}
-      {(data.linked_obligations?.length ?? 0) > 0 && (
-        <Card>
-          <div className="eyebrow mb-2.5">Obligations this control satisfies</div>
-          {data.linked_obligations.map((o) => (
-            <div key={o.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
-              {o.regulator && <span className="shrink-0 rounded bg-ink px-1.5 py-0.5 text-[10px] font-bold text-white">{o.regulator}</span>}
-              <span className="min-w-0 flex-1 truncate">{o.requirement}</span>
-              <Pill tone={o.status === "COMPLIANT" ? "ok" : o.status === "NON_COMPLIANT" ? "bad" : "warn"}>
-                {o.status.replace(/_/g, " ").toLowerCase()}</Pill>
-            </div>
-          ))}
-        </Card>
-      )}
-    </Drawer>
+        )}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        <button disabled={disabled} onClick={() => create.mutate()}
+          className="btn btn-primary justify-center disabled:opacity-50">
+          {create.isPending ? "Creating…" : "Create control"}</button>
+      </div>
+    </Modal>
   );
 }
 
 export default function Controls() {
+  const can = useCan();
+  const nav = useNavigate();
   const [tab, setTab] = useState<"framework" | "crosswalk">("framework");
   const [domain, setDomain] = useState<string>("");
-  // P4-S3: the control drawer is addressable — /controls/view/:id
-  const { id: routeId } = useParams();
-  const nav = useNavigate();
-  const openId = routeId ?? null;
-  const setOpenId = (next: string | null) => nav(next ? `/controls/view/${next}` : "/controls");
+  const [adding, setAdding] = useState(false);
 
   const domains = useQuery({ queryKey: ["domains"], queryFn: () => get<Domain[]>("/library/domains") });
   const controls = useQuery({ queryKey: ["controls", domain], queryFn: () => get<Control[]>(`/library/controls${domain ? `?domain_code=${domain}` : ""}`) });
   const xwalk = useQuery({ queryKey: ["crosswalk"], queryFn: () => get<Xwalk>("/library/crosswalk"), enabled: tab === "crosswalk" });
   const total = useMemo(() => (domains.data ?? []).reduce((s, d) => s + d.control_count, 0), [domains.data]);
+  const openControl = (id: string) => nav(`/controls/view/${id}`);
 
   return (
     <>
       <PageHead eyebrow="Standard control framework" title="Controls"
-        lead="Your own master list of controls. Every bank's checklist points map onto these, so one answer serves every audit." />
+        lead="Your own master list of controls. Every bank's checklist points map onto these, so one answer serves every audit."
+        action={can("controls", "add")
+          ? <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New control</button>
+          : undefined} />
 
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["framework", "crosswalk"] as const).map((t) => (
@@ -140,7 +164,7 @@ export default function Controls() {
           {controls.isLoading ? <Loading /> : (
             <Table head={["Ref", "Control", "Lifecycle", "Applicability", "Mapped"]}>
               {(controls.data ?? []).map((c) => (
-                <tr key={c.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(c.id)}>
+                <tr key={c.id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(c.id)}>
                   <Td className="font-mono font-semibold">{c.code}</Td>
                   <Td className="font-medium">{c.statement}
                     {c.applicability !== "applicable" && <span className="ml-2 rounded bg-na-bg px-1.5 py-0.5 text-[10px] text-na">dormant</span>}
@@ -174,7 +198,7 @@ export default function Controls() {
                 </thead>
                 <tbody>
                   {xwalk.data.rows.map((r) => (
-                    <tr key={r.control_id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(r.control_id)}>
+                    <tr key={r.control_id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(r.control_id)}>
                       <Td className="sticky left-0 bg-paper">
                         <div className="font-mono text-[12px] font-semibold text-accent">{r.code}</div>
                         <div className="text-[11.5px] text-txt3">{r.statement}</div>
@@ -200,7 +224,7 @@ export default function Controls() {
         </>
       )}
 
-      {openId && <ControlDrawer id={openId} onClose={() => setOpenId(null)} />}
+      {adding && <AddControlModal domains={domains.data ?? []} onClose={() => setAdding(false)} />}
     </>
   );
 }

@@ -12,10 +12,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, func, insert, select, update
+from sqlalchemy.exc import IntegrityError
 
-from api import activity, scoring
+from api import activity, scoring, storage
 from api.auth import Principal, create_guest_token, get_caller, get_current_user
 from api.permissions import require
 from api.database import engine, get_conn, t
@@ -70,7 +72,10 @@ def _best_controls(conn, template_id: str) -> dict:
                qcm.c.confidence, qcm.c.status)
         .join(qcm, qcm.c.question_id == q.c.id)
         .join(c, qcm.c.control_id == c.c.id)
-        .where(q.c.template_id == template_id, qcm.c.status != "rejected")
+        # a RETIRED control has stopped answering new audits — its stock answer must not
+        # keep prefilling, or grid-displaying as the mapped control (P4-S5)
+        .where(q.c.template_id == template_id, qcm.c.status != "rejected",
+               c.c.status == "active")
     ).mappings().all()
     best: dict = {}
     for r in sorted(rows, key=lambda x: (0 if x["status"] == "confirmed" else 1,
@@ -205,20 +210,36 @@ def prefill(assessment_id: str, user: Principal = Depends(require("audits", "edi
         row = _access(conn, user, assessment_id)
         best = _best_controls(conn, row["template_id"])
         resp = t("responses")
+        # A response row with response_value IS NULL is a PLACEHOLDER — post_message opens
+        # one when an auditor asks about a question nobody has answered yet, purely so the
+        # thread has somewhere to hang off. Treating "has a row" as "has an answer" meant
+        # that placeholder blocked prefill for that question forever (P4-S5): once an
+        # auditor asked before anyone answered, the question could never be prefilled.
+        placeholders = dict(conn.execute(select(resp.c.question_id, resp.c.id).where(
+            resp.c.assessment_id == assessment_id, resp.c.response_value.is_(None))).all())
         existing = set(conn.execute(select(resp.c.question_id).where(
-            resp.c.assessment_id == assessment_id)).scalars())
+            resp.c.assessment_id == assessment_id,
+            resp.c.response_value.isnot(None))).scalars())
         n = 0
         for qid, ctl in best.items():
             if qid in existing or not ctl["stock_response"]:
                 continue
-            rid = str(uuid.uuid4())
-            conn.execute(insert(resp).values(
-                id=rid, assessment_id=assessment_id, question_id=qid,
-                response_value=ctl["stock_response"], comment=ctl["stock_comment"],
-                na_justification=ctl["na_justification"],
-                workflow_status="answered",
-                prefilled_from_control_id=ctl["cid"],
-                updated_by_user_id=user.user_id, updated_at=now_iso()))
+            if qid in placeholders:
+                rid = placeholders[qid]
+                conn.execute(update(resp).where(resp.c.id == rid).values(
+                    response_value=ctl["stock_response"], comment=ctl["stock_comment"],
+                    na_justification=ctl["na_justification"], workflow_status="answered",
+                    prefilled_from_control_id=ctl["cid"],
+                    updated_by_user_id=user.user_id, updated_at=now_iso()))
+            else:
+                rid = str(uuid.uuid4())
+                conn.execute(insert(resp).values(
+                    id=rid, assessment_id=assessment_id, question_id=qid,
+                    response_value=ctl["stock_response"], comment=ctl["stock_comment"],
+                    na_justification=ctl["na_justification"],
+                    workflow_status="answered",
+                    prefilled_from_control_id=ctl["cid"],
+                    updated_by_user_id=user.user_id, updated_at=now_iso()))
             conn.execute(insert(t("response_revisions")).values(
                 id=str(uuid.uuid4()), response_id=rid, rev_no=1,
                 response_value=ctl["stock_response"], comment=ctl["stock_comment"],
@@ -228,6 +249,77 @@ def prefill(assessment_id: str, user: Principal = Depends(require("audits", "edi
                  action="assessment.prefilled", entity_type="assessment",
                  entity_id=assessment_id, detail={"prefilled": n})
     return {"prefilled": n}
+
+
+class MappingIn(StrictModel):
+    control_id: str
+
+
+@router.patch("/{assessment_id}/responses/{question_id}/mapping")
+def remap_question(assessment_id: str, question_id: str, body: MappingIn,
+                   user: Principal = Depends(require("audits", "edit"))):
+    """Point one audit question at a different standard control.
+
+    Deliberately its OWN endpoint, not a call into
+    POST /templates/{id}/proposals/confirm — question_control_map is keyed by question_id,
+    which belongs to the TEMPLATE, not this assessment. Routing a mid-assessment "fix this
+    one point" action through the template-level endpoint would silently remap the
+    question for every other assessment ever run against that template too.
+
+    Never re-prefills or rewrites an already-saved response — response_revisions is an
+    audit trail and a bank auditor may already have read the old answer. Mirrors the
+    identical "report, don't rewrite" precedent PATCH /library/controls already uses for
+    stock_response.
+    """
+    with engine.begin() as conn:
+        row = _access(conn, user, assessment_id)
+        ctrl = t("controls")
+        if conn.execute(select(ctrl.c.id).where(
+                ctrl.c.id == body.control_id,
+                ctrl.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "control not found in this organisation")
+        q = t("questions")
+        if conn.execute(select(q.c.id).where(
+                q.c.id == question_id, q.c.template_id == row["template_id"])).first() is None:
+            raise HTTPException(404, "question not found")
+        qcm = t("question_control_map")
+        member_id = _member_id(conn, user.tenant_id, user.user_id)
+        # Supersede whatever this question was mapped to before. Without this the old row
+        # SURVIVES as a competing mapping, and _best_controls — which ranks confirmed rows
+        # by confidence — keeps preferring it, because an importer-proposed mapping has a
+        # real confidence score while a hand-picked one has none. The remap would silently
+        # do nothing. 'rejected' is the right marker: it is already the status
+        # _best_controls excludes, and it preserves the history rather than deleting it.
+        conn.execute(update(qcm).where(
+            qcm.c.question_id == question_id,
+            qcm.c.control_id != body.control_id,
+            qcm.c.status != "rejected").values(
+            status="rejected", confirmed_by_member_id=member_id))
+        try:
+            existing = conn.execute(select(qcm.c.question_id).where(
+                qcm.c.question_id == question_id,
+                qcm.c.control_id == body.control_id)).first()
+            if existing:
+                conn.execute(update(qcm).where(
+                    qcm.c.question_id == question_id,
+                    qcm.c.control_id == body.control_id
+                ).values(status="confirmed", confirmed_by_member_id=member_id))
+            else:
+                conn.execute(insert(qcm).values(
+                    id=str(uuid.uuid4()), question_id=question_id, control_id=body.control_id,
+                    status="confirmed", confidence=None, confirmed_by_member_id=member_id,
+                    created_at=now_iso()))
+        except IntegrityError:
+            raise HTTPException(409, "mapping already exists")
+        resp = t("responses")
+        rr = conn.execute(select(resp.c.prefilled_from_control_id).where(
+            resp.c.assessment_id == assessment_id, resp.c.question_id == question_id,
+            resp.c.response_value.isnot(None))).mappings().first()
+        was_prefilled = bool(rr and rr["prefilled_from_control_id"])
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="question.remapped", entity_type="question", entity_id=question_id,
+                 detail={"control_id": body.control_id, "assessment_id": assessment_id})
+    return {"ok": True, "was_prefilled": was_prefilled}
 
 
 # --------------------------------------------------------------- questions grid
@@ -241,12 +333,23 @@ def export_answers(assessment_id: str, caller: Principal = Depends(get_caller),
                            t("response_evidence"), t("evidence"))
     responses = {r["question_id"]: r for r in conn.execute(
         select(resp).where(resp.c.assessment_id == assessment_id)).mappings()}
-    # evidence titles per response
-    ev_titles: dict = {}
-    for rid, title in conn.execute(
-            select(re_.c.response_id, ev.c.title)
-            .join(ev, re_.c.evidence_id == ev.c.id)):
-        ev_titles.setdefault(rid, []).append(title)
+    # evidence title + filename per response. Was unscoped — walked EVERY
+    # response_evidence/evidence row in the database on every export, across every tenant
+    # and assessment, relying only on response_id coincidentally matching this
+    # assessment's own rows. Not a leak (response_id is a UUID PK, never guessable), but an
+    # unbounded full-table scan that grows worse forever as evidence accumulates.
+    resp_ids = [r["id"] for r in responses.values()]
+    files = t("files")
+    ev_files: dict = {}
+    if resp_ids:
+        for rid, title, medium, orig_name, ext_url in conn.execute(
+                select(re_.c.response_id, ev.c.title, ev.c.medium,
+                      files.c.original_name, ev.c.external_url)
+                .select_from(re_.join(ev, re_.c.evidence_id == ev.c.id)
+                               .join(files, ev.c.file_id == files.c.id, isouter=True))
+                .where(re_.c.response_id.in_(resp_ids))):
+            label = orig_name if medium == "FILE" else (ext_url or title)
+            ev_files.setdefault(rid, []).append(f"{title} — {label}" if label else title)
     q_rows = conn.execute(
         select(q, s.c.title.label("section"))
         .join(s, q.c.section_id == s.c.id, isouter=True)
@@ -261,7 +364,7 @@ def export_answers(assessment_id: str, caller: Principal = Depends(get_caller),
             "comment": rr["comment"] if rr else None,
             "final_status": rr["final_status"] if rr else None,
             "workflow_status": rr["workflow_status"] if rr else "open",
-            "evidence": "; ".join(ev_titles.get(rr["id"], [])) if rr else "",
+            "evidence": "; ".join(ev_files.get(rr["id"], [])) if rr else "",
         })
     data = build_answers_workbook(row, out_rows)
     fname = f"{(row['bank_name'] or 'assessment').replace(' ', '_')}_answers.xlsx"
@@ -280,8 +383,11 @@ def questions_grid(assessment_id: str, status: str | None = Query(None),
     best = _best_controls(conn, row["template_id"])
     responses = {r["question_id"]: r for r in conn.execute(
         select(resp).where(resp.c.assessment_id == assessment_id)).mappings()}
+    # Same unbounded-scan issue as export_answers — scoped to this assessment's responses.
+    resp_ids = [r["id"] for r in responses.values()]
     ev_counts = dict(conn.execute(
-        select(re_.c.response_id, func.count()).group_by(re_.c.response_id)).all())
+        select(re_.c.response_id, func.count()).where(re_.c.response_id.in_(resp_ids))
+        .group_by(re_.c.response_id)).all()) if resp_ids else {}
     rows = conn.execute(
         select(q, s.c.title.label("section"))
         .join(s, q.c.section_id == s.c.id, isouter=True)
@@ -295,6 +401,7 @@ def questions_grid(assessment_id: str, status: str | None = Query(None),
             "question_id": r["id"], "number": r["number"], "text": r["text"],
             "section": r["section"],
             "mapped_control": ctl["code"] if ctl else None,
+            "mapped_control_statement": ctl["statement"] if ctl else None,
             "response_value": rr["response_value"] if rr else None,
             "workflow_status": rr["workflow_status"] if rr else "open",
             "evidence_count": ev_counts.get(rr["id"], 0) if rr else 0,
@@ -342,6 +449,12 @@ def upsert_response(assessment_id: str, question_id: str, body: ResponseIn,
             conn.execute(update(resp).where(resp.c.id == rid).values(
                 response_value=body.response_value, comment=body.comment,
                 na_justification=body.na_justification, workflow_status="answered",
+                # A human editing the answer is no longer "the stock answer" — leaving
+                # prefilled_from_control_id set would keep counting a hand-written
+                # override as stock reuse (the dashboard's coverage metric reads this
+                # column), and would attribute the human's words to the control's canned
+                # comment if a later PATCH there ever needed to warn about staleness.
+                prefilled_from_control_id=None,
                 updated_by_user_id=user.user_id, updated_at=now))
             rev_no = (conn.execute(select(func.max(t("response_revisions").c.rev_no))
                                    .where(t("response_revisions").c.response_id == rid)
@@ -395,11 +508,22 @@ def response_detail(assessment_id: str, question_id: str,
         select(fnd).select_from(fnd.join(fa, fa.c.finding_id == fnd.c.id))
         .where(fa.c.assessment_id == assessment_id,
                fa.c.response_id == (rr["id"] if rr else None))).mappings()] if rr else []
+    # Evidence attached to the QUESTION's mapped control (P4-S5's evidence_controls) is a
+    # separate store from evidence attached to this response directly — a distinct key,
+    # never merged into `evidence`, so nothing downstream can silently double-count.
+    inherited_evidence = []
+    if best:
+        ec, ev2 = t("evidence_controls"), t("evidence")
+        inherited_evidence = [dict(x) for x in conn.execute(
+            select(ev2.c.id, ev2.c.title, ev2.c.evidence_type, ev2.c.valid_until)
+            .join(ec, ec.c.evidence_id == ev2.c.id)
+            .where(ec.c.control_id == best["cid"])
+            .order_by(ev2.c.valid_until.asc().nullslast())).mappings()]
     return {
         "question": {"id": ques["id"], "number": ques["number"], "text": ques["text"]},
         "mapped_control": {"code": best["code"], "statement": best["statement"]} if best else None,
         "response": dict(rr) if rr else None,
-        "revisions": revisions, "evidence": evidence,
+        "revisions": revisions, "evidence": evidence, "inherited_evidence": inherited_evidence,
         "thread": messages, "findings": findings,
     }
 
@@ -623,3 +747,68 @@ def revoke_guest(assessment_id: str, guest_id: str,
         conn.execute(update(g).where(g.c.id == guest_id).values(revoked_at=now_iso()))
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="guest.revoked", entity_type="assessment", entity_id=assessment_id)
+
+
+# ---------------------------------------------------------------- guest evidence (P4-S8)
+
+@router.get("/{assessment_id}/evidence/{evidence_id}/file")
+def assessment_evidence_file(assessment_id: str, evidence_id: str,
+                             caller: Principal = Depends(get_caller), conn=Depends(get_conn)):
+    """Serve evidence bytes to anyone who may see this assessment — including an auditor guest.
+
+    Why this route exists at all. `GET /evidence/{id}/file` is gated on
+    `require("evidence","view")`, which depends on `get_current_user`, which raises
+    403 "Member access required" for any caller whose kind is not `member` (api/auth.py).
+    So an invited bank auditor could see the *titles* of the evidence behind every answer
+    and could not open a single one — the whole point of the portal.
+
+    Why it is NOT a guest branch inside api/routers/evidence.py. That router is the
+    tenant's whole vault. A guest-tolerant helper in there is one careless `Depends` away
+    from leaking it, and every other S8 endpoint (PATCH, control attach, upload) would
+    inherit the branch. The guest's entire read surface is this one route.
+
+    The rule, exactly:
+
+        a caller may read the bytes of evidence E through assessment A iff E is attached
+        to a RESPONSE belonging to A, and the caller may access A.
+
+    `_access` supplies the second half and is the only thing consulted about the caller —
+    never `caller["assessment_id"]`, which is an unverified token claim, and never
+    `caller.tenant_id`, which is None for a guest.
+
+    What the join deliberately does NOT reach:
+
+    - **The rest of the tenant's vault.** Filtering on `tenant_id` alone would hand the
+      bank's auditor every artifact the vendor owns, including other banks' assessments.
+    - **Another assessment in the same tenant.** One vendor runs many bank audits at once;
+      `tenant_id` does not separate them, `responses.assessment_id` does.
+    - **Control-inherited evidence.** `response_detail` also returns `inherited_evidence`,
+      reached through `evidence_controls`. Those links are ORG-level — an artifact attached
+      to control X is visible from every assessment mapped to X, including a different
+      bank's. Titles already travel that way (a pre-existing decision); bytes must not.
+    """
+    a = _access(conn, caller, assessment_id)
+    ev, re_, resp, files = t("evidence"), t("response_evidence"), t("responses"), t("files")
+    row = conn.execute(
+        select(files.c.storage_key, files.c.original_name, files.c.mime_type)
+        .select_from(
+            files
+            .join(ev, (ev.c.file_id == files.c.id) & (ev.c.tenant_id == files.c.tenant_id))
+            .join(re_, (re_.c.evidence_id == ev.c.id) & (re_.c.tenant_id == ev.c.tenant_id))
+            .join(resp, (resp.c.id == re_.c.response_id) & (resp.c.tenant_id == re_.c.tenant_id)))
+        .where(ev.c.id == evidence_id,
+               ev.c.tenant_id == a["tenant_id"],        # from the assessment row, not the token
+               resp.c.assessment_id == assessment_id)   # the path id, already validated above
+    ).mappings().first()
+    # 404, never 403: a 403 here would confirm that an id exists, turning this into a
+    # vault-enumeration oracle for a guest who is allowed to probe it all day.
+    if row is None:
+        raise HTTPException(404, "file not found")
+    path = storage.path_for(row["storage_key"])
+    if not path.exists():
+        raise HTTPException(410, "file missing from vault")
+    name = (row["original_name"] or "evidence").replace('"', "")
+    # No `disposition` parameter. `inline` feeds FilePreview, whose xlsx branch renders
+    # workbook content into innerHTML — not a surface to hand an outside auditor.
+    return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream",
+                        headers={"Content-Disposition": f'attachment; filename="{name}"'})

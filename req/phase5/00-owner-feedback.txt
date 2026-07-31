@@ -1,0 +1,57 @@
+Noted Points after the Development Sprint based on this we need to plan the Phase5 now in the docs folder.:
+
+As u can see these are all majorly UI changes, the way it looks and feels in adding, deleting and other things. 
+I need u to consider urself as a Cyber/Compliance Product Designer, it should looks and feel more professional.
+
+In certain menus it still looks a lot broken, malfunctioning.
+
+
+
+1) Login: Valdiation for Create new org on the GST feature is too much, just check what they insert exist or not,
+and this can be optional. As in the ask for GST can be optional
+2)Main Page:  Serach feature in the Top Right of the Page does not work
+3) Documents: In documents i need a Bulk Delete option, basically select multi like check box and then delete.
+   There is no search feature for the document, Also i should be able to preview the documnet 
+    Main thing in documents menu is while Adding a Documnet i need option to chosse if the doc type is Excel/Sheet or a docs file based on that
+    we will choose what type of Editor to give in UI. More on the Editor to use is mentioned below in UI section. 
+
+4) Evidance: The Upload feature in the Evidence is Crap its not working not pdf, excel, photos, or doc upload is not working at all nor can i preview them.
+5) Taks: In taks i can upload the Evidance on the go, no need to link it with the Evidance tab alwasy, if i want i can manuallyupload the 
+evidance. Also need a Preview option of the file uploaded. The current process is lenghty where for Every file i want to upload i have to go and add it in the 
+evidance tab and then link it as a drop down, in some case i can directly upload the files to the Points
+
+
+
+
+
+@@@@ Overall Changes to be Implimented:
+
+## List/Sort/Search/Filter
+Currently in any of the page view the Search comoponent does not work , there is not sorting on the columns defined.
+There is no Bulk Select and Delete options. It the List is huge then opteration wise it becomes a nightmare 
+These options should be in all the Main menus, Data Inventory, Third Parties, Assets etc.
+
+## Bulk Upload/Insert Feature for the Following Menus:
+- In few menus like People, Incidents, ThirdParties, DataInventroy, Assets, Risks we need bulk import via Excelsheets or something similar to we have done in Audits Menu
+with the column overrides feature as we have un Audits Import.
+
+
+## UI:
+Currently we want the feature to Preview, Edit doc, excel file on the Portal. for this i see doc is done at some level, but the UI can be impoved.
+As of Excel there is no feature, for this we need to use the below mentioned libs.
+SpreadSheet Components:
+- Jspreadsheet
+
+
+
+@@@@ Masters Menu 
+- We need to crete a Masters menu for some filter values to be added like in People we select department and then add, but rn i onluy have RND dept i dont know how to add a new,
+so for such dropdown selections i want a masters menu which has small menus under it, like departmentmaster, Assets Type Master, Assets Subtype Master, ans so on. U check and see which are 
+needed in this go via each and every menu and understand.
+
+
+@@@@ Preview of Any Image/File/
+Curretly any file attachment that is there is shown in a very bland way, like for eg in the Audit lets say i wnet in the 1 points of any audit, and that point has an attachment
+i have to select the Name of the file and then it previews which is fine, but a hilight like underlike link type feature will make it out stand as if it is a link, and a small preview Also
+without opening the file like how they have in Google drive for normal preview. 
+

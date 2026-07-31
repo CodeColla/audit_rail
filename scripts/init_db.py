@@ -33,27 +33,11 @@ CONTROLS_JSON = REPO / "data" / "extracted" / "all_controls.json"
 
 NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-# Canonical 16-domain framework with short codes — finalized in the Claude-design
-# handoff. Asset/Endpoint folds into NI and Email into DP; the framework is
-# user-extensible, so new domains can be added anytime.
-UNIFIED_DOMAINS = [
-    ("GRP", "Governance, Risk & Policy"),
-    ("HR",  "HR & People Security"),
-    ("AM",  "Access Management"),
-    ("NI",  "Network & Infrastructure"),
-    ("CS",  "Cloud Security"),
-    ("AS",  "Application Security & SDLC"),
-    ("DP",  "Data Protection & Privacy"),
-    ("LM",  "Logging, Monitoring & SOC"),
-    ("VP",  "Vulnerability, Patch & Change"),
-    ("IM",  "Incident Management"),
-    ("BC",  "BCP, DR & Backup"),
-    ("PE",  "Physical & Environmental"),
-    ("TP",  "Third-Party & Supply Chain"),
-    ("LR",  "Legal & Regulatory"),
-    ("BF",  "Business, Financial & Client"),
-    ("AI",  "AI/ML Security"),
-]
+# Canonical 16-domain framework — moved to api/domains.py (P4-S5), which
+# api.routers.auth also seeds at open signup; a fresh organisation used to get zero
+# domains, and controls.domain_id (NOT NULL) made "Add control" a dead end.
+# Imported lazily where used, below — api.database reflects the schema at import time,
+# which must happen AFTER apply_schema(), not at module load.
 
 TEMPLATE_META = {
     "VRA_v1.2": ("Unspecified Bank", "VRA Assessment Checklist", "v1.2",
@@ -151,6 +135,7 @@ def main() -> None:
                               "o": i, "c": NOW})
 
         # ── unified domains ──────────────────────────────────────────────────
+        from api.domains import UNIFIED_DOMAINS  # noqa: E402
         for i, (code, name) in enumerate(UNIFIED_DOMAINS):
             conn.execute(text(
                 "INSERT INTO domains (id,tenant_id,code,name,sort_order) "

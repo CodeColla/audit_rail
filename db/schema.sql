@@ -318,6 +318,8 @@ CREATE TABLE risks (
     description          text,
     category             text,
     owner_person_id      text,
+    reported_by_person_id text,                    -- P4-S7: who raised it
+    reviewed_by_person_id text,                    -- P4-S7: who last reviewed the scoring
     inherent_likelihood  smallint CHECK (inherent_likelihood BETWEEN 1 AND 5),
     inherent_impact      smallint CHECK (inherent_impact BETWEEN 1 AND 5),
     inherent_score       smallint GENERATED ALWAYS AS (inherent_likelihood * inherent_impact) STORED,
@@ -332,7 +334,9 @@ CREATE TABLE risks (
     updated_at           iso_ts NOT NULL DEFAULT now_iso(),
     UNIQUE (id, tenant_id),
     UNIQUE (tenant_id, reference),
-    FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT
+    FOREIGN KEY (owner_person_id, tenant_id)       REFERENCES people (id, tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (reported_by_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (reviewed_by_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT
 );
 
 -- What treats / is threatened by a risk. Polymorphic-by-columns, arity-checked.
@@ -375,11 +379,32 @@ CREATE TABLE assets (
     data_types_stored    text[] NOT NULL DEFAULT '{}',
     criticality          text CHECK (criticality IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
     location             text,
+    -- P4-S7: type-aware detail. Real nullable columns, not a JSONB bag — this schema has
+    -- no jsonb column anywhere, and the PHYSICAL/VIRTUAL field set is closed, so columns
+    -- reach the API for free (list_assets does select(a)) and keep their type discipline.
+    -- Deliberately NO cross-field CHECK: a PATCH flipping asset_type while the other
+    -- side's columns are still populated would 500 on a CheckViolation. Shape is enforced
+    -- in api/routers/registers.py's _validate_asset against the MERGED row, the same way
+    -- findings deliberately has no "closed needs root_cause" CHECK (see its comment).
+    subtype              text,                      -- lookup_values kind='asset_subtype'
+    manufacturer         text,                      -- PHYSICAL
+    model                text,                      -- PHYSICAL
+    serial_number        text,                      -- PHYSICAL
+    hostname             text,                      -- VIRTUAL
+    ip_address           text,                      -- VIRTUAL; text not inet — a typo must
+                                                    -- be a 400, not an opaque 22P02 500
+    cloud_provider       text,                      -- VIRTUAL
+    service_url          text,                      -- VIRTUAL
     vendor_third_party_id text,                     -- FK added in CROSS-LAYER section
+    -- P4-S7: a photograph of the physical unit. Goes into `files`, not `evidence` — same
+    -- reasoning as third_party_agreements.file_id: a rack photo is an attribute of the
+    -- asset, not a dated compliance artifact with its own expiry to track.
+    photo_file_id        text,
     created_at           iso_ts NOT NULL DEFAULT now_iso(),
     updated_at           iso_ts NOT NULL DEFAULT now_iso(),
     UNIQUE (id, tenant_id),
-    FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT
+    FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT,
+    FOREIGN KEY (photo_file_id, tenant_id)   REFERENCES files  (id, tenant_id) ON DELETE RESTRICT
 );
 
 -- M10. Data inventory (classification drives the SoA + document classification).
@@ -388,6 +413,7 @@ CREATE TABLE data_items (
     tenant_id       text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
     name            text NOT NULL,
     description     text,
+    data_type       text,                           -- P4-S7: lookup_values kind='data_type'
     owner_person_id text,
     classification  text NOT NULL DEFAULT 'INTERNAL'
                         CHECK (classification IN ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'SECRET')),
@@ -489,6 +515,13 @@ CREATE TABLE incidents (
     detected_at     iso_ts,
     resolved_at     iso_ts,
     root_cause      text,
+    -- P4-S7. Narrative only. TRACKED corrective actions (owner / due date / status) belong
+    -- in `findings`, which is already the org-level CAPA register — a second CAPA engine
+    -- here would be a design mistake. Deliberately NOT added to inc_closed_needs_rca:
+    -- one close gate (root_cause) is enough, and a second would change what CLOSED means
+    -- for every incident already in the table.
+    resolution      text,
+    corrective_action text,
     lessons_learnt  text,
     owner_person_id text,
     status          text NOT NULL DEFAULT 'OPEN'
@@ -499,6 +532,42 @@ CREATE TABLE incidents (
     UNIQUE (tenant_id, reference),
     CONSTRAINT inc_closed_needs_rca CHECK (status <> 'CLOSED' OR root_cause IS NOT NULL),
     FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT
+);
+
+-- P4-S7. The incident timeline: what happened, when, and who said so.
+--
+-- APPEND-ONLY via deny_update(), NOT deny_change(): this table cascades from incidents, and
+-- denying DELETE too would make an incident permanently undeletable with an opaque error —
+-- the M6 mistake documented at the append-only trigger block below. Consequence, accepted
+-- deliberately: a timeline entry can never be edited. The UI offers "add a correction",
+-- not an edit pencil, because tamper-evidence is the point for a bank auditor.
+--
+-- occurred_at is the REAL-WORLD time and is backdatable ("containment at 02:15"); created_at
+-- is when it was typed in. Both matter in an incident report.
+--
+-- The author is a USER, not a person: people.user_id is nullable, so a person FK would be
+-- unfillable for the common case. Mirrors review_messages.author_user_id.
+CREATE TABLE incident_events (
+    id             text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id      text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    incident_id    text NOT NULL,
+    event_type     text NOT NULL CHECK (event_type IN ('DETECTED', 'CONTAINMENT', 'INVESTIGATION',
+                       'CORRECTIVE_ACTION', 'COMMUNICATION', 'COMMENT', 'RESOLVED', 'CLOSED')),
+    body           text NOT NULL,
+    author_user_id text REFERENCES users(id),      -- NULL only for system-generated events
+    author_kind    text NOT NULL DEFAULT 'member' CHECK (author_kind IN ('member', 'system')),
+    occurred_at    iso_ts NOT NULL DEFAULT now_iso(),
+    created_at     iso_ts NOT NULL DEFAULT now_iso(),
+    -- Insertion order, and the ONLY reliable tiebreak this table has. Both now_iso()
+    -- implementations (SQL and api/util.py) are second-resolution, so two entries logged
+    -- in the same second tie on occurred_at AND created_at — leaving Postgres free to
+    -- return the timeline in any order it likes. An append-only incident narrative that
+    -- silently reorders itself is worse than no narrative at all, so reads sort by
+    -- (occurred_at, seq): user-stated chronology first, then the order it was written.
+    seq            bigserial NOT NULL,
+    UNIQUE (id, tenant_id),
+    CONSTRAINT ie_member_has_author CHECK (author_kind <> 'member' OR author_user_id IS NOT NULL),
+    FOREIGN KEY (incident_id, tenant_id) REFERENCES incidents (id, tenant_id) ON DELETE CASCADE
 );
 
 -- M14. Privileged access review campaigns (explicit bank ask).
@@ -1045,6 +1114,31 @@ CREATE TABLE evidence_controls (
     FOREIGN KEY (control_id, tenant_id)  REFERENCES controls (id, tenant_id) ON DELETE CASCADE
 );
 
+-- P4-S7 · register <-> evidence joins. Modelled on evidence_controls above rather than
+-- adding a 7th kind to risk_links: that table is polymorphic-one-column-per-kind, and a new
+-- kind means editing FIVE artifacts (the target_kind CHECK, rl_exactly_one, rl_kind_matches,
+-- a CROSS-LAYER FK, and uq_risk_link_target's coalesce list — miss that last one and
+-- concurrent double-clicks silently land duplicate rows). A join table's PK on the pair
+-- dedupes for free. The semantics differ too: a risk_links row is navigation and carries a
+-- note; evidence is an attachment whose natural key IS the pair.
+CREATE TABLE risk_evidence (
+    tenant_id   text NOT NULL REFERENCES tenants(id),
+    risk_id     text NOT NULL,
+    evidence_id text NOT NULL,
+    PRIMARY KEY (risk_id, evidence_id),
+    FOREIGN KEY (risk_id, tenant_id)     REFERENCES risks    (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence (id, tenant_id) ON DELETE CASCADE
+);
+
+CREATE TABLE incident_evidence (
+    tenant_id   text NOT NULL REFERENCES tenants(id),
+    incident_id text NOT NULL,
+    evidence_id text NOT NULL,
+    PRIMARY KEY (incident_id, evidence_id),
+    FOREIGN KEY (incident_id, tenant_id) REFERENCES incidents (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence  (id, tenant_id) ON DELETE CASCADE
+);
+
 
 -- =====================================================================================
 -- L5 · TIME — the recurrence engine (***D-MOAT***, APScheduler)
@@ -1056,9 +1150,19 @@ CREATE TABLE tasks (
     control_id         text,
     policy_id          text,                        -- legacy source; document_id supersedes at M9
     document_id        text,                        -- NEW
+    risk_id            text,                        -- P4-S9: a follow-up task raised on a risk
+    assessment_id      text,                        -- P4-S9: a task raised out of an audit
     title              text NOT NULL,
     description        text,
-    cadence_months     integer,                     -- NULL = one-off
+    cadence_months     integer,                     -- legacy: months-only, written by generate_tasks()
+                                                     -- for recurring controls. NULL = one-off.
+    -- P4-S9: general recurrence for hand-created tasks. DAILY/WEEKLY are day arithmetic;
+    -- MONTHLY/QUARTERLY/YEARLY are add_months() with a baked-in multiplier — QUARTERLY is
+    -- mechanically MONTHLY x3, kept as its own value because that is the word a compliance
+    -- calendar actually uses. No ONE_OFF value: NULL frequency (like NULL cadence_months
+    -- above) already means "does not recur" — a magic enum member would just duplicate that.
+    frequency          text CHECK (frequency IN ('DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY')),
+    interval_count     integer CHECK (interval_count IS NULL OR interval_count > 0),
     assignee_member_id text REFERENCES tenant_members(id),
     assignee_person_id text,                        -- NEW: staff without logins can own tasks
     next_due_at        iso_ts,
@@ -1066,8 +1170,20 @@ CREATE TABLE tasks (
                            CHECK (status IN ('active', 'paused', 'completed')),
     created_at         iso_ts NOT NULL DEFAULT now_iso(),
     UNIQUE (id, tenant_id),
+    -- frequency and interval_count travel together — both or neither.
+    CONSTRAINT tasks_recurrence_shape CHECK (
+        (frequency IS NULL AND interval_count IS NULL) OR
+        (frequency IS NOT NULL AND interval_count IS NOT NULL)),
+    -- Two recurrence systems on one row would leave "which is authoritative?" to guesswork.
+    -- generate_tasks() only ever writes cadence_months; the API only ever writes frequency.
+    CONSTRAINT tasks_recurrence_not_both CHECK (NOT (frequency IS NOT NULL AND cadence_months IS NOT NULL)),
     FOREIGN KEY (control_id, tenant_id)         REFERENCES controls (id, tenant_id),
     FOREIGN KEY (policy_id, tenant_id)          REFERENCES policies (id, tenant_id),
+    -- SET NULL, not RESTRICT: DELETE /risks/{id} hard-deletes (registers.py), so a RESTRICT
+    -- here would be the dormant-FK trap P4-S7/S8 both hit — the first task ever linked to a
+    -- risk would turn that risk's delete into a 500. A task can outlive the risk that raised
+    -- it; same reasoning as tasks_document_fk below and obligations_clause_fk.
+    FOREIGN KEY (risk_id, tenant_id)            REFERENCES risks (id, tenant_id) ON DELETE SET NULL (risk_id),
     FOREIGN KEY (assignee_person_id, tenant_id) REFERENCES people   (id, tenant_id) ON DELETE RESTRICT
 );
 
@@ -1491,6 +1607,11 @@ ALTER TABLE trust_center ADD CONSTRAINT tc_nda_document_fk
     FOREIGN KEY (nda_document_id, tenant_id) REFERENCES documents (id, tenant_id) ON DELETE RESTRICT;
 ALTER TABLE tasks ADD CONSTRAINT tasks_document_fk
     FOREIGN KEY (document_id, tenant_id) REFERENCES documents (id, tenant_id) ON DELETE SET NULL (document_id);
+-- P4-S9: assessments is declared after tasks, so this FK cannot be inline. SET NULL for the
+-- same reason as tasks_document_fk above — no assessment-delete endpoint exists today, but
+-- one might, and a task should survive the audit that raised it.
+ALTER TABLE tasks ADD CONSTRAINT tasks_assessment_fk
+    FOREIGN KEY (assessment_id, tenant_id) REFERENCES assessments (id, tenant_id) ON DELETE SET NULL (assessment_id);
 
 
 -- =====================================================================================
@@ -1540,6 +1661,12 @@ CREATE TRIGGER trg_assessment_guests_tenant  BEFORE INSERT ON assessment_guests
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('assessments', 'assessment_id');
 CREATE TRIGGER trg_evidence_controls_tenant  BEFORE INSERT ON evidence_controls
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('evidence', 'evidence_id');
+CREATE TRIGGER trg_incident_events_tenant    BEFORE INSERT ON incident_events
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('incidents', 'incident_id');
+CREATE TRIGGER trg_incident_evidence_tenant  BEFORE INSERT ON incident_evidence
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('incidents', 'incident_id');
+CREATE TRIGGER trg_risk_evidence_tenant      BEFORE INSERT ON risk_evidence
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('risks', 'risk_id');
 CREATE TRIGGER trg_cer_tenant                BEFORE INSERT ON control_evidence_requirements
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('controls', 'control_id');
 CREATE TRIGGER trg_policy_versions_tenant    BEFORE INSERT ON policy_versions
@@ -1560,6 +1687,10 @@ CREATE TRIGGER trg_rev_immutable      BEFORE UPDATE ON response_revisions
 CREATE TRIGGER trg_esig_immutable     BEFORE UPDATE ON electronic_signatures
     FOR EACH ROW EXECUTE FUNCTION deny_update();
 CREATE TRIGGER trg_ard_immutable      BEFORE UPDATE ON access_review_decisions
+    FOR EACH ROW EXECUTE FUNCTION deny_update();
+-- P4-S7. Same reasoning: UPDATE denied (the timeline is tamper-evident), DELETE allowed
+-- because incident_events cascades from incidents.
+CREATE TRIGGER trg_incident_events_immutable BEFORE UPDATE ON incident_events
     FOR EACH ROW EXECUTE FUNCTION deny_update();
 
 -- ---- the hash chain ------------------------------------------------------------------
@@ -1791,6 +1922,11 @@ CREATE INDEX ix_ccm_clause        ON control_clause_map (clause_id);
 -- the PK covers the control_id leg; these index the reverse lookups
 CREATE INDEX ix_cd_document       ON control_documents (document_id);
 CREATE INDEX ix_com_obligation    ON control_obligation_map (obligation_id);
+-- P4-S7. The timeline is always read incident-then-chronological; the two joins' PKs
+-- already cover their first leg, so these index the reverse (evidence -> where used).
+CREATE INDEX ix_incident_events_incident   ON incident_events   (incident_id, occurred_at);
+CREATE INDEX ix_incident_evidence_evidence ON incident_evidence (evidence_id);
+CREATE INDEX ix_risk_evidence_evidence     ON risk_evidence     (evidence_id);
 CREATE INDEX ix_clauses_framework ON framework_clauses (framework_id, sort_order);
 CREATE INDEX ix_risk_links_risk   ON risk_links (risk_id);
 -- One link per (risk, target): backs the app's dedupe so a concurrent double-click can't

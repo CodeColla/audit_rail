@@ -52,6 +52,32 @@ export function errText(e: any, fallback = "Something went wrong."): string {
 }
 
 /**
+ * Pull the real filename out of a Content-Disposition header.
+ *
+ * The old one-liner regex (`filename\*?=…[^";]+`) had two live bugs once server filenames
+ * could contain arbitrary title text: it matched whichever `filename=`/`filename*=`
+ * attribute appeared FIRST in the header rather than preferring the RFC 5987 one, and
+ * `[^";]+` stopped at the first semicolon — including one that was legitimately part of a
+ * quoted filename — truncating "Policy; Revised v1.0.pdf" down to "Policy". The truncated
+ * (or wrong) result was then run through `decodeURIComponent`, which throws on a lone `%`
+ * that isn't valid percent-encoding — silently failing the whole download.
+ *
+ * `filename*=UTF-8''…` is preferred and IS validly percent-encoded (the server always
+ * produces it with `urllib.parse.quote`), so decoding it is safe. The plain quoted
+ * `filename="…"` is used verbatim — never decoded — since it may legitimately contain a
+ * literal `%`.
+ */
+function parseFilename(disposition: string): string | undefined {
+  const star = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (star) {
+    try { return decodeURIComponent(star[1]); } catch { /* fall through to the ascii name */ }
+  }
+  const quoted = disposition.match(/filename="((?:[^"\\]|\\.)*)"/i);
+  if (quoted) return quoted[1].replace(/\\"/g, '"');
+  return undefined;
+}
+
+/**
  * Fetch an auth-protected file as a Blob plus its object URL — the read-only sibling of
  * `downloadFile`, for previewing rather than saving.
  *
@@ -64,13 +90,12 @@ export async function fetchBlob(url: string): Promise<{
   const r = await api.get(url, { responseType: "blob" });
   const blob = r.data as Blob;
   const disposition = String(r.headers["content-disposition"] ?? "");
-  const fromHeader = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)?.[1];
   const objectUrl = URL.createObjectURL(blob);
   return {
     blob,
     objectUrl,
     contentType: String(r.headers["content-type"] ?? blob.type ?? ""),
-    filename: decodeURIComponent(fromHeader ?? url.split("/").pop() ?? "file"),
+    filename: parseFilename(disposition) ?? url.split("/").pop() ?? "file",
     revoke: () => URL.revokeObjectURL(objectUrl),
   };
 }
@@ -88,8 +113,7 @@ export async function fetchBlob(url: string): Promise<{
 export async function downloadFile(url: string, fallbackName?: string): Promise<void> {
   const r = await api.get(url, { responseType: "blob" });
   const disposition = String(r.headers["content-disposition"] ?? "");
-  const fromHeader = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i)?.[1];
-  const name = decodeURIComponent(fromHeader ?? fallbackName ?? url.split("/").pop() ?? "download");
+  const name = parseFilename(disposition) ?? fallbackName ?? url.split("/").pop() ?? "download";
 
   const href = URL.createObjectURL(r.data as Blob);
   const a = document.createElement("a");

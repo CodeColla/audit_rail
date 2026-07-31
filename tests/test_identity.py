@@ -1,6 +1,8 @@
 """P4-S1 — organisations, signup, password policy, invites, org switching."""
 
 import datetime as dt
+import random
+import string
 import uuid
 
 import pytest
@@ -16,9 +18,20 @@ def gst(base="27AAPFU0939F1Z"):
 
 
 def uniq_gst():
-    """A distinct but still checksum-valid GSTIN per test (PAN digits vary)."""
-    n = uuid.uuid4().int % 10000
-    base = f"27AAPFU{n:04d}F1Z"
+    """A distinct but still checksum-valid GSTIN per call.
+
+    Varies the PAN's five letters AND its four digits — 26^5 * 10^4 ≈ 1.2e11 values.
+    This used to vary only the digits (`uuid4().int % 10000`), i.e. a 10,000-value space
+    against a UNIQUE constraint on tenants.gst_number. At ~30 signups per session that is
+    a ~4% birthday collision per run: the loser's signup 409s and whichever test called it
+    fails its `assert 201` — an intermittent failure easy to misread as "the database".
+
+    A monotonic counter is NOT a valid fix here: pytest imports this file as top-level
+    `test_identity` while test_rbac/test_controls_crud import it as `tests.test_identity`,
+    so module-level state exists TWICE and both copies would count from 1.
+    """
+    letters = "".join(random.choices(string.ascii_uppercase, k=5))
+    base = f"27{letters}{random.randrange(10000):04d}F1Z"
     return base + checksum(base)
 
 

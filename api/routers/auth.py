@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, gstin, passwords, permissions, vocabularies
+from api import activity, domains, gstin, passwords, permissions, vocabularies
 from api.auth import (Principal, authenticate, create_access_token, get_caller,
                       get_current_user, memberships)
 from api.database import engine, t
@@ -49,6 +49,9 @@ def _create_org(conn, *, name: str, gst: str, super_admin_user_id: str) -> str:
         super_admin_user_id=super_admin_user_id, status="active", created_at=now_iso()))
     permissions.seed_roles(conn, tid)          # every org gets Admin / Editor / Viewer
     vocabularies.seed(conn, tid)               # …and a starting set of dropdowns
+    domains.seed(conn, tid)                    # …and the 16-domain control framework —
+    # without this, controls.domain_id (NOT NULL) makes "Add control" a dead end for
+    # every organisation except the one scripts/init_db.py seeded by hand
     return tid
 
 

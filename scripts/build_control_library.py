@@ -175,16 +175,50 @@ def uid() -> str:
 
 
 def main() -> None:
+    import sys as _sys
+    force = "--force" in _sys.argv[1:]
+
     engine = get_engine()
     with engine.begin() as con:
         tenant_id = con.execute(sql("SELECT id FROM tenants LIMIT 1")).scalar()
         dom_id = {code: id_ for id_, code in
-                  con.execute(sql("SELECT id, code FROM domains"))}
+                  con.execute(sql("SELECT id, code FROM domains WHERE tenant_id = :t"),
+                             {"t": tenant_id})}
 
-        # idempotent rebuild — children first (Postgres enforces FKs natively)
+        # P4-S5: this script was written for a one-time bootstrap and unconditionally
+        # DELETEd controls/question_control_map/evidence_controls with NO tenant_id
+        # filter — wiping every organisation's data, not just the one it picked with
+        # `LIMIT 1`. Controls are now real editable data (stock_response set by hand,
+        # evidence and policies linked to them), so a careless re-run would also
+        # silently destroy work no seed script created. Both problems get one fix: scope
+        # every statement to the chosen tenant, and refuse to touch it if anything
+        # already depends on its controls, unless the caller passes --force.
+        if not force:
+            in_use = con.execute(sql("""
+                SELECT
+                    (SELECT count(*) FROM controls
+                      WHERE tenant_id = :t AND stock_response IS NOT NULL) AS answered,
+                    (SELECT count(*) FROM tasks
+                      WHERE tenant_id = :t AND control_id IS NOT NULL) AS tasks,
+                    (SELECT count(*) FROM responses
+                      WHERE tenant_id = :t AND prefilled_from_control_id IS NOT NULL) AS responses,
+                    (SELECT count(*) FROM evidence_controls WHERE tenant_id = :t) AS evidence,
+                    (SELECT count(*) FROM control_documents WHERE tenant_id = :t) AS documents
+            """), {"t": tenant_id}).mappings().first()
+            blockers = {k: v for k, v in in_use.items() if v}
+            if blockers:
+                print("Refusing to rebuild — this tenant's controls are already in use:")
+                for k, v in blockers.items():
+                    print(f"  {k}: {v}")
+                print("Re-run with --force to rebuild anyway (this WILL delete the above).")
+                return
+
+        # idempotent rebuild — children first (Postgres enforces FKs natively).
+        # Every DELETE is scoped to `tenant_id`: this script picks ONE org with
+        # `LIMIT 1`, and an unscoped DELETE would wipe every other org's data too.
         for tbl in ("question_control_map", "control_evidence_requirements",
-                    "evidence_controls", "controls"):
-            con.execute(sql(f"DELETE FROM {tbl}"))
+                    "evidence_controls", "control_documents", "controls"):
+            con.execute(sql(f"DELETE FROM {tbl} WHERE tenant_id = :t"), {"t": tenant_id})
 
         # insert curated controls; keep ref -> (control_id, token-set) for matching
         control_ix: dict[str, list[tuple[str, str, set]]] = {}

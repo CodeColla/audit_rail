@@ -39,6 +39,11 @@ export function RichTextEditor({ value, onChange }: {
       Placeholder.configure({ placeholder: "Write the policy…" }),
     ],
     content: value,
+    // @tiptap/react v3 defaults this to false and skips re-rendering on selection-only
+    // transactions (moving the caret, selecting text) — without it the toolbar's
+    // isActive()/aria-pressed states only updated when the DOCUMENT changed, so a button
+    // could sit highlighted (or not) for whatever was selected several edits ago.
+    shouldRerenderOnTransaction: true,
     editorProps: { attributes: { class: "doc-md min-h-[58vh] p-5 outline-none" } },
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
   });

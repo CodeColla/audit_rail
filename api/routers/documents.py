@@ -32,7 +32,7 @@ from fastapi.responses import Response
 from sqlalchemy import delete, func, insert, select, text, update
 
 from api import activity, docx_export, render, storage, vocabularies
-from api.auth import Principal, get_current_user
+from api.auth import Principal
 from api.html_sanitize import sanitize_document_html
 from api.permissions import require
 from api.database import engine, get_conn, t
@@ -59,6 +59,18 @@ def _doc(conn, user: Principal, doc_id: str):
     if row is None:
         raise HTTPException(404, "document not found")
     return dict(row)
+
+
+def _require_active(doc: dict) -> dict:
+    """`documents.status` was consulted in exactly one place — the list filter — so an
+    ARCHIVED document stayed fully editable, publishable, and could issue fresh 30-day
+    attestation magic links. Call this after `_doc()` in every endpoint that changes a
+    document's content or starts a new obligation on it. Reads (detail, render, diff,
+    coverage) and cleanup (discard-draft, restoring via PATCH) intentionally do not call
+    this — you must be able to view, export and un-archive an archived document."""
+    if doc["status"] == "ARCHIVED":
+        raise HTTPException(409, "this document is archived — restore it first")
+    return doc
 
 
 def _versions(conn, doc_id: str):
@@ -157,11 +169,13 @@ def _check_format(fmt: str) -> str:
 # Declared before /{doc_id} on purpose — FastAPI matches in order, and otherwise "types"
 # would be read as a document id.
 @router.get("/types")
-def document_types(user: Principal = Depends(get_current_user)):
+def document_types(user: Principal = Depends(require("documents", "view"))):
     """The document types the database will actually accept.
 
     Served rather than hardcoded in the SPA: a stale copy in the UI is how "STANDARD" —
-    never a valid value — reached users as a 500 CheckViolation.
+    never a valid value — reached users as a 500 CheckViolation. Gated like every other
+    read in this file — it was on bare authentication, so a member with no documents
+    permission at all still got a 200.
     """
     return [{"value": v, "label": v.replace("_", " ").title()}
             for v in vocabularies.DOCUMENT_TYPES]
@@ -278,6 +292,14 @@ def update_document(doc_id: str, body: DocumentPatch,
     vals["updated_at"] = now_iso()
     with engine.begin() as conn:
         _doc(conn, user, doc_id)
+        if "owner_person_id" in vals:
+            # create_document validates this; update_document didn't, so a foreign
+            # person_id reached the DB and raised an unhandled ForeignKeyViolation (500)
+            # instead of the same 400 the create path gives.
+            if conn.execute(select(t("people").c.id).where(
+                    t("people").c.id == vals["owner_person_id"],
+                    t("people").c.tenant_id == user.tenant_id)).first() is None:
+                raise HTTPException(400, "owner must be a person in this organisation")
         conn.execute(update(t("documents")).where(
             t("documents").c.id == doc_id).values(**vals))
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
@@ -302,7 +324,7 @@ def edit_version(doc_id: str, version_id: str, body: VersionEdit,
         raise HTTPException(400, "nothing to update")
     dv = t("document_versions")
     with engine.begin() as conn:
-        _doc(conn, user, doc_id)
+        _require_active(_doc(conn, user, doc_id))
         v = conn.execute(select(dv).where(
             dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
         if v is None:
@@ -337,7 +359,7 @@ def new_version(doc_id: str, body: NewVersion,
         raise HTTPException(400, "bump must be 'minor' or 'major'")
     dv = t("document_versions")
     with engine.begin() as conn:
-        _doc(conn, user, doc_id)
+        _require_active(_doc(conn, user, doc_id))
         versions = _versions(conn, doc_id)
         if any(v["status"] in OPEN for v in versions):
             raise HTTPException(409, "there is already an open draft — publish or discard it first")
@@ -379,10 +401,27 @@ def discard_draft(doc_id: str, version_id: str,
             raise HTTPException(409, "only a DRAFT version can be discarded")
         if len(_versions(conn, doc_id)) == 1:
             raise HTTPException(409, "a document must keep at least one version")
+        # document_approvals -> document_approval_decisions both CASCADE from
+        # document_versions. decide() already logs each individual decision as it happens,
+        # but that only captures ONE approver's state+comment per event — the full round
+        # (every approver's state, whether they ever decided) would otherwise vanish
+        # with no trace once this DELETE fires. Snapshot it into the append-only
+        # activity_log first, which the CASCADE never touches.
+        ap, dec, ppl = t("document_approvals"), t("document_approval_decisions"), t("people")
+        rounds = conn.execute(select(ap.c.id, ap.c.status, ap.c.threshold_required).where(
+            ap.c.document_version_id == version_id)).mappings().all()
+        history = []
+        for r in rounds:
+            decisions = conn.execute(
+                select(dec.c.state, dec.c.comment, ppl.c.full_name)
+                .join(ppl, dec.c.approver_person_id == ppl.c.id)
+                .where(dec.c.approval_id == r["id"])).mappings().all()
+            history.append({"round_status": r["status"], "threshold": r["threshold_required"],
+                            "decisions": [dict(d) for d in decisions]})
         conn.execute(delete(dv).where(dv.c.id == version_id))
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="document.draft_discarded", entity_type="document", entity_id=doc_id,
-                 detail={"version": v["version_label"]})
+                 detail={"version": v["version_label"], "approval_history": history})
     return Response(status_code=204)
 
 
@@ -407,7 +446,7 @@ def submit_for_approval(doc_id: str, version_id: str, body: SubmitIn,
                             f"{len(approvers)} approver(s) picked")
     dv, ppl = t("document_versions"), t("people")
     with engine.begin() as conn:
-        _doc(conn, user, doc_id)
+        _require_active(_doc(conn, user, doc_id))
         v = conn.execute(select(dv).where(
             dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
         if v is None:
@@ -493,7 +532,13 @@ def decide(approval_id: str, body: DecideIn,
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="document.decided", entity_type="document_approval",
                  entity_id=approval_id,
-                 detail={"by": body.approver_person_id, "state": body.state})
+                 # the comment is the reason a rejection happened, and it must survive even
+                 # if the draft is later discarded — document_approvals and its decisions
+                 # CASCADE from document_versions, but activity_log is append-only and never
+                 # touched by that delete, so this is where the rejection reason actually
+                 # lives once a discarded draft's own row is gone.
+                 detail={"by": body.approver_person_id, "state": body.state,
+                         "comment": body.comment})
     return {"round_status": new_status, "approved": approved,
             "threshold": a["threshold_required"],
             "can_publish": new_status == "APPROVED"}
@@ -503,7 +548,7 @@ def decide(approval_id: str, body: DecideIn,
 def publish(doc_id: str, version_id: str, user: Principal = Depends(require("documents", "publish"))):
     dv = t("document_versions")
     with engine.begin() as conn:
-        doc = _doc(conn, user, doc_id)
+        doc = _require_active(_doc(conn, user, doc_id))
         # Lock the version row: two concurrent publishes must serialise, or both would
         # pass the guard, render two PDFs (one orphaned) and double the audit entry.
         # The loser wakes on the committed row, sees PUBLISHED, and 409s cleanly.
@@ -610,6 +655,11 @@ def _diff_lines(content: str | None, fmt: str) -> list[str]:
     TipTap serialises a whole document onto a single line, so a raw splitlines() diff of
     HTML always reports exactly 1 added and 1 removed no matter what changed — a diff that
     can never be wrong and is therefore useless. Project HTML to block-level text instead.
+
+    Known limitation, not fixed here: this is a TEXT diff. A change to markup alone with the
+    same visible text — a link's href, a heading level, cell colspan — reads as "no change".
+    A correct diff would need to compare serialized HTML per block, not just its rendered
+    text; that is a larger redesign than this projection, and out of scope for now.
     """
     if fmt != "HTML":
         return (content or "").splitlines()
@@ -618,9 +668,13 @@ def _diff_lines(content: str | None, fmt: str) -> list[str]:
     # Iterating `for el in root` yields only child ELEMENTS. Bare text at the top level
     # (root.text) and text trailing a block (el.tail) were dropped entirely, so a version
     # whose body was not wrapped in block tags diffed as "no change at all".
+    #
+    # el.text_content() also concatenates a list's items with no separator — "Lock
+    # screens" + "Rotate keys" read as one word, "Lock screensRotate keys" — so each
+    # element's own text nodes are joined with itertext() instead, one space apart.
     parts = [root.text or ""]
     for el in root:
-        parts.append(el.text_content() or "")
+        parts.append(" ".join(el.itertext()))
         parts.append(el.tail or "")
     return [line for p in parts if (line := " ".join(p.split()))]
 
@@ -716,7 +770,7 @@ def set_audiences(doc_id: str, body: AudienceIn,
             raise HTTPException(400, f"unknown audience rule {r.rule!r}")
     clean = list(dict.fromkeys(clean))          # drop exact duplicates
     with engine.begin() as conn:
-        _doc(conn, user, doc_id)
+        _require_active(_doc(conn, user, doc_id))
         if explicit_ids:                        # every EXPLICIT person must be in this tenant
             found = set(conn.execute(select(t("people").c.id).where(
                 t("people").c.tenant_id == user.tenant_id,
@@ -748,7 +802,7 @@ def start_attestation_campaign(doc_id: str, body: CampaignIn,
                                user: Principal = Depends(require("documents", "edit"))):
     ds, st, dv = t("document_signatures"), t("signing_tokens"), t("document_versions")
     with engine.begin() as conn:
-        doc = _doc(conn, user, doc_id)
+        doc = _require_active(_doc(conn, user, doc_id))
         vid = doc["current_published_version_id"]
         if not vid:
             raise HTTPException(400, "publish a version before requesting attestations")

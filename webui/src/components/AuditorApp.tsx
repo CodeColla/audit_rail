@@ -20,6 +20,7 @@ function AuditorDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClos
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["resp", aid, qid], queryFn: () => get<RespDetail>(`/assessments/${aid}/responses/${qid}`) });
   const [remark, setRemark] = useState("");
+  const [dlErr, setDlErr] = useState("");
   const [showF, setShowF] = useState(false);
   const [fTitle, setFTitle] = useState(""); const [fL, setFL] = useState(2); const [fI, setFI] = useState(2);
 
@@ -57,10 +58,17 @@ function AuditorDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClos
           : data.evidence.map((e) => (
             <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
               <span className="grid h-7 w-7 place-items-center rounded-md bg-info-bg text-info">▣</span>
-              <button onClick={() => downloadFile(`/evidence/${e.id}/file`, e.title)}
+              {/* P4-S8: the assessment-scoped route. /evidence/{id}/file is member-only, so
+                  this used to 403 for every guest — the auditor could read the titles of the
+                  proof and open none of it. */}
+              <button onClick={() => downloadFile(`/assessments/${aid}/evidence/${e.id}/file`, e.title)
+                .then(() => setDlErr("")).catch(() => setDlErr(`Could not open "${e.title}".`))}
                 className="text-left text-[12.5px] font-medium hover:text-accent">{e.title}</button>
             </div>
           ))}
+        {/* downloadFile rejects on a failed request and nothing used to catch it: the axios
+            interceptor only acts on 401, so a 404 or 410 made the click do nothing at all. */}
+        {dlErr && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{dlErr}</div>}
       </Card>
 
       <Card>

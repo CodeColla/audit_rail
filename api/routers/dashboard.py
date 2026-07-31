@@ -63,8 +63,11 @@ def dashboard(user: Principal = Depends(require("dashboard", "view")), conn=Depe
         select(runs.c.id.label("run_id"), runs.c.due_at, runs.c.status,
                tasks.c.id.label("task_id"), tasks.c.title)
         .join(tasks, runs.c.task_id == tasks.c.id)
+        # P4-S9: excludes paused tasks. Pausing (e.g. automatically, when its control is
+        # retired) is supposed to stop a task from nagging anyone — before this it stayed
+        # cosmetic, since a paused task's stale run kept surfacing here regardless.
         .where(tasks.c.tenant_id == tid, runs.c.status.in_(("pending", "overdue")),
-               runs.c.due_at < today)
+               runs.c.due_at < today, tasks.c.status == "active")
         .order_by(runs.c.due_at)).mappings()]
 
     expiring_evidence = []

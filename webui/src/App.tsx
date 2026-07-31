@@ -9,6 +9,7 @@ import AuditorEntry from "./pages/AuditorEntry";
 import Sign from "./pages/Sign";
 import Dashboard from "./pages/Dashboard";
 import Controls from "./pages/Controls";
+import ControlDetail from "./pages/ControlDetail";
 import Registers from "./pages/Registers";
 import Risks from "./pages/Risks";
 import Assets from "./pages/Assets";
@@ -23,6 +24,7 @@ import Audits from "./pages/Audits";
 import Import from "./pages/Import";
 import Workspace from "./pages/Workspace";
 import Evidence from "./pages/Evidence";
+import EvidenceDetail from "./pages/EvidenceDetail";
 import Tasks from "./pages/Tasks";
 import Reports from "./pages/Reports";
 import Admin from "./pages/Admin";
@@ -89,8 +91,13 @@ export default function App() {
         <Route path="/third-parties/view/:id" element={<ThirdParties />} />
         <Route path="/incidents" element={<Incidents />} />
         <Route path="/incidents/view/:id" element={<Incidents />} />
-        <Route path="/controls/view/:id" element={<Controls />} />
-        <Route path="/evidence/view/:id" element={<Evidence />} />
+        {/* P4-S5: a control gets a full page, not a Drawer — it's the record the whole
+            "answer once, reuse everywhere" premise rests on, too much to cram into 560px. */}
+        <Route path="/controls/view/:id" element={<ControlDetail />} />
+        {/* P4-S8: a real page, not the list with a drawer on top. The old form resolved
+            the drawer out of the LIST response, so a deep link only worked when the row
+            happened to be in the fetch — otherwise you got the vault and no explanation. */}
+        <Route path="/evidence/view/:id" element={<EvidenceDetail />} />
         <Route path="/people/view/:id" element={<People />} />
         <Route path="/documents" element={<Documents />} />
         <Route path="/documents/:id" element={<DocumentDetail />} />

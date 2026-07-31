@@ -6,7 +6,7 @@ import { useCan } from "../lib/auth";
 import { cn, inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
 
 type Doc = {
-  id: string; title: string; document_type: string; classification: string;
+  id: string; title: string; document_type: string; classification: string; status: string;
   owner_name: string; published_version: string | null; latest_version: string | null;
   latest_status: string | null; next_review_at: string | null; review_status: string;
 };
@@ -30,11 +30,14 @@ const CLASSES = ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"];
 /** A document's live state: the newest version's status, shown as a pill. */
 function StatusCell({ d }: { d: Doc }) {
   const s = d.latest_status;
-  if (!s) return <span className="text-txt3">—</span>;
-  const tone = s === "PUBLISHED" ? "ok" : s === "PENDING_APPROVAL" ? "warn" : "na";
-  const label = s === "PENDING_APPROVAL" ? "In approval" : s.charAt(0) + s.slice(1).toLowerCase();
   return <span className="flex items-center gap-2">
-    <Pill tone={tone}>{label}</Pill>
+    {d.status === "ARCHIVED" && <Pill tone="na">Archived</Pill>}
+    {s && (
+      <Pill tone={s === "PUBLISHED" ? "ok" : s === "PENDING_APPROVAL" ? "warn" : "na"}>
+        {s === "PENDING_APPROVAL" ? "In approval" : s.charAt(0) + s.slice(1).toLowerCase()}
+      </Pill>
+    )}
+    {!s && d.status !== "ARCHIVED" && <span className="text-txt3">—</span>}
     {d.latest_version && <span className="font-mono text-[11px] text-txt3">v{d.latest_version}</span>}
   </span>;
 }
@@ -66,7 +69,12 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
         </label>
         <div className="grid grid-cols-2 gap-3">
           <label className="text-[13px] font-medium">Type
-            <select value={f.document_type} onChange={set("document_type")} className={inputCls + " mt-1"}>
+            {/* The select renders with zero <option>s while this query is in flight —
+                cosmetically blank for a moment, though the underlying default ("POLICY")
+                is always a valid type, so it never lets a bad value through on submit. */}
+            <select value={f.document_type} onChange={set("document_type")}
+              disabled={types.isLoading} className={inputCls + " mt-1 disabled:opacity-50"}>
+              {types.isLoading && <option>Loading…</option>}
               {(types.data ?? []).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </label>
@@ -102,12 +110,19 @@ export default function Documents() {
   const can = useCan();
   const [params, setParams] = useSearchParams();
   const typeParam = params.get("type");
+  const showArchived = params.get("archived") === "1";
   const [adding, setAdding] = useState(false);
   const nav = useNavigate();
   const types = useDocTypes();
   const { data, isLoading } = useQuery({
-    queryKey: ["documents", typeParam],
-    queryFn: () => get<Doc[]>(`/documents${typeParam ? `?document_type=${typeParam}` : ""}`),
+    queryKey: ["documents", typeParam, showArchived],
+    queryFn: () => {
+      const qs = new URLSearchParams();
+      if (typeParam) qs.set("document_type", typeParam);
+      if (showArchived) qs.set("include_archived", "true");
+      const suffix = qs.toString();
+      return get<Doc[]>(`/documents${suffix ? `?${suffix}` : ""}`);
+    },
   });
   if (isLoading) return <Loading />;
   const rows = data ?? [];
@@ -120,16 +135,33 @@ export default function Documents() {
           ? <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New document</button>
           : undefined} />
 
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         {[{ value: null, label: "All" }, ...(types.data ?? [])].map((c) => (
           <button key={c.label}
-            onClick={() => setParams(c.value ? { type: c.value } : {})}
+            onClick={() => setParams((p) => {
+              const next = new URLSearchParams(p);
+              if (c.value) next.set("type", c.value); else next.delete("type");
+              return next;
+            })}
             className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
               (typeParam ?? null) === c.value ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                 : "border-bd bg-paper text-txt2 hover:bg-canvas")}>
             {c.label}
           </button>
         ))}
+        {/* Archiving added a real state a document could be in with no way to see it: the
+            list always excluded ARCHIVED rows and nothing in the SPA ever sent
+            include_archived, so an archived document — and its Restore button — became
+            unreachable the moment it was archived. */}
+        <label className="ml-2 flex items-center gap-1.5 text-[12.5px] text-txt2">
+          <input type="checkbox" checked={showArchived}
+            onChange={(e) => setParams((p) => {
+              const next = new URLSearchParams(p);
+              if (e.target.checked) next.set("archived", "1"); else next.delete("archived");
+              return next;
+            })} />
+          Show archived
+        </label>
       </div>
 
       {rows.length === 0 ? (

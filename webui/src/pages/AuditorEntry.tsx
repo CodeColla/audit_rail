@@ -1,16 +1,24 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 
 export default function AuditorEntry() {
   const [params] = useSearchParams();
   const { enterAsGuest } = useAuth();
+  const nav = useNavigate();
   const [err, setErr] = useState(false);
 
   useEffect(() => {
     const token = params.get("token");
     if (!token) { setErr(true); return; }
-    enterAsGuest(token).catch(() => setErr(true));
+    // Leaving /auditor is not cosmetic, it is what completes the entry. App.tsx tests
+    // `pathname.startsWith("/auditor")` BEFORE it tests `user.kind === "guest"`, so while
+    // the URL still says /auditor the guest branch is unreachable and this component
+    // re-renders itself — "Entering auditor review..." forever, with a valid session sitting
+    // in localStorage. Every auditor invitation dead-ended here.
+    enterAsGuest(token)
+      .then(() => nav("/", { replace: true }))
+      .catch(() => setErr(true));
   }, []);
 
   return (

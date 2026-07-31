@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity
+from api import activity, storage
+from api.config import settings
 from api.auth import Principal, get_current_user
 from api.permissions import require
 from api.database import engine, get_conn, t
@@ -54,13 +56,39 @@ LINK_TARGETS = {
 
 # ------------------------------------------------------------------ helpers
 
-def _owner_must_be_person(conn, tenant_id, person_id):
+def _person_must_exist(conn, tenant_id, person_id, what="owner"):
+    """Generalised from _owner_must_be_person — P4-S7 gave risks three person references
+    (owner, reported_by, reviewed_by) and only the owner was ever validated."""
     if person_id is None:
         return
     if conn.execute(select(t("people").c.id).where(
             t("people").c.id == person_id,
             t("people").c.tenant_id == tenant_id)).first() is None:
-        raise HTTPException(400, "owner must be a person in this organisation")
+        raise HTTPException(400, f"{what} must be a person in this organisation")
+
+
+#: the original name, kept for its existing call sites
+_owner_must_be_person = _person_must_exist
+
+
+def _tp_must_exist(conn, tenant_id, tp_id):
+    if tp_id is None:
+        return
+    if conn.execute(select(t("third_parties").c.id).where(
+            t("third_parties").c.id == tp_id,
+            t("third_parties").c.tenant_id == tenant_id)).first() is None:
+        raise HTTPException(400, "vendor not found in this organisation")
+
+
+def _evidence_must_exist(conn, tenant_id, evidence_id):
+    # 400 here, not the 404 assessments.py uses for the same shape — this file's own
+    # convention is 400 "<thing> not found in this organisation" everywhere else.
+    if evidence_id is None:
+        return
+    if conn.execute(select(t("evidence").c.id).where(
+            t("evidence").c.id == evidence_id,
+            t("evidence").c.tenant_id == tenant_id)).first() is None:
+        raise HTTPException(400, "evidence not found in this organisation")
 
 
 def _get(conn, table, tenant_id, rid, what):
@@ -133,6 +161,8 @@ class RiskIn(StrictModel):
     description: str | None = None
     category: str | None = None
     owner_person_id: str | None = None
+    reported_by_person_id: str | None = None
+    reviewed_by_person_id: str | None = None
     inherent_likelihood: int | None = None
     inherent_impact: int | None = None
     residual_likelihood: int | None = None
@@ -184,7 +214,10 @@ def create_risk(body: RiskIn, user: Principal = Depends(require("risks", "add"))
     vals = _norm(body.model_dump())
     _validate_risk(vals)
     with engine.begin() as conn:
-        _owner_must_be_person(conn, user.tenant_id, body.owner_person_id)
+        for key, label in (("owner_person_id", "owner"),
+                           ("reported_by_person_id", "reporter"),
+                           ("reviewed_by_person_id", "reviewer")):
+            _person_must_exist(conn, user.tenant_id, vals.get(key), label)
         rid, now = str(uuid.uuid4()), now_iso()
         if vals.get("reference") and conn.execute(select(t("risks").c.id).where(
                 t("risks").c.tenant_id == user.tenant_id,
@@ -206,8 +239,16 @@ def create_risk(body: RiskIn, user: Principal = Depends(require("risks", "add"))
 @router.get("/risks/{risk_id}")
 def risk_detail(risk_id: str, user: Principal = Depends(require("risks", "view")), conn=Depends(get_conn)):
     r = _get(conn, "risks", user.tenant_id, risk_id, "risk")
+    ev, re_ = t("evidence"), t("risk_evidence")
+    evidence = [dict(x) for x in conn.execute(
+        select(ev.c.id, ev.c.title, ev.c.evidence_type, ev.c.valid_until)
+        .join(re_, re_.c.evidence_id == ev.c.id)
+        .where(re_.c.risk_id == risk_id)
+        .order_by(ev.c.valid_until.asc().nullslast())).mappings()]
     return {**_band(r), "owner_name": _owner_name(conn, r["owner_person_id"]),
-            "links": _resolve_links(conn, risk_id)}
+            "reported_by_name": _owner_name(conn, r["reported_by_person_id"]),
+            "reviewed_by_name": _owner_name(conn, r["reviewed_by_person_id"]),
+            "links": _resolve_links(conn, risk_id), "evidence": evidence}
 
 
 class RiskPatch(StrictModel):
@@ -216,6 +257,8 @@ class RiskPatch(StrictModel):
     description: str | None = None
     category: str | None = None
     owner_person_id: str | None = None
+    reported_by_person_id: str | None = None
+    reviewed_by_person_id: str | None = None
     inherent_likelihood: int | None = None
     inherent_impact: int | None = None
     residual_likelihood: int | None = None
@@ -234,8 +277,13 @@ def update_risk(risk_id: str, body: RiskPatch, user: Principal = Depends(require
     _validate_risk(vals)
     with engine.begin() as conn:
         _get(conn, "risks", user.tenant_id, risk_id, "risk")
-        if "owner_person_id" in vals:
-            _owner_must_be_person(conn, user.tenant_id, vals["owner_person_id"])
+        # all three person refs, not just the owner — reported_by/reviewed_by were a
+        # cross-tenant 500 waiting to happen the moment the UI could set them
+        for key, label in (("owner_person_id", "owner"),
+                           ("reported_by_person_id", "reporter"),
+                           ("reviewed_by_person_id", "reviewer")):
+            if key in vals:
+                _person_must_exist(conn, user.tenant_id, vals[key], label)
         vals["updated_at"] = now_iso()
         try:
             conn.execute(update(t("risks")).where(t("risks").c.id == risk_id).values(**vals))
@@ -312,9 +360,31 @@ class AssetIn(StrictModel):
     data_types_stored: list[str] = []
     criticality: str | None = None
     location: str | None = None
+    vendor_third_party_id: str | None = None
+    subtype: str | None = None
+    # PHYSICAL-only
+    manufacturer: str | None = None
+    model: str | None = None
+    serial_number: str | None = None
+    # VIRTUAL-only
+    hostname: str | None = None
+    ip_address: str | None = None
+    cloud_provider: str | None = None
+    service_url: str | None = None
 
 
-def _validate_asset(vals: dict):
+PHYSICAL_ONLY = ("manufacturer", "model", "serial_number")
+VIRTUAL_ONLY = ("hostname", "ip_address", "cloud_provider", "service_url")
+
+
+def _validate_asset(vals: dict, effective: dict | None = None):
+    """`effective` is the row as it will be AFTER the write (current merged with vals).
+
+    The PHYSICAL/VIRTUAL shape rule cannot be checked against the submitted dict alone: a
+    PATCH sending only `hostname` carries no asset_type, so a naive check silently passes.
+    Deliberately enforced here and not as a DB CHECK — a CHECK would make flipping
+    asset_type on a populated row a 500 instead of a fixable 400.
+    """
     _reject_null_required(vals, ("name", "asset_type", "quantity", "data_types_stored"))
     if vals.get("asset_type") and vals["asset_type"] not in ("PHYSICAL", "VIRTUAL"):
         raise HTTPException(400, "asset_type must be PHYSICAL or VIRTUAL")
@@ -324,14 +394,22 @@ def _validate_asset(vals: dict):
         raise HTTPException(400, "quantity must be between 0 and 2,147,483,647")
     if vals.get("data_types_stored") is not None and len(vals["data_types_stored"]) > 200:
         raise HTTPException(400, "too many data types (max 200)")
+    eff = effective if effective is not None else vals
+    if eff.get("asset_type") in ("PHYSICAL", "VIRTUAL"):
+        wrong = PHYSICAL_ONLY if eff["asset_type"] == "VIRTUAL" else VIRTUAL_ONLY
+        bad = [k for k in wrong if eff.get(k)]
+        if bad:
+            raise HTTPException(400, f"a {eff['asset_type'].lower()} asset cannot have "
+                                     f"{', '.join(b.replace('_', ' ') for b in bad)}")
 
 
 @router.get("/assets")
 def list_assets(criticality: str | None = Query(None), q: str | None = Query(None),
                 user: Principal = Depends(require("assets", "view")), conn=Depends(get_conn)):
-    a, ppl = t("assets"), t("people")
-    stmt = (select(a, ppl.c.full_name.label("owner_name"))
+    a, ppl, tp = t("assets"), t("people"), t("third_parties")
+    stmt = (select(a, ppl.c.full_name.label("owner_name"), tp.c.name.label("vendor_name"))
             .select_from(a).outerjoin(ppl, a.c.owner_person_id == ppl.c.id)
+            .outerjoin(tp, a.c.vendor_third_party_id == tp.c.id)
             .where(a.c.tenant_id == user.tenant_id).order_by(a.c.name))
     if criticality:
         stmt = stmt.where(a.c.criticality == criticality)
@@ -346,6 +424,7 @@ def create_asset(body: AssetIn, user: Principal = Depends(require("assets", "add
     _validate_asset(vals)
     with engine.begin() as conn:
         _owner_must_be_person(conn, user.tenant_id, body.owner_person_id)
+        _tp_must_exist(conn, user.tenant_id, vals.get("vendor_third_party_id"))
         aid, now = str(uuid.uuid4()), now_iso()
         conn.execute(insert(t("assets")).values(
             id=aid, tenant_id=user.tenant_id, created_at=now, updated_at=now, **vals))
@@ -366,7 +445,13 @@ def asset_detail(asset_id: str, user: Principal = Depends(require("assets", "vie
         matched = {r["name"]: r["classification"] for r in conn.execute(
             select(di.c.name, di.c.classification).where(
                 di.c.tenant_id == user.tenant_id, di.c.name.in_(stored))).mappings()}
+    vendor_name = conn.execute(select(t("third_parties").c.name).where(
+        t("third_parties").c.id == a["vendor_third_party_id"])).scalar() \
+        if a["vendor_third_party_id"] else None
+    photo_name = conn.execute(select(t("files").c.original_name).where(
+        t("files").c.id == a["photo_file_id"])).scalar() if a["photo_file_id"] else None
     return {**a, "owner_name": _owner_name(conn, a["owner_person_id"]),
+            "vendor_name": vendor_name, "photo_name": photo_name,
             "data": [{"name": n, "classification": matched.get(n)} for n in stored]}
 
 
@@ -379,6 +464,17 @@ class AssetPatch(StrictModel):
     data_types_stored: list[str] | None = None
     criticality: str | None = None
     location: str | None = None
+    vendor_third_party_id: str | None = None
+    subtype: str | None = None
+    # PHYSICAL-only
+    manufacturer: str | None = None
+    model: str | None = None
+    serial_number: str | None = None
+    # VIRTUAL-only
+    hostname: str | None = None
+    ip_address: str | None = None
+    cloud_provider: str | None = None
+    service_url: str | None = None
 
 
 @router.patch("/assets/{asset_id}")
@@ -386,11 +482,18 @@ def update_asset(asset_id: str, body: AssetPatch, user: Principal = Depends(requ
     vals = _norm(body.model_dump(exclude_unset=True))
     if not vals:
         raise HTTPException(400, "nothing to update")
-    _validate_asset(vals)
     with engine.begin() as conn:
-        _get(conn, "assets", user.tenant_id, asset_id, "asset")
+        cur = _get(conn, "assets", user.tenant_id, asset_id, "asset")
+        # Switching type clears the other side's columns, so the row can never hold
+        # contradictory detail — and so the shape check below sees the real end state.
+        if vals.get("asset_type") and vals["asset_type"] != cur["asset_type"]:
+            drop = VIRTUAL_ONLY if vals["asset_type"] == "PHYSICAL" else PHYSICAL_ONLY
+            vals.update({k: None for k in drop})
+        _validate_asset(vals, {**cur, **vals})
         if "owner_person_id" in vals:
             _owner_must_be_person(conn, user.tenant_id, vals["owner_person_id"])
+        if "vendor_third_party_id" in vals:
+            _tp_must_exist(conn, user.tenant_id, vals["vendor_third_party_id"])
         vals["updated_at"] = now_iso()
         conn.execute(update(t("assets")).where(t("assets").c.id == asset_id).values(**vals))
     return {"ok": True}
@@ -398,9 +501,106 @@ def update_asset(asset_id: str, body: AssetPatch, user: Principal = Depends(requ
 
 @router.delete("/assets/{asset_id}")
 def delete_asset(asset_id: str, user: Principal = Depends(require("assets", "delete"))):
+    files_t = t("files")
     with engine.begin() as conn:
-        _get(conn, "assets", user.tenant_id, asset_id, "asset")
+        a = _get(conn, "assets", user.tenant_id, asset_id, "asset")
+        key = conn.execute(select(files_t.c.storage_key).where(
+            files_t.c.id == a["photo_file_id"])).scalar() if a["photo_file_id"] else None
         conn.execute(delete(t("assets")).where(t("assets").c.id == asset_id))
+        if a["photo_file_id"]:      # after the asset — files.id is RESTRICT-referenced
+            conn.execute(delete(files_t).where(files_t.c.id == a["photo_file_id"]))
+    if key:                         # only once the row is gone, same order as evidence.py
+        storage.delete(key)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- asset photo (P4-S7)
+#: A rack photo is an attribute of the asset, so it lands in `files` rather than the
+#: evidence vault — see the schema comment on assets.photo_file_id.
+#: Raster only. The photo is rendered straight back into an <img>, and while a blob-URL
+#: <img> will not execute script inside an SVG, allowing image/svg+xml here means the
+#: same bytes are one `?disposition=inline` away from being a scripted document.
+PHOTO_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+
+@router.post("/assets/{asset_id}/photo", status_code=201)
+async def upload_asset_photo(asset_id: str, file: UploadFile = File(...),
+                             user: Principal = Depends(require("assets", "edit"))):
+    if (file.content_type or "").lower() not in PHOTO_MIME:
+        raise HTTPException(400, "photo must be a PNG, JPEG, WebP or GIF image")
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {settings.max_upload_mb} MB limit")
+
+    a_t, files_t, members = t("assets"), t("files"), t("tenant_members")
+    with engine.connect() as conn:      # 404 before anything is written to the vault
+        a = conn.execute(select(a_t.c.id, a_t.c.photo_file_id).where(
+            a_t.c.id == asset_id, a_t.c.tenant_id == user.tenant_id)).mappings().first()
+    if a is None:
+        raise HTTPException(404, "asset not found")
+
+    key, sha, size = storage.save(user.tenant_id, data, file.filename or "photo")
+    file_id, now = str(uuid.uuid4()), now_iso()
+    old_key = None
+    with engine.begin() as conn:
+        member_id = conn.execute(select(members.c.id).where(
+            members.c.tenant_id == user.tenant_id,
+            members.c.user_id == user.user_id)).scalar()
+        if a["photo_file_id"]:          # replacing: remember the old blob to sweep after commit
+            old_key = conn.execute(select(files_t.c.storage_key).where(
+                files_t.c.id == a["photo_file_id"])).scalar()
+        conn.execute(insert(files_t).values(
+            id=file_id, tenant_id=user.tenant_id, storage_key=key,
+            original_name=file.filename or "photo", mime_type=file.content_type,
+            size_bytes=size, sha256=sha, uploaded_by_member_id=member_id, created_at=now))
+        conn.execute(update(a_t).where(a_t.c.id == asset_id).values(
+            photo_file_id=file_id, updated_at=now))
+        if a["photo_file_id"]:
+            conn.execute(delete(files_t).where(files_t.c.id == a["photo_file_id"]))
+    if old_key:
+        storage.delete(old_key)
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="asset.photo_uploaded", entity_type="asset", entity_id=asset_id,
+                 detail={"sha256": sha})
+    return {"file_id": file_id, "original_name": file.filename, "size_bytes": size, "sha256": sha}
+
+
+@router.get("/assets/{asset_id}/photo")
+def download_asset_photo(asset_id: str,
+                         disposition: str = Query("inline", pattern="^(attachment|inline)$"),
+                         user: Principal = Depends(require("assets", "view")),
+                         conn=Depends(get_conn)):
+    a_t, files_t = t("assets"), t("files")
+    row = conn.execute(
+        select(files_t.c.storage_key, files_t.c.original_name, files_t.c.mime_type)
+        .join(a_t, a_t.c.photo_file_id == files_t.c.id)
+        .where(a_t.c.id == asset_id, a_t.c.tenant_id == user.tenant_id)).mappings().first()
+    if row is None:
+        raise HTTPException(404, "no photo on this asset")
+    path = storage.path_for(row["storage_key"])
+    if not path.exists():
+        raise HTTPException(410, "file missing from vault")
+    name = (row["original_name"] or "photo").replace('"', "")
+    return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream",
+                        headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
+
+
+@router.delete("/assets/{asset_id}/photo")
+def delete_asset_photo(asset_id: str, user: Principal = Depends(require("assets", "edit"))):
+    """Gated on `edit`, not `delete`: removing a photo edits the asset, it does not destroy
+    the record. The same reasoning as clearing any other field."""
+    a_t, files_t = t("assets"), t("files")
+    with engine.begin() as conn:
+        a = _get(conn, "assets", user.tenant_id, asset_id, "asset")
+        if not a["photo_file_id"]:
+            raise HTTPException(404, "no photo on this asset")
+        key = conn.execute(select(files_t.c.storage_key).where(
+            files_t.c.id == a["photo_file_id"])).scalar()
+        conn.execute(update(a_t).where(a_t.c.id == asset_id).values(
+            photo_file_id=None, updated_at=now_iso()))
+        conn.execute(delete(files_t).where(files_t.c.id == a["photo_file_id"]))
+    if key:
+        storage.delete(key)
     return {"ok": True}
 
 
@@ -409,6 +609,7 @@ def delete_asset(asset_id: str, user: Principal = Depends(require("assets", "del
 class DataItemIn(StrictModel):
     name: str
     description: str | None = None
+    data_type: str | None = None            # lookup_values kind='data_type'
     owner_person_id: str | None = None
     classification: str = "INTERNAL"
     retention_note: str | None = None
@@ -447,6 +648,7 @@ def create_data_item(body: DataItemIn, user: Principal = Depends(require("data",
 class DataItemPatch(StrictModel):
     name: str | None = None
     description: str | None = None
+    data_type: str | None = None
     owner_person_id: str | None = None
     classification: str | None = None
     retention_note: str | None = None
@@ -600,13 +802,24 @@ def third_party_detail(tp_id: str, user: Principal = Depends(require("third_part
     ag = t("third_party_agreements")
     agreements = [dict(r) for r in conn.execute(
         select(ag).where(ag.c.third_party_id == tp_id).order_by(ag.c.valid_until.nullslast())).mappings()]
+    files_t = t("files")
+    file_names = dict(conn.execute(
+        select(files_t.c.id, files_t.c.original_name).where(
+            files_t.c.tenant_id == user.tenant_id,
+            files_t.c.id.in_([a["file_id"] for a in agreements if a["file_id"]] or [""]))).all())
     for a in agreements:
         a["expiry_status"] = evidence_status(a["valid_until"], today)
+        a["file_name"] = file_names.get(a["file_id"])
     asm = t("third_party_assessments")
     assessments = [dict(r) for r in conn.execute(
         select(asm).where(asm.c.third_party_id == tp_id).order_by(asm.c.expires_at.nullslast())).mappings()]
+    ev_titles = dict(conn.execute(
+        select(t("evidence").c.id, t("evidence").c.title).where(
+            t("evidence").c.tenant_id == user.tenant_id,
+            t("evidence").c.id.in_([a["evidence_id"] for a in assessments if a["evidence_id"]] or [""]))).all())
     for a in assessments:
         a["expiry_status"] = evidence_status(a["expires_at"], today)
+        a["evidence_title"] = ev_titles.get(a["evidence_id"])
     tpt = t("third_parties")
     children = [dict(r) for r in conn.execute(
         select(tpt.c.id, tpt.c.name).where(tpt.c.parent_third_party_id == tp_id)).mappings()]
@@ -642,7 +855,14 @@ def update_third_party(tp_id: str, body: ThirdPartyPatch, user: Principal = Depe
 def delete_third_party(tp_id: str, user: Principal = Depends(require("third_parties", "delete"))):
     with engine.begin() as conn:
         _get(conn, "third_parties", user.tenant_id, tp_id, "third party")
-        conn.execute(delete(t("third_parties")).where(t("third_parties").c.id == tp_id))
+        try:
+            conn.execute(delete(t("third_parties")).where(t("third_parties").c.id == tp_id))
+        except IntegrityError:
+            # assets.vendor_third_party_id is ON DELETE RESTRICT. That edge was harmless
+            # while the column was dormant; the moment P4-S7 let a user set it, deleting a
+            # vendor an asset points at became an unhandled 500.
+            raise HTTPException(
+                409, "this vendor is still named on an asset — clear it there first")
     return {"ok": True}
 
 
@@ -681,6 +901,21 @@ class AgreementIn(StrictModel):
     notes: str | None = None
 
 
+class AgreementPatch(StrictModel):
+    """Its own model rather than reusing AgreementIn: `kind` is required there, so a PATCH
+    that only fixes an expiry date would have to resend it.
+
+    `file_id` is deliberately NOT on the wire in either model. The FK is composite
+    (file_id, tenant_id), so an unvalidated id from a caller would be a cross-tenant
+    IntegrityError → 500; the upload and delete endpoints below own that column.
+    """
+    kind: str | None = None
+    reference: str | None = None
+    valid_from: IsoDate = None
+    valid_until: IsoDate = None
+    notes: str | None = None
+
+
 @router.post("/third-parties/{tp_id}/agreements", status_code=201)
 def add_agreement(tp_id: str, body: AgreementIn, user: Principal = Depends(require("third_parties", "edit"))):
     if body.kind not in AGREEMENT_KINDS:
@@ -694,13 +929,115 @@ def add_agreement(tp_id: str, body: AgreementIn, user: Principal = Depends(requi
     return {"id": aid}
 
 
-@router.delete("/third-parties/{tp_id}/agreements/{agreement_id}")
-def delete_agreement(tp_id: str, agreement_id: str, user: Principal = Depends(require("third_parties", "delete"))):
+@router.patch("/third-parties/{tp_id}/agreements/{agreement_id}")
+def update_agreement(tp_id: str, agreement_id: str, body: AgreementPatch,
+                     user: Principal = Depends(require("third_parties", "edit"))):
+    """There was no PATCH at all before P4-S7 — only POST and DELETE — so a contract could
+    only ever be attached in the same instant the agreement was created."""
+    vals = _norm(body.model_dump(exclude_unset=True))
+    if not vals:
+        raise HTTPException(400, "nothing to update")
+    if vals.get("kind") and vals["kind"] not in AGREEMENT_KINDS:
+        raise HTTPException(400, f"kind must be one of {', '.join(sorted(AGREEMENT_KINDS))}")
     ag = t("third_party_agreements")
     with engine.begin() as conn:
+        row = conn.execute(select(ag).where(
+            ag.c.id == agreement_id, ag.c.third_party_id == tp_id,
+            ag.c.tenant_id == user.tenant_id)).first()
+        if row is None:
+            raise HTTPException(404, "agreement not found")
+        conn.execute(update(ag).where(ag.c.id == agreement_id).values(**vals))
+    return {"ok": True}
+
+
+@router.post("/third-parties/{tp_id}/agreements/{agreement_id}/file", status_code=201)
+async def upload_agreement_file(tp_id: str, agreement_id: str, file: UploadFile = File(...),
+                                user: Principal = Depends(require("third_parties", "edit"))):
+    """Attach the signed contract to an agreement.
+
+    Goes into `files`, NOT the evidence vault — third_party_agreements.file_id FKs `files`
+    directly while third_party_assessments.evidence_id FKs `evidence`, and that asymmetry
+    is deliberate: routing an MSA through Evidence would force a title and evidence_type on
+    it, list it in the artifact vault, and double-count its expiry against the agreement's
+    own valid_until.
+    """
+    data = await file.read()
+    if len(data) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {settings.max_upload_mb} MB limit")
+
+    ag, files_t, members = t("third_party_agreements"), t("files"), t("tenant_members")
+    with engine.connect() as conn:      # 404 before writing anything to the vault
+        row = conn.execute(select(ag.c.id, ag.c.file_id).where(
+            ag.c.id == agreement_id, ag.c.third_party_id == tp_id,
+            ag.c.tenant_id == user.tenant_id)).mappings().first()
+    if row is None:
+        raise HTTPException(404, "agreement not found")
+
+    key, sha, size = storage.save(user.tenant_id, data, file.filename or "contract")
+    file_id, now = str(uuid.uuid4()), now_iso()
+    old_key = None
+    with engine.begin() as conn:
+        member_id = conn.execute(select(members.c.id).where(
+            members.c.tenant_id == user.tenant_id,
+            members.c.user_id == user.user_id)).scalar()
+        if row["file_id"]:              # replacing: remember the old blob to sweep after commit
+            old_key = conn.execute(select(files_t.c.storage_key).where(
+                files_t.c.id == row["file_id"])).scalar()
+        conn.execute(insert(files_t).values(
+            id=file_id, tenant_id=user.tenant_id, storage_key=key,
+            original_name=file.filename or "contract", mime_type=file.content_type,
+            size_bytes=size, sha256=sha, uploaded_by_member_id=member_id, created_at=now))
+        conn.execute(update(ag).where(ag.c.id == agreement_id).values(file_id=file_id))
+        if row["file_id"]:
+            conn.execute(delete(files_t).where(files_t.c.id == row["file_id"]))
+    if old_key:                          # only after the row is gone — same order as evidence.py
+        storage.delete(old_key)
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="third_party.agreement_file_uploaded", entity_type="third_party",
+                 entity_id=tp_id, detail={"agreement_id": agreement_id, "sha256": sha})
+    return {"file_id": file_id, "original_name": file.filename, "size_bytes": size,
+            "sha256": sha}
+
+
+@router.get("/third-parties/{tp_id}/agreements/{agreement_id}/file")
+def download_agreement_file(tp_id: str, agreement_id: str,
+                            disposition: str = Query("attachment", pattern="^(attachment|inline)$"),
+                            user: Principal = Depends(require("third_parties", "view")),
+                            conn=Depends(get_conn)):
+    ag, files_t = t("third_party_agreements"), t("files")
+    row = conn.execute(
+        select(files_t.c.storage_key, files_t.c.original_name, files_t.c.mime_type)
+        .join(ag, ag.c.file_id == files_t.c.id)
+        .where(ag.c.id == agreement_id, ag.c.third_party_id == tp_id,
+               ag.c.tenant_id == user.tenant_id)).mappings().first()
+    if row is None:
+        raise HTTPException(404, "file not found")
+    path = storage.path_for(row["storage_key"])
+    if not path.exists():
+        raise HTTPException(410, "file missing from vault")
+    name = (row["original_name"] or "contract").replace('"', "")
+    return FileResponse(path, media_type=row["mime_type"] or "application/octet-stream",
+                        headers={"Content-Disposition": f'{disposition}; filename="{name}"'})
+
+
+@router.delete("/third-parties/{tp_id}/agreements/{agreement_id}")
+def delete_agreement(tp_id: str, agreement_id: str, user: Principal = Depends(require("third_parties", "delete"))):
+    ag, files_t = t("third_party_agreements"), t("files")
+    with engine.begin() as conn:
         _get(conn, "third_parties", user.tenant_id, tp_id, "third party")
+        row = conn.execute(select(ag.c.file_id).where(
+            ag.c.id == agreement_id, ag.c.third_party_id == tp_id,
+            ag.c.tenant_id == user.tenant_id)).mappings().first()
+        key = None
+        if row and row["file_id"]:
+            key = conn.execute(select(files_t.c.storage_key).where(
+                files_t.c.id == row["file_id"])).scalar()
         conn.execute(delete(ag).where(
             ag.c.id == agreement_id, ag.c.third_party_id == tp_id, ag.c.tenant_id == user.tenant_id))
+        if row and row["file_id"]:      # files.id is RESTRICT-referenced, so delete after the agreement
+            conn.execute(delete(files_t).where(files_t.c.id == row["file_id"]))
+    if key:
+        storage.delete(key)
     return {"ok": True}
 
 
@@ -713,6 +1050,7 @@ class AssessmentIn(StrictModel):
     business_impact: str | None = None
     outcome: str | None = None
     notes: str | None = None
+    evidence_id: str | None = None          # the questionnaire/report backing this review
 
 
 def _validate_assessment(vals: dict):
@@ -730,6 +1068,7 @@ def add_assessment(tp_id: str, body: AssessmentIn, user: Principal = Depends(req
     _validate_assessment(vals)
     with engine.begin() as conn:
         _get(conn, "third_parties", user.tenant_id, tp_id, "third party")
+        _evidence_must_exist(conn, user.tenant_id, vals.get("evidence_id"))
         aid, now = str(uuid.uuid4()), now_iso()
         conn.execute(insert(t("third_party_assessments")).values(
             id=aid, tenant_id=user.tenant_id, third_party_id=tp_id,
@@ -751,6 +1090,8 @@ def update_assessment(tp_id: str, assessment_id: str, body: AssessmentIn,
             asm.c.tenant_id == user.tenant_id)).first()
         if row is None:
             raise HTTPException(404, "assessment not found")
+        if "evidence_id" in vals:
+            _evidence_must_exist(conn, user.tenant_id, vals["evidence_id"])
         vals["updated_at"] = now_iso()
         conn.execute(update(asm).where(asm.c.id == assessment_id).values(**vals))
     return {"ok": True}
@@ -916,6 +1257,8 @@ class IncidentIn(StrictModel):
     detected_at: IsoDate = None
     resolved_at: IsoDate = None
     root_cause: str | None = None
+    resolution: str | None = None
+    corrective_action: str | None = None
     lessons_learnt: str | None = None
     owner_person_id: str | None = None
     status: str = "OPEN"
@@ -929,6 +1272,8 @@ class IncidentPatch(StrictModel):
     detected_at: IsoDate = None
     resolved_at: IsoDate = None
     root_cause: str | None = None
+    resolution: str | None = None
+    corrective_action: str | None = None
     lessons_learnt: str | None = None
     owner_person_id: str | None = None
     status: str | None = None
@@ -984,7 +1329,25 @@ def create_incident(body: IncidentIn, user: Principal = Depends(require("inciden
 @router.get("/incidents/{incident_id}")
 def incident_detail(incident_id: str, user: Principal = Depends(require("incidents", "view")), conn=Depends(get_conn)):
     inc = _get(conn, "incidents", user.tenant_id, incident_id, "incident")
-    return {**inc, "owner_name": _owner_name(conn, inc["owner_person_id"])}
+    ie, users_t = t("incident_events"), t("users")
+    events = [dict(x) for x in conn.execute(
+        select(ie.c.id, ie.c.event_type, ie.c.body, ie.c.author_kind,
+               ie.c.occurred_at, ie.c.created_at,
+               users_t.c.full_name.label("author_name"))
+        .select_from(ie).outerjoin(users_t, ie.c.author_user_id == users_t.c.id)
+        # occurred_at then seq — NOT created_at. Both are second-resolution, so two entries
+        # logged in the same second tie on every timestamp the table has; seq is the only
+        # thing that preserves the order they were actually written in.
+        .where(ie.c.incident_id == incident_id)
+        .order_by(ie.c.occurred_at, ie.c.seq)).mappings()]
+    ev, iev = t("evidence"), t("incident_evidence")
+    evidence = [dict(x) for x in conn.execute(
+        select(ev.c.id, ev.c.title, ev.c.evidence_type, ev.c.valid_until)
+        .join(iev, iev.c.evidence_id == ev.c.id)
+        .where(iev.c.incident_id == incident_id)
+        .order_by(ev.c.valid_until.asc().nullslast())).mappings()]
+    return {**inc, "owner_name": _owner_name(conn, inc["owner_person_id"]),
+            "events": events, "evidence": evidence}
 
 
 @router.patch("/incidents/{incident_id}")
@@ -1015,3 +1378,110 @@ def delete_incident(incident_id: str, user: Principal = Depends(require("inciden
         _get(conn, "incidents", user.tenant_id, incident_id, "incident")
         conn.execute(delete(t("incidents")).where(t("incidents").c.id == incident_id))
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- register ↔ evidence (P4-S7)
+# A separate join table per register rather than a 7th risk_links kind — see the schema
+# comment on risk_evidence for why (five hand-maintained artifacts vs an 8-line table).
+
+class EvidenceLinkIn(StrictModel):
+    evidence_id: str
+
+
+def _attach_evidence(join_table: str, owner_table: str, owner_col: str, what: str,
+                     tenant_id: str, owner_id: str, evidence_id: str):
+    with engine.begin() as conn:
+        _get(conn, owner_table, tenant_id, owner_id, what)
+        _evidence_must_exist(conn, tenant_id, evidence_id)
+        try:
+            # tenant_id omitted on purpose — the inherit_tenant trigger fills it from the
+            # parent, matching how review_messages and evidence_controls are written.
+            conn.execute(insert(t(join_table)).values(
+                **{owner_col: owner_id, "evidence_id": evidence_id}))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, "that evidence is already attached")
+    return {"ok": True}
+
+
+def _detach_evidence(join_table: str, owner_table: str, owner_col: str, what: str,
+                     tenant_id: str, owner_id: str, evidence_id: str):
+    j = t(join_table)
+    with engine.begin() as conn:
+        _get(conn, owner_table, tenant_id, owner_id, what)
+        conn.execute(delete(j).where(
+            j.c.tenant_id == tenant_id, j.c[owner_col] == owner_id,
+            j.c.evidence_id == evidence_id))
+    return {"ok": True}
+
+
+@router.post("/risks/{risk_id}/evidence", status_code=201)
+def attach_risk_evidence(risk_id: str, body: EvidenceLinkIn,
+                         user: Principal = Depends(require("risks", "edit"))):
+    return _attach_evidence("risk_evidence", "risks", "risk_id", "risk",
+                            user.tenant_id, risk_id, body.evidence_id)
+
+
+@router.delete("/risks/{risk_id}/evidence/{evidence_id}")
+def detach_risk_evidence(risk_id: str, evidence_id: str,
+                         user: Principal = Depends(require("risks", "edit"))):
+    # `edit`, not `delete`: detaching removes a RELATIONSHIP, not a record, and an Editor
+    # (every action except delete) must be able to undo their own attachment.
+    return _detach_evidence("risk_evidence", "risks", "risk_id", "risk",
+                            user.tenant_id, risk_id, evidence_id)
+
+
+@router.post("/incidents/{incident_id}/evidence", status_code=201)
+def attach_incident_evidence(incident_id: str, body: EvidenceLinkIn,
+                             user: Principal = Depends(require("incidents", "edit"))):
+    return _attach_evidence("incident_evidence", "incidents", "incident_id", "incident",
+                            user.tenant_id, incident_id, body.evidence_id)
+
+
+@router.delete("/incidents/{incident_id}/evidence/{evidence_id}")
+def detach_incident_evidence(incident_id: str, evidence_id: str,
+                             user: Principal = Depends(require("incidents", "edit"))):
+    return _detach_evidence("incident_evidence", "incidents", "incident_id", "incident",
+                            user.tenant_id, incident_id, evidence_id)
+
+
+# ---------------------------------------------------------------- incident timeline (P4-S7)
+
+INCIDENT_EVENT_TYPES = {"DETECTED", "CONTAINMENT", "INVESTIGATION", "CORRECTIVE_ACTION",
+                        "COMMUNICATION", "COMMENT", "RESOLVED", "CLOSED"}
+
+
+class IncidentEventIn(StrictModel):
+    event_type: str = "COMMENT"
+    body: str
+    occurred_at: IsoDate = None
+
+
+@router.post("/incidents/{incident_id}/events", status_code=201)
+def add_incident_event(incident_id: str, body: IncidentEventIn,
+                       user: Principal = Depends(require("incidents", "edit"))):
+    """Append to the incident's timeline.
+
+    Gated on `edit`, not `view`: a timeline entry becomes part of the official incident
+    record a bank auditor reads, so a read-only Viewer must not be able to write into it.
+
+    Entries are immutable (a deny_update trigger) — the UI offers "add a correction",
+    never an edit pencil, because tamper-evidence is the point.
+    """
+    if body.event_type not in INCIDENT_EVENT_TYPES:
+        raise HTTPException(
+            400, f"event_type must be one of {', '.join(sorted(INCIDENT_EVENT_TYPES))}")
+    if not (body.body or "").strip():
+        raise HTTPException(400, "an event needs a body")
+    eid = str(uuid.uuid4())
+    with engine.begin() as conn:
+        _get(conn, "incidents", user.tenant_id, incident_id, "incident")
+        conn.execute(insert(t("incident_events")).values(
+            id=eid, incident_id=incident_id, event_type=body.event_type,
+            body=body.body.strip(), author_user_id=user.user_id, author_kind="member",
+            occurred_at=body.occurred_at or now_iso(), created_at=now_iso()))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="incident.event_added", entity_type="incident",
+                 entity_id=incident_id, detail={"event_type": body.event_type})
+    return {"id": eid}

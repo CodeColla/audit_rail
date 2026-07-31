@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, get } from "../lib/api";
 import { useCan } from "../lib/auth";
+import { FilePreview } from "../components/FilePreview";
+import { ControlPicker } from "../components/ControlPicker";
 import { Card, cn, Drawer, inputCls, Loading, Modal, Pill, Segment, Table, Td } from "../lib/ui";
 
 type Detail = {
@@ -11,18 +13,39 @@ type Detail = {
 };
 type Row = {
   question_id: string; number: string; text: string; section: string;
-  mapped_control: string | null; response_value: string | null; workflow_status: string; evidence_count: number;
+  mapped_control: string | null; mapped_control_statement: string | null;
+  response_value: string | null; workflow_status: string; evidence_count: number;
 };
 type RespDetail = {
   question: { id: string; number: string; text: string };
   mapped_control: { code: string; statement: string } | null;
   response: { id: string; response_value: string; comment: string | null; na_justification: string | null; workflow_status: string } | null;
   evidence: { id: string; title: string; evidence_type: string }[];
+  inherited_evidence: { id: string; title: string; evidence_type: string; valid_until: string | null }[];
   revisions: { rev_no: number; response_value: string | null; comment: string | null; created_at: string }[];
   thread: { author_kind: string; kind: string; body: string; created_at: string }[];
   findings: { title: string; risk_rating: string | null; likelihood: number | null; impact: number | null }[];
 };
 type Ev = { id: string; title: string; evidence_type: string };
+
+/** Click an evidence row to preview it inline, without leaving the audit response drawer —
+ * mirrors Evidence.tsx's `<FilePreview url={`/evidence/${id}/file`} .../>` usage, but as a
+ * Modal (which layers over the Drawer cleanly) rather than navigating away. */
+function EvidencePreviewButton({ id, title }: { id: string; title: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="text-left text-[12.5px] font-medium text-ink hover:text-accent hover:underline">
+        {title}
+      </button>
+      {open && (
+        <Modal open onClose={() => setOpen(false)} title={title} size="lg">
+          <FilePreview url={`/evidence/${id}/file`} name={title} />
+        </Modal>
+      )}
+    </>
+  );
+}
 
 const VALUES = [
   { v: "yes", label: "Yes", tone: "ok" }, { v: "partial", label: "Partial", tone: "warn" },
@@ -45,9 +68,12 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
   const [just, setJust] = useState(""); const [msg, setMsg] = useState(""); const [kind, setKind] = useState("action");
   const [pickEv, setPickEv] = useState(false); const [showFinding, setShowFinding] = useState(false);
   const [fTitle, setFTitle] = useState(""); const [fL, setFL] = useState(2); const [fI, setFI] = useState(2);
+  const [remapping, setRemapping] = useState(false);
+  const [remapNotice, setRemapNotice] = useState("");
 
   useEffect(() => {
     if (data?.response) { setVal(data.response.response_value ?? ""); setComment(data.response.comment ?? ""); setJust(data.response.na_justification ?? ""); }
+    setRemapping(false); setRemapNotice("");
   }, [data?.question.id]); // reset when a different question loads
 
   const refresh = () => {
@@ -58,6 +84,18 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
   const saveAnswer = useMutation({
     mutationFn: () => api.put(`/assessments/${aid}/responses/${qid}`, { response_value: val, comment, na_justification: just || null }),
     onSuccess: refresh,
+  });
+  const remap = useMutation({
+    mutationFn: (control_id: string) => api.patch(`/assessments/${aid}/responses/${qid}/mapping`, { control_id }),
+    onSuccess: (r) => {
+      setRemapping(false);
+      // Never silently rewrites an already-saved answer — same "report, don't rewrite"
+      // rule P4-S5 uses for editing a control's stock_response.
+      setRemapNotice(r.data.was_prefilled
+        ? "Re-mapped. The saved answer was auto-filled from the old control and was NOT changed — review it."
+        : "Re-mapped.");
+      refresh();
+    },
   });
   const postMsg = useMutation({
     mutationFn: () => api.post(`/assessments/${aid}/messages`, { kind, body: msg, question_id: qid }),
@@ -71,7 +109,7 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
     mutationFn: () => api.post(`/assessments/${aid}/findings`, { title: fTitle, response_id: data?.response?.id, likelihood: fL, impact: fI }),
     onSuccess: () => { setShowFinding(false); setFTitle(""); refresh(); },
   });
-  const evList = useQuery({ queryKey: ["evidence"], queryFn: () => get<Ev[]>("/evidence"), enabled: pickEv });
+  const evList = useQuery({ queryKey: ["evidence", ""], queryFn: () => get<Ev[]>("/evidence"), enabled: pickEv });
 
   if (!data) return <Drawer open onClose={onClose} title="Loading…"><div /></Drawer>;
   const naNoJust = val === "na" && !just.trim();
@@ -79,9 +117,33 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
 
   return (
     <Drawer open onClose={onClose} sub={`QUESTION · #${data.question.number}`} title={data.question.text}>
+      {/* mapped control — statement was fetched but never rendered; re-map lets a reviewer
+          fix a wrong auto-assignment without leaving the audit response */}
+      <Card>
+        <div className="mb-1.5 flex items-center justify-between">
+          <div className="eyebrow">Mapped control{data.mapped_control && (
+            <span className="ml-2 font-mono normal-case tracking-normal text-accent">↳ {data.mapped_control.code}</span>)}</div>
+          {canEdit && (
+            <button onClick={() => setRemapping((s) => !s)} className="text-[12px] font-medium text-accent">Re-map</button>
+          )}
+        </div>
+        {data.mapped_control
+          ? <p className="text-[12.5px] text-txt2">{data.mapped_control.statement}</p>
+          : <p className="text-[12.5px] text-txt3">No control mapped to this question yet.</p>}
+        {remapNotice && (
+          <div className="mt-2 rounded-md bg-warn-bg px-2.5 py-1.5 text-[11.5px] text-warn">{remapNotice}</div>
+        )}
+        {remapping && (
+          <div className="mt-2">
+            <ControlPicker onClose={() => setRemapping(false)}
+              onPick={(c) => remap.mutate(c.id)} />
+          </div>
+        )}
+      </Card>
+
       {/* answer / edit — read-only for anyone without audits.edit */}
       <Card>
-        <div className="eyebrow mb-2.5">Your answer{data.mapped_control && <span className="ml-2 font-mono normal-case tracking-normal text-txt3">↳ {data.mapped_control.code}</span>}</div>
+        <div className="eyebrow mb-2.5">Your answer</div>
         {canEdit ? (
           <>
             <Segment value={val} onChange={setVal} options={VALUES} />
@@ -111,7 +173,9 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         )}
       </Card>
 
-      {/* evidence */}
+      {/* evidence — direct (attached to this response) vs inherited (attached to the
+          mapped control, P4-S5's evidence_controls) are badged distinctly and kept as two
+          separate lists, never merged, so nothing downstream double-counts. */}
       <Card>
         <div className="mb-2 flex items-center justify-between">
           <div className="eyebrow">Linked evidence</div>
@@ -124,9 +188,15 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         {data.evidence.map((e) => (
           <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
             <span className="grid h-7 w-7 place-items-center rounded-md bg-info-bg text-info">▣</span>
-            <div><div className="text-[12.5px] font-medium">{e.title}</div><div className="text-[11px] text-txt3">{e.evidence_type}</div></div>
+            <div>
+              <EvidencePreviewButton id={e.id} title={e.title} />
+              <div className="text-[11px] text-txt3">{e.evidence_type}</div>
+            </div>
           </div>
         ))}
+        {data.evidence.length === 0 && data.response && (
+          <div className="border-t border-bd py-2 text-[12px] text-txt3 first:border-t-0">Nothing attached directly to this question.</div>
+        )}
         {pickEv && (
           <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-bd">
             {(evList.data ?? []).map((e) => (
@@ -139,6 +209,24 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
           </div>
         )}
       </Card>
+
+      {data.inherited_evidence.length > 0 && (
+        <Card>
+          <div className="mb-2 flex items-center gap-2">
+            <div className="eyebrow">Inherited from {data.mapped_control?.code}</div>
+            <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-txt3">via control</span>
+          </div>
+          {data.inherited_evidence.map((e) => (
+            <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
+              <span className="grid h-7 w-7 place-items-center rounded-md bg-canvas text-txt3">▣</span>
+              <div>
+                <EvidencePreviewButton id={e.id} title={e.title} />
+                <div className="text-[11px] text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
 
       {/* answer history — written on every save; used to be invisible */}
       {(data.revisions?.length ?? 0) > 1 && (
@@ -337,7 +425,11 @@ export default function Workspace() {
           <tr key={r.question_id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenQ(r.question_id)}>
             <Td className="font-mono text-txt3">#{r.number}</Td>
             <Td><div className="font-medium">{r.text}</div>
-              {r.mapped_control && <div className="font-mono text-[11.5px] text-txt3">↳ {r.mapped_control}</div>}</Td>
+              {r.mapped_control && (
+                <div className="font-mono text-[11.5px] text-txt3" title={r.mapped_control_statement ?? undefined}>
+                  ↳ {r.mapped_control}
+                </div>
+              )}</Td>
             <Td>{r.response_value ? <Pill tone={r.response_value}>{r.response_value.toUpperCase()}</Pill> : <span className="text-txt3">—</span>}</Td>
             <Td><Pill tone={r.workflow_status}>{r.workflow_status.replace(/_/g, " ")}</Pill></Td>
             <Td>{r.evidence_count > 0 ? <span className="rounded bg-canvas px-2 py-0.5 text-[11px]">{r.evidence_count} linked</span> : <span className="text-txt3">none</span>}</Td>

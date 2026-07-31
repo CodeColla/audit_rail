@@ -218,6 +218,13 @@ def confirm_proposals(template_id: str, body: ConfirmIn,
                 continue
             vals = {"status": status_val, "confirmed_by_member_id": member_id}
             if d.get("control_id"):
+                # Unvalidated before: a garbage or cross-tenant id hit the composite FK
+                # question_control_map(control_id, tenant_id) -> controls(id, tenant_id)
+                # and raised an unhandled IntegrityError (500) instead of a clean 400.
+                if conn.execute(select(t("controls").c.id).where(
+                        t("controls").c.id == d["control_id"],
+                        t("controls").c.tenant_id == user.tenant_id)).first() is None:
+                    raise HTTPException(400, "control not found in this organisation")
                 vals["control_id"] = d["control_id"]
             conn.execute(update(qcm).where(
                 qcm.c.question_id == d["question_id"],

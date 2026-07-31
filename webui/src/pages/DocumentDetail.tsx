@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
@@ -46,8 +46,9 @@ const statusTone = (s: string) =>
   s === "PUBLISHED" ? "ok" : s === "PENDING_APPROVAL" ? "warn" : s === "SUPERSEDED" ? "na" : "info";
 
 // ─────────────────────────────────────────────────────── editor
-function Editor({ docId, version, onDone }:
-  { docId: string; version: Version; onDone: () => void }) {
+function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
+  { docId: string; version: Version; onDone: () => void;
+    onDirtyChange?: (dirty: boolean) => void; canDiscard: boolean }) {
   const qc = useQueryClient();
   // `editor_html` is the server's HTML rendering of this draft. For a pre-S4 MARKDOWN
   // version it is md_to_html(content) — the editor must never be handed markdown, because
@@ -59,6 +60,11 @@ function Editor({ docId, version, onDone }:
   const [discarding, setDiscarding] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const dirty = content !== initial || changelog !== (version.changelog ?? "");
+  // Reports dirty state up so the PARENT's own exit routes (tab clicks, "All documents")
+  // can guard too — "Done" isn't the only way out of this component. The parent unmounts
+  // Editor directly on a tab click, which used to bypass this component's own guard
+  // entirely because that guard only covered the Done button.
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty]);
 
   const save = useMutation({
     mutationFn: () => api.patch(`/documents/${docId}/versions/${version.id}`,
@@ -87,8 +93,13 @@ function Editor({ docId, version, onDone }:
           className="btn btn-primary shrink-0 disabled:opacity-50">{save.isPending ? "Saving…" : "Save draft"}</button>
         <button onClick={() => (dirty ? setLeaving(true) : onDone())}
           className="btn shrink-0">Done</button>
-        <button onClick={() => setDiscarding(true)}
-          className="btn shrink-0 text-bad hover:border-bad">Discard draft</button>
+        {/* A document must keep at least one version — the API 409s discarding the only
+            one. Offering the button anyway on every brand-new document (the most common
+            time to be in the editor) was a guaranteed-to-fail affordance. */}
+        {canDiscard && (
+          <button onClick={() => setDiscarding(true)}
+            className="btn shrink-0 text-bad hover:border-bad">Discard draft</button>
+        )}
       </div>
       {/* A failed save used to be indistinguishable from a successful one: the button
           simply reverted to "Save draft" and the author walked away thinking it landed. */}
@@ -493,7 +504,10 @@ function AttestationTab({ doc }: { doc: Detail }) {
         <div className="flex flex-wrap items-center gap-3">
           <button disabled={saveDisabled} onClick={() => save.mutate()}
             className="btn disabled:opacity-50">{save.isPending ? "Saving…" : "Save audience"}</button>
-          {can("documents", "publish") && (
+          {/* start_attestation_campaign is guarded server-side by documents.edit, not
+              .publish — the UI must match, or an Editor sees the audience builder but
+              never the button to actually use it. */}
+          {can("documents", "edit") && (
             <button disabled={campaign.isPending || (aud.data?.targeted ?? 0) === 0}
               onClick={() => campaign.mutate()} className="btn btn-primary disabled:opacity-50">
               {campaign.isPending ? "Starting…" : "Start / resend campaign"}</button>
@@ -513,17 +527,37 @@ function AttestationTab({ doc }: { doc: Detail }) {
 // ─────────────────────────────────────────────────────── page
 export default function DocumentDetail() {
   const { id } = useParams();
+  const nav = useNavigate();
   const qc = useQueryClient();
   const can = useCan();
   const [tab, setTab] = useState<"content" | "versions" | "approvals" | "attestation">("content");
   const [editing, setEditing] = useState(false);
   const [diffing, setDiffing] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+
+  // A tab click or the "All documents" link unmounts Editor directly — its own unsaved-
+  // changes modal never runs for those exits. Guard here too.
+  const guardLeaveEditor = (proceed: () => void) => {
+    if (editing && editorDirty
+        && !window.confirm("You have unsaved changes in this draft. Leave and discard them?")) {
+      return;
+    }
+    proceed();
+  };
 
   const { data: doc, isLoading } = useQuery({ queryKey: ["document", id], queryFn: () => get<Detail>(`/documents/${id}`) });
 
+  const [editErr, setEditErr] = useState("");
   const newDraft = useMutation({
     mutationFn: (bump: string) => api.post(`/documents/${id}/versions`, { bump }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["document", id] }); setEditing(true); },
+    onSuccess: () => {
+      setEditErr("");
+      qc.invalidateQueries({ queryKey: ["document", id] });
+      setTab("content"); setEditing(true);
+    },
+    // Calling this on a PENDING_APPROVAL version 409s ("already an open draft") — that
+    // used to vanish with no feedback at all, indistinguishable from nothing happening.
+    onError: (e: any) => setEditErr(errText(e, "Could not start a new draft.")),
   });
   const archive = useMutation({
     mutationFn: (status: string) => api.patch(`/documents/${id}`, { status }),
@@ -542,13 +576,20 @@ export default function DocumentDetail() {
   if (isLoading || !doc) return <Loading />;
 
   function onEdit() {
-    if (doc!.open_version?.status === "DRAFT") setEditing(true);
+    // The editor only renders on the Content tab — clicking Edit from Versions,
+    // Approvals or Attestation used to flip `editing` with no visible effect at all.
+    if (doc!.open_version?.status === "DRAFT") { setTab("content"); setEditing(true); }
     else newDraft.mutate("minor");   // published → start a new minor draft
   }
 
   return (
     <>
-      <Link to="/documents" className="text-[13px] text-txt2 hover:text-ink">← All documents</Link>
+      {editing && editorDirty ? (
+        <button onClick={() => guardLeaveEditor(() => nav("/documents"))}
+          className="text-[13px] text-txt2 hover:text-ink">← All documents</button>
+      ) : (
+        <Link to="/documents" className="text-[13px] text-txt2 hover:text-ink">← All documents</Link>
+      )}
       <div className="mb-1 mt-2 flex items-end gap-3">
         <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{doc.title}</h1>
         {shown && <Pill tone={statusTone(shown.status)}>{shown.status === "PENDING_APPROVAL" ? "In approval" : shown.status.charAt(0) + shown.status.slice(1).toLowerCase()}</Pill>}
@@ -560,24 +601,37 @@ export default function DocumentDetail() {
         {shown && <> · v{shown.version_label}</>}
         {doc.next_review_at && <> · <span className={doc.review_status === "overdue" ? "text-bad" : "text-txt2"}>review {doc.next_review_at.slice(0, 10)}</span></>}
         {can("documents", "edit") && (
-          <button onClick={onEdit} className="btn ml-2 py-1.5">
+          <button onClick={onEdit} disabled={newDraft.isPending} className="btn ml-2 py-1.5 disabled:opacity-50">
             {doc.open_version?.status === "DRAFT" ? "Continue editing" : "Edit → new version"}
           </button>
         )}
         {shown && (
           <button onClick={() => downloadFile(
             `/documents/${doc.id}/versions/${shown.id}/render.pdf`,
-            `${doc.title} v${shown.version_label}.pdf`)} className="btn py-1.5">Export PDF ↓</button>)}
+            `${doc.title} v${shown.version_label}.pdf`)}
+            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
+            className="btn py-1.5">Export PDF ↓</button>)}
         {shown && (
           <button onClick={() => downloadFile(
             `/documents/${doc.id}/versions/${shown.id}/render.docx`,
-            `${doc.title} v${shown.version_label}.docx`)} className="btn py-1.5">Export DOCX ↓</button>)}
+            `${doc.title} v${shown.version_label}.docx`)}
+            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
+            className="btn py-1.5">Export DOCX ↓</button>)}
         {can("documents", "edit") && (
           <button onClick={() => archive.mutate(doc.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
             disabled={archive.isPending} className="btn py-1.5 disabled:opacity-50">
             {doc.status === "ARCHIVED" ? "Restore" : "Archive"}
           </button>)}
       </p>
+
+      {editErr && (
+        <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{editErr}</div>
+      )}
+      {editing && editorDirty && (
+        <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-[12px] text-warn">
+          Export downloads the last SAVED draft — you have unsaved changes in the editor.
+        </div>
+      )}
 
       {doc.open_version && doc.open_version.status === "DRAFT" && !editing && tab === "content" && (
         <div className="mb-4 rounded-lg border border-warn/40 bg-warn-bg/40 px-4 py-2.5 text-[12.5px] text-warn">
@@ -591,7 +645,7 @@ export default function DocumentDetail() {
 
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["content", "versions", "approvals", "attestation"] as const).map((tt) => (
-          <button key={tt} onClick={() => { setTab(tt); setEditing(false); }}
+          <button key={tt} onClick={() => guardLeaveEditor(() => { setTab(tt); setEditing(false); })}
             className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-[13px] font-medium capitalize",
               tab === tt ? "border-accent text-ink" : "border-transparent text-txt2")}>
             {tt}{tt === "versions" && ` (${doc.versions.length})`}
@@ -600,7 +654,8 @@ export default function DocumentDetail() {
       </div>
 
       {tab === "content" && (editing && doc.open_version
-        ? <Editor docId={doc.id} version={doc.open_version} onDone={() => setEditing(false)} />
+        ? <Editor docId={doc.id} version={doc.open_version} onDone={() => setEditing(false)}
+                 onDirtyChange={setEditorDirty} canDiscard={doc.versions.length > 1} />
         : <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_240px]">
             <Card className="min-h-[40vh]"><Body v={shown} /></Card>
             <div className="space-y-4">

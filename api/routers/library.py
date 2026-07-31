@@ -71,6 +71,7 @@ def list_controls(
     domain_code: str | None = Query(None),
     applicability: str | None = Query(None, pattern="^(applicable|not_applicable)$"),
     include_retired: bool = Query(False),
+    q: str | None = Query(None, description="search reference code and statement"),
     user: Principal = Depends(require("controls", "view")),
     conn=Depends(get_conn),
 ):
@@ -86,7 +87,7 @@ def list_controls(
                qcm.c.status.in_(LIVE_MAPPING_STATUSES))
         .group_by(qcm.c.control_id)
     ).all())
-    q = (
+    stmt = (
         select(controls, domains.c.name.label("domain_name"),
                domains.c.code.label("domain_code"))
         .join(domains, controls.c.domain_id == domains.c.id)
@@ -94,13 +95,19 @@ def list_controls(
         .order_by(domains.c.sort_order, controls.c.code)
     )
     if not include_retired:
-        q = q.where(controls.c.status == "active")
+        stmt = stmt.where(controls.c.status == "active")
     if domain_code:
-        q = q.where(domains.c.code == domain_code)
+        stmt = stmt.where(domains.c.code == domain_code)
     if applicability:
-        q = q.where(controls.c.applicability == applicability)
+        stmt = stmt.where(controls.c.applicability == applicability)
+    if q:
+        # Both columns, because ControlPicker filtered on both client-side — a code-only
+        # server predicate would be a behaviour regression, not a migration.
+        like = f"%{q.lower()}%"
+        stmt = stmt.where(func.lower(controls.c.code).like(like)
+                          | func.lower(controls.c.statement).like(like))
     return [{**dict(r), "mapped_count": counts.get(r["id"], 0)}
-            for r in conn.execute(q).mappings()]
+            for r in conn.execute(stmt).mappings()]
 
 
 @router.get("/controls/{control_id}")
@@ -183,6 +190,296 @@ def control_detail(
             "linked_documents": [dict(d) for d in linked_documents]}
 
 
+# ------------------------------------------------------------------ write path (P4-S5)
+
+class ControlIn(StrictModel):
+    domain_id: str
+    code: str
+    statement: str
+    lifecycle: str = "per_audit"
+    recurrence_months: int | None = None
+    applicability: str = "applicable"
+    na_justification: str | None = None
+    reactivation_trigger: str | None = None
+    stock_response: str | None = None
+    stock_comment: str | None = None
+    guidance: str | None = None
+    owner_person_id: str | None = None
+    # NOT exposed: owner_member_id (its FK has no tenant leg — a caller could point at
+    # another tenant's member) and framework_refs (superseded, legacy JSON tags).
+
+
+class ControlPatch(StrictModel):
+    domain_id: str | None = None
+    code: str | None = None
+    statement: str | None = None
+    lifecycle: str | None = None
+    recurrence_months: int | None = None
+    applicability: str | None = None
+    na_justification: str | None = None
+    reactivation_trigger: str | None = None
+    stock_response: str | None = None
+    stock_comment: str | None = None
+    guidance: str | None = None
+    owner_person_id: str | None = None
+
+
+def _validate_control(merged: dict) -> None:
+    """Validate the RESULTING row, not just the submitted patch.
+
+    controls_na_needs_reason and controls_recurring_needs_months (db/schema.sql) are
+    row-level CHECKs — a partial PATCH that looks innocent, {"lifecycle": "recurring"} on a
+    row whose recurrence_months is still NULL, is a CheckViolation (500) unless the merged
+    row is what gets validated.
+    """
+    if merged["lifecycle"] not in LIFECYCLE:
+        raise HTTPException(400, f"lifecycle must be one of: {', '.join(LIFECYCLE)}")
+    if merged["applicability"] not in APPLICABILITY:
+        raise HTTPException(400, f"applicability must be one of: {', '.join(APPLICABILITY)}")
+    if merged["stock_response"] is not None and merged["stock_response"] not in STOCK:
+        raise HTTPException(400, f"stock_response must be one of: {', '.join(STOCK)}")
+    if not (merged["code"] or "").strip():
+        raise HTTPException(400, "code cannot be empty")
+    if not (merged["statement"] or "").strip():
+        raise HTTPException(400, "statement cannot be empty")
+    if merged["lifecycle"] == "recurring" and merged["recurrence_months"] is None:
+        raise HTTPException(400, "a recurring control needs recurrence_months")
+    if merged["recurrence_months"] is not None and merged["recurrence_months"] < 1:
+        raise HTTPException(400, "recurrence_months must be at least 1")
+    if merged["applicability"] == "not_applicable" and not merged["na_justification"]:
+        raise HTTPException(400, "mark why this control is not applicable")
+
+
+def _owner_and_domain_must_exist(conn, tenant_id: str, vals: dict) -> None:
+    if vals.get("domain_id") and conn.execute(select(t("domains").c.id).where(
+            t("domains").c.id == vals["domain_id"],
+            t("domains").c.tenant_id == tenant_id)).first() is None:
+        raise HTTPException(400, "domain not found in this organisation")
+    if vals.get("owner_person_id") and conn.execute(select(t("people").c.id).where(
+            t("people").c.id == vals["owner_person_id"],
+            t("people").c.tenant_id == tenant_id)).first() is None:
+        raise HTTPException(400, "owner must be a person in this organisation")
+
+
+@router.post("/controls", status_code=201)
+def create_control(body: ControlIn, user: Principal = Depends(require("controls", "add"))):
+    vals = _norm(body.model_dump())
+    _validate_control(vals)
+    cid, now = str(uuid.uuid4()), now_iso()
+    with engine.begin() as conn:
+        _owner_and_domain_must_exist(conn, user.tenant_id, vals)
+        # Pre-check rather than catch-after-insert: a Postgres constraint violation aborts
+        # the whole transaction, so a follow-up SELECT in the except block (to name the
+        # clashing control) would itself raise InFailedSqlTransaction. This also gives a
+        # friendlier message — "restore it" — in the common case, at the cost of a TOCTOU
+        # race the IntegrityError backstop below still catches (as a plain 409).
+        existing = conn.execute(select(t("controls").c.id, t("controls").c.status).where(
+            t("controls").c.tenant_id == user.tenant_id,
+            t("controls").c.code == vals["code"])).mappings().first()
+        if existing:
+            detail = f"code {vals['code']!r} is already in use"
+            if existing["status"] == "retired":
+                detail += f" by a retired control ({existing['id']}) — restore it instead"
+            raise HTTPException(409, detail)
+        try:
+            conn.execute(insert(t("controls")).values(
+                id=cid, tenant_id=user.tenant_id, status="active",
+                created_at=now, updated_at=now, **vals))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, f"code {vals['code']!r} is already in use")
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.created", entity_type="control", entity_id=cid,
+                 detail={"code": vals["code"]})
+    return {"id": cid}
+
+
+@router.patch("/controls/{control_id}")
+def update_control(control_id: str, body: ControlPatch,
+                   user: Principal = Depends(require("controls", "edit"))):
+    vals = _norm(body.model_dump(exclude_unset=True))
+    if not vals:
+        raise HTTPException(400, "nothing to update")
+    with engine.begin() as conn:
+        current = _control(conn, user.tenant_id, control_id)
+        merged = {**current, **vals}
+        _validate_control(merged)
+        _owner_and_domain_must_exist(conn, user.tenant_id, vals)
+        if merged["lifecycle"] != "recurring":
+            vals["recurrence_months"] = None
+        if merged["applicability"] != "not_applicable":
+            vals["na_justification"] = None
+            vals["reactivation_trigger"] = None
+        vals["updated_at"] = now_iso()          # controls has no set_updated_at trigger
+        try:
+            conn.execute(update(t("controls")).where(
+                t("controls").c.id == control_id).values(**vals))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, f"code {vals.get('code')!r} is already in use")
+
+        stale = {"count": 0, "assessments": []}
+        if "stock_response" in vals or "stock_comment" in vals:
+            # Editing the stock answer does NOT retro-write responses already prefilled
+            # from the old value — response_revisions is append-only, and a bank auditor
+            # may already have read it. Silence would be worse: tell the caller what is
+            # now stale so they can go correct it by hand.
+            resp, asmt = t("responses"), t("assessments")
+            rows = conn.execute(
+                select(asmt.c.id, asmt.c.bank_name, asmt.c.title).distinct()
+                .select_from(resp.join(asmt, resp.c.assessment_id == asmt.c.id))
+                .where(resp.c.prefilled_from_control_id == control_id,
+                       asmt.c.status.notin_(("closed", "verdict_issued")))
+            ).mappings().all()
+            stale = {"count": len(rows), "assessments": [dict(r) for r in rows]}
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.updated", entity_type="control", entity_id=control_id,
+                 detail={k: v for k, v in vals.items() if k != "updated_at"})
+    return {"ok": True, "stale_prefilled": stale}
+
+
+@router.delete("/controls/{control_id}")
+def retire_control(control_id: str, user: Principal = Depends(require("controls", "delete"))):
+    """Retire, never hard-delete: `tasks.control_id` and `responses.prefilled_from_control_id`
+    have no ON DELETE and would raise a raw ForeignKeyViolation, and a real delete would
+    silently cascade away the crosswalk (question_control_map) and every risk_links row
+    naming this control."""
+    with engine.begin() as conn:
+        current = _control(conn, user.tenant_id, control_id)
+        if current["status"] == "retired":
+            raise HTTPException(409, "this control is already retired")
+        conn.execute(update(t("controls")).where(t("controls").c.id == control_id).values(
+            status="retired", updated_at=now_iso()))
+        # a retired control's own recurring task must stop firing overdue notifications
+        tasks = t("tasks")
+        paused = conn.execute(update(tasks).where(
+            tasks.c.control_id == control_id, tasks.c.tenant_id == user.tenant_id,
+            tasks.c.status == "active").values(status="paused")).rowcount
+        retained = {
+            "mapped_questions": conn.execute(select(func.count()).select_from(t("question_control_map")).where(
+                t("question_control_map").c.control_id == control_id,
+                t("question_control_map").c.status.in_(LIVE_MAPPING_STATUSES))).scalar(),
+            "risks": conn.execute(select(func.count()).select_from(t("risk_links")).where(
+                t("risk_links").c.control_id == control_id)).scalar(),
+            "evidence": conn.execute(select(func.count()).select_from(t("evidence_controls")).where(
+                t("evidence_controls").c.control_id == control_id)).scalar(),
+            "documents": conn.execute(select(func.count()).select_from(t("control_documents")).where(
+                t("control_documents").c.control_id == control_id)).scalar(),
+            "tasks_paused": paused,
+        }
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.retired", entity_type="control", entity_id=control_id, detail={})
+    return {"ok": True, "retained": retained}
+
+
+@router.post("/controls/{control_id}/restore")
+def restore_control(control_id: str, user: Principal = Depends(require("controls", "edit"))):
+    with engine.begin() as conn:
+        current = _control(conn, user.tenant_id, control_id)
+        if current["status"] == "active":
+            raise HTTPException(409, "this control is already active")
+        conn.execute(update(t("controls")).where(t("controls").c.id == control_id).values(
+            status="active", updated_at=now_iso()))
+        # un-pause whatever retiring this control paused — best-effort: a task explicitly
+        # paused for an unrelated reason while the control was retired stays paused, but
+        # that's a rare enough edge case that guessing wrong here isn't worth the risk of
+        # silently reactivating tasks nobody wants running again
+        tasks = t("tasks")
+        conn.execute(update(tasks).where(
+            tasks.c.control_id == control_id, tasks.c.tenant_id == user.tenant_id,
+            tasks.c.status == "paused").values(status="active"))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.restored", entity_type="control", entity_id=control_id, detail={})
+    return {"ok": True}
+
+
+# ------------------------------------------------------------------ linkage (P4-S5)
+
+class ControlEvidenceIn(StrictModel):
+    evidence_id: str
+
+
+@router.post("/controls/{control_id}/evidence", status_code=201)
+def link_control_evidence(control_id: str, body: ControlEvidenceIn,
+                          user: Principal = Depends(require("controls", "edit"))):
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        if conn.execute(select(t("evidence").c.id).where(
+                t("evidence").c.id == body.evidence_id,
+                t("evidence").c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "evidence not found in this organisation")
+        try:
+            conn.execute(insert(t("evidence_controls")).values(
+                tenant_id=user.tenant_id, control_id=control_id,
+                evidence_id=body.evidence_id))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, "that evidence is already linked to this control")
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.evidence_linked", entity_type="control", entity_id=control_id,
+                 detail={"evidence_id": body.evidence_id})
+    return {"ok": True}
+
+
+@router.delete("/controls/{control_id}/evidence/{evidence_id}")
+def unlink_control_evidence(control_id: str, evidence_id: str,
+                            user: Principal = Depends(require("controls", "edit"))):
+    # Gated on .edit, not .delete: unlinking removes a RELATIONSHIP, not a record, and an
+    # Editor (every action except delete) must be able to undo their own link — same call
+    # P4-S4 made for discard-draft.
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        ec = t("evidence_controls")
+        conn.execute(delete(ec).where(
+            ec.c.tenant_id == user.tenant_id, ec.c.control_id == control_id,
+            ec.c.evidence_id == evidence_id))
+    return {"ok": True}
+
+
+class ControlDocumentIn(StrictModel):
+    document_id: str
+    note: str | None = None
+
+
+@router.post("/controls/{control_id}/documents", status_code=201)
+def link_control_document(control_id: str, body: ControlDocumentIn,
+                          user: Principal = Depends(require("controls", "edit"))):
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        if conn.execute(select(t("documents").c.id).where(
+                t("documents").c.id == body.document_id,
+                t("documents").c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "document not found in this organisation")
+        try:
+            conn.execute(insert(t("control_documents")).values(
+                tenant_id=user.tenant_id, control_id=control_id,
+                document_id=body.document_id, note=_norm({"note": body.note})["note"],
+                created_at=now_iso()))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, "that document is already linked to this control")
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.document_linked", entity_type="control", entity_id=control_id,
+                 detail={"document_id": body.document_id})
+    return {"ok": True}
+
+
+@router.delete("/controls/{control_id}/documents/{document_id}")
+def unlink_control_document(control_id: str, document_id: str,
+                            user: Principal = Depends(require("controls", "edit"))):
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        cd = t("control_documents")
+        conn.execute(delete(cd).where(
+            cd.c.tenant_id == user.tenant_id, cd.c.control_id == control_id,
+            cd.c.document_id == document_id))
+    return {"ok": True}
+
+
 @router.get("/crosswalk")
 def crosswalk(
     domain_code: str | None = Query(None),
@@ -203,10 +500,12 @@ def crosswalk(
 
     # control_id -> {template_id: [numbers]}. Same non-leak-but-tighten-anyway note as
     # list_controls above: qcm's composite FKs already guarantee same-tenant rows.
+    # REJECTED mappings are excluded, same as mapped_count and control_detail.
     cell_rows = conn.execute(
         select(qcm.c.control_id, questions.c.template_id, questions.c.number)
         .join(questions, qcm.c.question_id == questions.c.id)
-        .where(qcm.c.tenant_id == user.tenant_id)
+        .where(qcm.c.tenant_id == user.tenant_id,
+               qcm.c.status.in_(LIVE_MAPPING_STATUSES))
     ).all()
     cells: dict = {}
     for cid, tid, num in cell_rows:
