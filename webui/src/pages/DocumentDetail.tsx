@@ -5,11 +5,12 @@ import { api, downloadFile, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { DocBody } from "../components/DocBody";
 import { RichTextEditor } from "../components/RichTextEditor";
+import { SheetEditor } from "../components/SheetEditor";
 import { Bar, Card, cn, inputCls, Loading, Modal, Pill } from "../lib/ui";
 
 type Version = {
   id: string; version_label: string; major: number; minor: number; status: string;
-  content: string; content_format: "MARKDOWN" | "HTML"; changelog: string | null;
+  content: string; content_format: "MARKDOWN" | "HTML" | "SHEET"; changelog: string | null;
   published_at: string | null; file_id: string | null;
   /** Server-rendered HTML for the editor; present on open_version only. See the Editor. */
   editor_html?: string;
@@ -50,10 +51,13 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
   { docId: string; version: Version; onDone: () => void;
     onDirtyChange?: (dirty: boolean) => void; canDiscard: boolean }) {
   const qc = useQueryClient();
+  const isSheet = version.content_format === "SHEET";
   // `editor_html` is the server's HTML rendering of this draft. For a pre-S4 MARKDOWN
   // version it is md_to_html(content) — the editor must never be handed markdown, because
   // TipTap parses any string it is given as HTML and would collapse the whole document
-  // into one paragraph of literal source, which the next save would then persist.
+  // into one paragraph of literal source, which the next save would then persist. SHEET
+  // versions get no `editor_html` at all (documents.py returns None for them) — SheetEditor
+  // wants the raw JSON in `content`, not an HTML rendering of it.
   const initial = version.editor_html ?? version.content;
   const [content, setContent] = useState(initial);
   const [changelog, setChangelog] = useState(version.changelog ?? "");
@@ -67,8 +71,11 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty]);
 
   const save = useMutation({
+    // A version's format never changes mid-edit (SHEET stays SHEET) — only a pre-S4
+    // MARKDOWN version gets migrated to HTML on first edit through the rich text editor,
+    // per the editor_html note above.
     mutationFn: () => api.patch(`/documents/${docId}/versions/${version.id}`,
-                                { content, changelog, content_format: "HTML" }),
+                                { content, changelog, content_format: isSheet ? "SHEET" : "HTML" }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["document", docId] }); onDone(); },
   });
   const discard = useMutation({
@@ -108,7 +115,9 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
           Could not save this draft — {errText(save.error)}. Your text is still here; try again.
         </div>
       )}
-      <RichTextEditor value={content} onChange={setContent} />
+      {isSheet
+        ? <SheetEditor value={content} onChange={setContent} />
+        : <RichTextEditor value={content} onChange={setContent} />}
 
       <Modal open={leaving} onClose={() => setLeaving(false)} title="Leave without saving?">
         <p className="text-[13px] text-txt2">

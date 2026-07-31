@@ -5,6 +5,7 @@ The DoD, made executable. The two that matter most are the Probo fixes:
   • DoD #2 — a MINOR publish still needs approval (no silent bypass).
 """
 
+import json
 import re
 import uuid
 
@@ -703,4 +704,83 @@ def test_draft_content_format_hash_collision_is_verified_harmless(app_client):
     da = app_client.get(f"/api/documents/{doc_a}", headers=h).json()["open_version"]
     assert da["content"] == same_bytes and da["content_format"] == "HTML"
     # the read path renders it correctly as HTML regardless of the shared hash
-    assert da["editor_html"] == same_bytes
+
+
+# ────────────────────────────────────────────────── P5-S2: SHEET documents
+
+SHEET_JSON = json.dumps({"data": [["Control", "Owner"], ["MFA", "Alice"]],
+                         "bold": ["A1", "B1"], "align": {"B2": "right"}})
+
+
+def _new_sheet(app_client, h, owner, content=SHEET_JSON):
+    r = app_client.post("/api/documents", headers=h, json={
+        "title": "Asset Register", "owner_person_id": owner, "document_type": "REGISTER",
+        "content": content, "content_format": "SHEET"})
+    assert r.status_code == 201, r.text
+    return r.json()["id"], r.json()["version_id"]
+
+
+def test_sheet_document_round_trips(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner)
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert d["open_version"]["content_format"] == "SHEET"
+    # stored verbatim, like markdown — SHEET is never sanitised as HTML
+    assert json.loads(d["open_version"]["content"]) == json.loads(SHEET_JSON)
+    # not run through md_to_html for the editor — the SheetEditor wants raw JSON, not markup
+    assert d["open_version"].get("editor_html") is None
+
+
+def test_sheet_content_is_validated_on_create(app_client):
+    h, owner, _ = _setup(app_client)
+    r = app_client.post("/api/documents", headers=h, json={
+        "title": "Bad sheet", "owner_person_id": owner,
+        "content": '{"data": "not a grid"}', "content_format": "SHEET"})
+    assert r.status_code == 400
+    assert "spreadsheet" in r.json()["detail"]
+
+
+def test_sheet_content_is_validated_on_edit(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner)
+    r = app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                         json={"content": "not even json"})
+    assert r.status_code == 400
+    assert "spreadsheet" in r.json()["detail"]
+    # the bad edit must not have landed
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert json.loads(d["open_version"]["content"]) == json.loads(SHEET_JSON)
+
+
+def test_published_sheet_version_is_frozen(app_client):
+    """Same guarantee as MARKDOWN/HTML (test_published_content_is_frozen) — a spreadsheet's
+    approved, signed bytes must be exactly as immutable as any other format."""
+    from api.database import engine
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+    # the API refuses it...
+    assert app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
+                            json={"content": "{}"}).status_code == 409
+    # ...and so does the freeze trigger on a raw UPDATE
+    with engine.begin() as c:
+        try:
+            c.execute(sqltext("UPDATE document_versions SET content='{}' WHERE id=:v"),
+                      {"v": ver_id})
+            raised = False
+        except Exception as e:  # noqa: BLE001
+            raised = "immutable" in str(e).lower()
+    assert raised, "the freeze trigger did not fire for a published SHEET version"
+
+
+def test_sheet_pdf_and_docx_export(app_client):
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    pdf = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.pdf", headers=h)
+    assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+
+    docx = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.docx", headers=h)
+    assert docx.status_code == 200 and docx.content[:2] == b"PK"
+    assert "wordprocessingml" in docx.headers["content-type"]

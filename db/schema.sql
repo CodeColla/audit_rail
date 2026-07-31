@@ -864,7 +864,10 @@ CREATE TABLE document_versions (
     -- an explicit column rather than sniffed: `Use the <b>badge</b>` is valid markdown that any
     -- heuristic reads as HTML, and the meaning of already-signed bytes must not be a guess.
     content_format        text NOT NULL DEFAULT 'MARKDOWN'
-                              CHECK (content_format IN ('MARKDOWN', 'HTML')),
+                              -- P5-S2: SHEET holds a JSON grid (see api/render.py
+                              -- sheet_json_to_html), not markup — never sanitised as HTML,
+                              -- same as MARKDOWN is deliberately left raw.
+                              CHECK (content_format IN ('MARKDOWN', 'HTML', 'SHEET')),
     content_sha256        text GENERATED ALWAYS AS (sha256_hex(content)) STORED,
     changelog             text,
     status                text NOT NULL DEFAULT 'DRAFT'

@@ -161,9 +161,21 @@ def _clean(content: str | None, fmt: str) -> str | None:
 
 
 def _check_format(fmt: str) -> str:
-    if fmt not in ("MARKDOWN", "HTML"):
-        raise HTTPException(400, "content_format must be MARKDOWN or HTML")
+    if fmt not in ("MARKDOWN", "HTML", "SHEET"):
+        raise HTTPException(400, "content_format must be MARKDOWN, HTML or SHEET")
     return fmt
+
+
+def _validate_sheet(content: str | None, fmt: str) -> None:
+    """A SHEET version's `content` must be the JSON `render.parse_sheet` can read — checked
+    on every write, not just at export time, so a malformed grid is a clean 400 the moment
+    it's saved, not a 500 the next time someone tries to publish or export it."""
+    if fmt != "SHEET" or content is None:
+        return
+    try:
+        render.parse_sheet(content)
+    except render.SheetFormatError as e:
+        raise HTTPException(400, f"invalid spreadsheet content: {e}") from e
 
 
 # Declared before /{doc_id} on purpose — FastAPI matches in order, and otherwise "types"
@@ -220,6 +232,7 @@ def list_documents(document_type: str | None = Query(None), status: str | None =
 def create_document(body: DocumentIn, user: Principal = Depends(require("documents", "add"))):
     ppl = t("people")
     fmt = _check_format(body.content_format)
+    _validate_sheet(body.content, fmt)
     # validated here so a bad type is a readable 400, not a 500 CheckViolation from Postgres
     if body.document_type not in vocabularies.DOCUMENT_TYPES:
         raise HTTPException(400, f"document_type must be one of: "
@@ -264,9 +277,17 @@ def document_detail(doc_id: str, user: Principal = Depends(require("documents", 
         # and saving that back would destroy the document. Convert here — server-side,
         # with the same md_to_html the PDF has always used — so the editor only ever sees
         # HTML and "save as HTML" is honest rather than a relabelling of markdown bytes.
-        draft = {**draft, "editor_html": (
-            draft["content"] if draft["content_format"] == "HTML"
-            else sanitize_document_html(render.md_to_html(draft["content"] or "")))}
+        #
+        # SHEET gets no `editor_html` at all: it isn't markup, it's JSON, and running it
+        # through md_to_html would be nonsense the frontend never reads anyway —
+        # SheetEditor parses `content` itself via `render.parse_sheet`'s JS-side equivalent.
+        if draft["content_format"] == "SHEET":
+            editor_html = None
+        elif draft["content_format"] == "HTML":
+            editor_html = draft["content"]
+        else:
+            editor_html = sanitize_document_html(render.md_to_html(draft["content"] or ""))
+        draft = {**draft, "editor_html": editor_html}
     return {**doc, "owner": dict(owner) if owner else None,
             "review_status": review_status(doc["next_review_at"], today_iso()),
             "versions": versions, "open_version": draft, "approval": approval}
@@ -343,6 +364,10 @@ def edit_version(doc_id: str, version_id: str, body: VersionEdit,
             vals["content"] = _clean(vals.get("content", v["content"]), fmt)
         elif "content" in vals:
             vals["content"] = _clean(vals["content"], fmt)
+        # Same "the row this save will LEAVE behind" reasoning as the sanitiser above:
+        # validate whatever content will actually be stored, whether it arrived in this
+        # PATCH or is the version's existing content and only the format changed.
+        _validate_sheet(vals.get("content", v["content"]), fmt)
         vals["updated_at"] = now_iso()
         conn.execute(update(dv).where(dv.c.id == version_id).values(**vals))
     return {"ok": True}

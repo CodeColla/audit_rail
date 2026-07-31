@@ -12,9 +12,11 @@ The Playwright suite renders one through docx-preview as an independent second o
 """
 
 import io
+import json
 
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Mm
 
@@ -127,6 +129,37 @@ def test_page_is_a4_matching_the_pdf():
     assert abs(sec.page_width - Mm(210)) < 635      # < 1 twip
     assert abs(sec.page_height - Mm(297)) < 635
     assert abs(sec.left_margin - Mm(20)) < 635
+
+
+# ────────────────────────────────────────────────── P5-S2: SHEET export
+
+def test_sheet_renders_as_a_word_table():
+    """content_format="SHEET" — `body_html` carries the raw JSON grid, not markup; the SHEET
+    branch converts it via render.sheet_json_to_html() before the walker ever sees a tag."""
+    grid = json.dumps({"data": [["Control", "Owner"], ["MFA", "Alice"]], "bold": ["A1", "B1"]})
+    doc = _doc(grid, fmt="SHEET")
+    table = doc.tables[0]
+    assert len(table.rows) == 2 and len(table.columns) == 2
+    assert table.cell(0, 0).text == "Control" and table.cell(1, 1).text == "Alice"
+
+
+def test_sheet_bold_cell_is_a_bold_run_not_a_repeating_header():
+    grid = json.dumps({"data": [["Control", "Owner"], ["MFA", "Alice"]], "bold": ["A1"]})
+    doc = _doc(grid, fmt="SHEET")
+    table = doc.tables[0]
+    bold_para = table.cell(0, 0).paragraphs[0]
+    assert any(r.bold for r in bold_para.runs)
+    assert not any(r.bold for r in table.cell(1, 0).paragraphs[0].runs)
+    # <strong>, not <th> — a bold first row must not become a page-repeating header
+    assert table.rows[0]._tr.xml.count("tblHeader") == 0
+
+
+def test_sheet_cell_alignment_is_applied():
+    grid = json.dumps({"data": [["x", "y"]], "align": {"B1": "right"}})
+    doc = _doc(grid, fmt="SHEET")
+    table = doc.tables[0]
+    assert table.cell(0, 1).paragraphs[0].alignment == WD_ALIGN_PARAGRAPH.RIGHT
+    assert table.cell(0, 0).paragraphs[0].alignment is None
 
 
 def test_markdown_versions_still_export():

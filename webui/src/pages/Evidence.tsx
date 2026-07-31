@@ -3,22 +3,32 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
-import { inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
+import { inputCls, Loading, Modal, PageHead, Pill } from "../lib/ui";
 import { useCan } from "../lib/auth";
-import { useDebounced } from "../lib/useDebounced";
+import { Thumb } from "../components/AttachmentLink";
+import { FilePreview } from "../components/FilePreview";
+import { DataTable, Column } from "../components/DataTable";
 
 type Ev = {
   id: string; title: string; evidence_type: string; issued_at: string | null; valid_until: string | null;
   status: string; linked_controls: number; medium: string;
-  original_name: string | null; size_bytes: number | null;
+  original_name: string | null; size_bytes: number | null; mime_type: string | null;
 };
 
 const TYPES = ["certificate", "report", "policy_doc", "register", "screenshot", "insurance", "other"];
 
+/** Mirrors `api/config.py`'s `max_upload_mb` default. Not fetched from the server — this is
+ * a client-side pre-check to catch an oversize file BEFORE a wasted round trip, not the
+ * enforcement boundary; the server's 413 is still the real limit and still applies. */
+const MAX_UPLOAD_MB = 25;
+
 /** Strip only the extension, matching the server's `Path(...).stem` default. */
 const stem = (n: string) => n.replace(/\.[^./\\]+$/, "") || n;
 
-type Slot = { file: File; title: string; state: "idle" | "busy" | "ok" | "failed"; error?: string };
+const humanSize = (bytes: number) => bytes < 1_000_000
+  ? `${Math.round(bytes / 1000)} kB` : `${(bytes / 1_000_000).toFixed(1)} MB`;
+
+type Slot = { id: string; file: File; title: string; state: "idle" | "busy" | "ok" | "failed"; error?: string };
 
 /**
  * Upload several artifacts in one pass.
@@ -37,14 +47,25 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   const [issued, setIssued] = useState(""); const [valid, setValid] = useState("");
   const [running, setRunning] = useState(false);
   const [uploaded, setUploaded] = useState(0);   // live counter for the button label
+  const [dragOver, setDragOver] = useState(false);
 
   const add = (files: FileList | null) => {
     if (!files) return;
-    setSlots((s) => [...s, ...Array.from(files).map((file) => ({
-      file, title: stem(file.name), state: "idle" as const }))]);
+    // Snapshot to a plain array HERE, synchronously — not inside the setSlots updater.
+    // `e.target.files` is a live FileList tied to the input element; the input's onChange
+    // resets `value = ""` right after calling this, which the browser can settle before
+    // React gets around to invoking a lazy updater (confirmed by instrumenting: on every
+    // selection after the first, `files.length` had already dropped to 0 by the time the
+    // updater ran). That's why only ever the first file in a modal session ever appeared —
+    // every later selection silently added nothing.
+    const picked = Array.from(files).map((file) => ({
+      id: crypto.randomUUID(), file, title: stem(file.name), state: "idle" as const }));
+    setSlots((s) => [...s, ...picked]);
   };
-  const patch = (i: number, next: Partial<Slot>) =>
-    setSlots((s) => s.map((x, n) => (n === i ? { ...x, ...next } : x)));
+  // Keyed on the slot's stable id, not its array position — see the `key={s.id}` note
+  // below for why an index would silently corrupt this list once a row is removed.
+  const patch = (id: string, next: Partial<Slot>) =>
+    setSlots((s) => s.map((x) => (x.id === id ? { ...x, ...next } : x)));
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -58,7 +79,14 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
     const outcome = batch.map((s) => s.state === "ok");
     for (let i = 0; i < batch.length; i++) {
       if (outcome[i]) continue;
-      patch(i, { state: "busy", error: undefined });
+      const id = batch[i].id;
+      // Check the size cap BEFORE spending a round trip — the server would 413 on the same
+      // file anyway, but only after fully reading it into memory first.
+      if (batch[i].file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+        patch(id, { state: "failed", error: `exceeds the ${MAX_UPLOAD_MB} MB limit` });
+        continue;
+      }
+      patch(id, { state: "busy", error: undefined });
       try {
         const fd = new FormData();
         if (batch[i].title.trim()) fd.append("title", batch[i].title.trim());
@@ -68,10 +96,10 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         fd.append("file", batch[i].file);
         await api.post("/evidence", fd);
         outcome[i] = true;
-        patch(i, { state: "ok" });
+        patch(id, { state: "ok" });
         setUploaded((n) => n + 1);
       } catch (err: any) {
-        patch(i, { state: "failed", error: errText(err, "Upload failed.") });
+        patch(id, { state: "failed", error: errText(err, "Upload failed.") });
       }
     }
     setRunning(false);
@@ -100,17 +128,38 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         </div>
         <p className="text-[11.5px] text-txt3">Type and dates apply to every file in this batch — edit any of them afterwards on its own page.</p>
 
-        <label className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-hair bg-canvas px-4 py-6 text-center">
-          <span className="text-[13px] font-medium">Choose files</span>
-          <span className="text-[11.5px] text-txt3">Several at once. Each is named after its file — rename below.</span>
-          <input type="file" multiple className="hidden"
-            onChange={(e) => { add(e.target.files); e.target.value = ""; }} />
+        <label
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault(); setDragOver(false);
+            // No `e.target.value` reset to worry about here — a drop doesn't touch the
+            // hidden input's own selection state at all, so none of the add() race applies.
+            add(e.dataTransfer.files);
+          }}
+        >
+          <div className={
+            "flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed px-4 py-6 text-center " +
+            (dragOver ? "border-accent bg-[rgba(249,115,22,0.06)]" : "border-hair bg-canvas")
+          }>
+            <span className="text-[13px] font-medium">{dragOver ? "Drop to add" : "Choose files"}</span>
+            <span className="text-[11.5px] text-txt3">Several at once, or drag them in — each is named after its file.</span>
+            <input type="file" multiple className="hidden"
+              onChange={(e) => { add(e.target.files); e.target.value = ""; }} />
+          </div>
         </label>
 
         {slots.length > 0 && (
           <div className="max-h-64 overflow-y-auto rounded-md border border-bd">
-            {slots.map((s, i) => (
-              <div key={i} className="flex items-center gap-2 border-b border-bd px-2.5 py-2 last:border-b-0">
+            {slots.map((s) => {
+              const oversize = s.file.size > MAX_UPLOAD_MB * 1024 * 1024;
+              return (
+              // Keyed on the slot's own id, not its position in the array. An index key
+              // here made React reuse this row's DOM node — including the CONTROLLED
+              // title <input> — for whatever slot next occupied that position after a
+              // removal, so a deleted row's neighbour would render with the wrong title
+              // against the wrong filename.
+              <div key={s.id} className="flex items-center gap-2 border-b border-bd px-2.5 py-2 last:border-b-0">
                 <span className="w-5 shrink-0 text-center text-[12px]">
                   {s.state === "ok" ? <span className="text-ok">✓</span>
                     : s.state === "failed" ? <span className="text-bad">✕</span>
@@ -118,18 +167,21 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
                 </span>
                 <div className="min-w-0 flex-1">
                   <input value={s.title} disabled={s.state === "ok" || s.state === "busy"}
-                    onChange={(e) => patch(i, { title: e.target.value })}
+                    onChange={(e) => patch(s.id, { title: e.target.value })}
                     className={inputCls + " py-1 text-[12.5px] disabled:opacity-60"} />
                   <div className="mt-0.5 truncate text-[11px] text-txt3" title={s.file.name}>
-                    {s.file.name}
+                    {s.file.name} · {humanSize(s.file.size)}
+                    {oversize && s.state === "idle" && (
+                      <span className="text-bad"> · exceeds the {MAX_UPLOAD_MB} MB limit</span>)}
                     {s.error && <span className="text-bad"> · {s.error}</span>}
                   </div>
                 </div>
                 {s.state !== "ok" && s.state !== "busy" && (
-                  <button type="button" onClick={() => setSlots((x) => x.filter((_, n) => n !== i))}
+                  <button type="button" onClick={() => setSlots((x) => x.filter((r) => r.id !== s.id))}
                     className="shrink-0 text-txt3 hover:text-bad">✕</button>)}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -148,16 +200,36 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
   );
 }
 
+/** The list row's thumbnail, as its own click target — separate from the title, which
+ * still navigates to the detail page. Lets you preview without leaving the vault, without
+ * losing the existing way to reach an artifact's full page. */
+function QuickPreview({ id, title, mimeType }: { id: string; title: string; mimeType: string | null }) {
+  const [open, setOpen] = useState(false);
+  const url = `/evidence/${id}/file`;
+  const isImage = (mimeType ?? "").startsWith("image/") && !/heic|heif/.test(mimeType ?? "");
+  return (
+    <>
+      <button onClick={(e) => { e.stopPropagation(); setOpen(true); }} title={`Preview ${title}`}>
+        <Thumb url={url} isImage={isImage} mimeType={mimeType} />
+      </button>
+      {open && (
+        <Modal open onClose={() => setOpen(false)} title={title} size="lg">
+          <FilePreview url={url} name={title} />
+        </Modal>
+      )}
+    </>
+  );
+}
+
 export default function Evidence() {
   const qc = useQueryClient();
   const [modal, setModal] = useState(false);
-  const [term, setTerm] = useState("");
-  const dq = useDebounced(term);
+  const [q, setQ] = useState("");
   const { data, isLoading } = useQuery({
     // The `q` is part of the key: six components share this cache, and one of them writing
     // a FILTERED result under a bare ["evidence"] would silently truncate the other five.
-    queryKey: ["evidence", dq],
-    queryFn: () => get<Ev[]>(`/evidence?${new URLSearchParams(dq ? { q: dq } : {})}`),
+    queryKey: ["evidence", q],
+    queryFn: () => get<Ev[]>(`/evidence?${new URLSearchParams(q ? { q } : {})}`),
     placeholderData: keepPreviousData,
   });
   const del = useMutation({
@@ -172,6 +244,56 @@ export default function Evidence() {
   if (isLoading) return <Loading />;
   const rows = data ?? [];
 
+  const columns: Column<Ev>[] = [
+    {
+      key: "title", label: "Artifact", sortValue: (e) => e.title.toLowerCase(),
+      render: (e) => (
+        <div className="flex items-center gap-1.5">
+          {/* The title still navigates to the detail page — that stays the one place to
+              edit title/type/dates and manage control links. The thumbnail is a SEPARATE
+              quick-preview trigger, so previewing an artifact no longer requires leaving
+              the list, without losing the existing way to reach its full page. */}
+          {e.medium !== "LINK" && <QuickPreview id={e.id} title={e.title} mimeType={e.mime_type} />}
+          <button onClick={() => nav(`/evidence/view/${e.id}`)}
+            className="text-left font-medium hover:text-accent">{e.title}</button>
+          {e.medium === "LINK" && <span className="text-[10px] uppercase tracking-wide text-txt3">link</span>}
+        </div>
+      ),
+    },
+    {
+      key: "type", label: "Type", sortValue: (e) => e.evidence_type,
+      render: (e) => <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{e.evidence_type.replace(/_/g, " ")}</span>,
+    },
+    {
+      key: "issued", label: "Issued", sortValue: (e) => e.issued_at,
+      render: (e) => <span className="font-mono text-txt2">{e.issued_at ?? "—"}</span>,
+    },
+    {
+      key: "valid", label: "Valid until", sortValue: (e) => e.valid_until,
+      render: (e) => <span className="font-mono text-txt2">{e.valid_until ?? "—"}</span>,
+    },
+    {
+      key: "links", label: "Links", sortValue: (e) => e.linked_controls,
+      render: (e) => <span className="tnum">{e.linked_controls} controls</span>,
+    },
+    {
+      key: "status", label: "Status", sortValue: (e) => e.status,
+      render: (e) => <Pill tone={e.status}>{e.status}</Pill>,
+    },
+    {
+      // No sortValue — an actions column, not data.
+      key: "actions", label: "",
+      render: (e) => canDelete && (
+        <button onClick={() => { if (confirm(
+            `Delete "${e.title}"?\n\nThe stored file goes with it, and it is detached from ` +
+            `every control, risk, incident and audit answer that cites it. This cannot be undone.`))
+            del.mutate(e.id); }}
+          className="grid h-7 w-7 place-items-center rounded-md border border-bd text-txt2 hover:border-bad hover:text-bad" title="Delete">
+          <Trash2 size={14} />
+        </button>),
+    },
+  ];
+
   return (
     <>
       <PageHead eyebrow="Evidence vault" title="Evidence"
@@ -179,41 +301,16 @@ export default function Evidence() {
         action={can("evidence", "add")
           ? <button onClick={() => setModal(true)} className="btn btn-primary">＋ Upload evidence</button>
           : undefined} />
-      <div className="mb-3">
-        <input value={term} onChange={(e) => setTerm(e.target.value)}
-          placeholder="Search titles and notes…" className={inputCls + " max-w-sm"} />
-      </div>
       {delErr && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{delErr}</div>}
-      {rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">
-          {dq ? `Nothing in the vault matches “${dq}”.` : "No evidence yet — upload your first artifact."}
-        </div>
-      ) : (
-        <Table head={["Artifact", "Type", "Issued", "Valid until", "Links", "Status", ""]}>
-          {rows.map((e) => (
-            <tr key={e.id} className="hover:bg-canvas">
-              <Td className="font-medium">
-                <button onClick={() => nav(`/evidence/view/${e.id}`)}
-                  className="text-left hover:text-accent">{e.title}</button>
-                {e.medium === "LINK" && <span className="ml-1.5 text-[10px] uppercase tracking-wide text-txt3">link</span>}
-              </Td>
-              <Td><span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{e.evidence_type.replace(/_/g, " ")}</span></Td>
-              <Td className="font-mono text-txt2">{e.issued_at ?? "—"}</Td>
-              <Td className="font-mono text-txt2">{e.valid_until ?? "—"}</Td>
-              <Td className="tnum">{e.linked_controls} controls</Td>
-              <Td><Pill tone={e.status}>{e.status}</Pill></Td>
-              <Td>{canDelete && (
-                <button onClick={() => { if (confirm(
-                    `Delete "${e.title}"?\n\nThe stored file goes with it, and it is detached from ` +
-                    `every control, risk, incident and audit answer that cites it. This cannot be undone.`))
-                    del.mutate(e.id); }}
-                  className="grid h-7 w-7 place-items-center rounded-md border border-bd text-txt2 hover:border-bad hover:text-bad" title="Delete">
-                  <Trash2 size={14} />
-                </button>)}</Td>
-            </tr>
-          ))}
-        </Table>
-      )}
+      <DataTable
+        rows={rows} getId={(e) => e.id} columns={columns}
+        onSearch={setQ} searchPlaceholder="Search titles and notes…"
+        canDelete={canDelete} onDeleteOne={(id) => api.delete(`/evidence/${id}`).then(() => {
+          qc.invalidateQueries({ queryKey: ["evidence"] });
+        })}
+        emptyMessage="No evidence yet — upload your first artifact."
+        noMatchMessage={`Nothing in the vault matches "${q}".`}
+      />
       <UploadModal open={modal} onClose={() => setModal(false)} />
     </>
   );

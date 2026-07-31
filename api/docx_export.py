@@ -239,6 +239,14 @@ class _Walker:
                         taken.add((r_, c_))
                 par = target.paragraphs[0]
                 self._inline(par, cell, {"bold": True} if cell.tag == "th" else {})
+                # `text-align` on a <td>/<th> — the only cell-level style this walker reads
+                # today, added for P5-S2's spreadsheet export. `_para` already does the same
+                # check for a block-level <p>'s own style; cells needed it separately since
+                # they never go through `_para`.
+                align = (cell.get("style") or "").replace(" ", "")
+                for key, val in _ALIGN.items():
+                    if f"text-align:{key}" in align:
+                        par.alignment = val
                 ci += cspan
 
         # repeat an all-<th> first row as a header on every page
@@ -303,7 +311,11 @@ def render_docx(*, title: str, body_html: str, classification: str, version_labe
     """Render one document version as a .docx. Always on the fly; nothing is persisted."""
     # pre-S4 versions hold markdown; convert so they export as headings rather than "# x"
     html = body_html or ""
-    if content_format != "HTML":
+    if content_format == "SHEET":
+        # The one conversion a spreadsheet needs — from here it's an HTML <table>, which
+        # _Walker._table() (below) already knows how to turn into a Word table.
+        html = render.sheet_json_to_html(html)
+    elif content_format != "HTML":
         html = render.md_to_html(html)
 
     meta = render.doc_meta(title=title, classification=classification,

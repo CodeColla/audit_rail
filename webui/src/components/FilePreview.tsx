@@ -17,7 +17,7 @@ import { downloadFile, fetchBlob } from "../lib/api";
  * pipeline would (see docs/phase4).
  */
 
-type Kind = "pdf" | "image" | "docx" | "xlsx" | "text" | "unsupported";
+type Kind = "pdf" | "image" | "docx" | "xlsx" | "text" | "legacy-doc" | "heic" | "unsupported";
 
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -27,9 +27,20 @@ function classify(contentType: string, filename: string): Kind {
   const ct = (contentType || "").toLowerCase();
   const ext = (filename.split(".").pop() ?? "").toLowerCase();
   if (ct.includes("pdf") || ext === "pdf") return "pdf";
+  // HEIC/HEIF — the default format on recent iPhones — must be caught BEFORE the generic
+  // `image/*` branch below. It has a real `image/…` content-type and would otherwise be
+  // routed into an <img> tag, which no desktop browser can decode: the upload succeeds, and
+  // the preview silently shows a broken-image icon with no explanation. That reads exactly
+  // as "photos don't work" even though the bytes are sitting in the vault correctly.
+  if (ct.includes("heic") || ct.includes("heif") || ["heic", "heif"].includes(ext)) return "heic";
   if (ct.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext))
     return "image";
   if (ext === "docx" || ct.includes("wordprocessingml")) return "docx";
+  // Legacy pre-2007 Word (.doc, application/msword) uploads fine but has no in-browser
+  // renderer — docx-preview only understands the newer OOXML format. Naming it explicitly
+  // here, rather than letting it fall through to the generic "unsupported" message, is the
+  // difference between "we can't preview .doc" and an unexplained blank box.
+  if (ext === "doc" || ct === "application/msword") return "legacy-doc";
   if (["xlsx", "xls", "csv"].includes(ext) || ct.includes("spreadsheetml") || ct.includes("ms-excel"))
     return "xlsx";
   if (ct.startsWith("text/") || ["txt", "md", "log", "json"].includes(ext)) return "text";
@@ -144,6 +155,19 @@ export function FilePreview({ url, name, className }:
         <pre className="max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4 font-mono text-[12px] leading-relaxed">
           {text}
         </pre>
+      )}
+      {kind === "legacy-doc" && (
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+          This is a legacy Word document (.doc) — the file uploaded correctly, but this
+          older format can't be previewed in the browser. Download it to view.
+        </div>
+      )}
+      {kind === "heic" && (
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+          This photo uploaded correctly, but its format (HEIC — the default on recent
+          iPhones) can't be displayed in a browser. Download it to view, or set your phone
+          to save photos as JPEG for one that will preview here.
+        </div>
       )}
       {kind === "unsupported" && (
         <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">

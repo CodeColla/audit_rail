@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html as _html
 import io
+import json
 import re
 
 from api.html_sanitize import sanitize_document_html
@@ -40,6 +41,94 @@ except Exception:  # pragma: no cover - markdown is a declared dep, this is defe
             elif b:
                 out.append(f"<p>{b.replace(chr(10), '<br>')}</p>")
         return "\n".join(out)
+
+
+class SheetFormatError(ValueError):
+    """The stored SHEET content isn't the shape this module can render."""
+
+
+ALIGNMENTS = ("left", "center", "right")
+
+
+def parse_sheet(content: str) -> dict:
+    """Parse and validate a SHEET version's stored JSON.
+
+    Shape: `{"data": [[cell, ...], ...], "bold": ["A1", ...], "align": {"A1": "center"}}`.
+
+    `data` is a grid of plain-text cell values — P5-S2's stated scope is "values and basic
+    cell formatting only, no formulas": a formula engine that disagrees with Excel's is
+    worse than no formula engine in a compliance record. `bold` and `align` are the two
+    pieces of cell-level formatting supported, both by A1-style address — not arbitrary
+    per-cell CSS, which would be a needless stored-content injection surface for a document
+    type that's meant to hold a grid of numbers, not rich styling. Both map onto mechanisms
+    `docx_export.py` already has (`_MARK_TAGS["strong"]`, `_ALIGN`), so exporting them costs
+    no new Word-writing code, only reading these two attributes where the walker already
+    reads inline style for paragraphs.
+
+    The jspreadsheet-ce editor's own toolbar offers more than this (italic, colour, …); only
+    bold and alignment survive a save — the editor UI says so, so this is not a silent loss.
+
+    Raises `SheetFormatError` with a message safe to surface in a 400, never lets a
+    malformed grid reach json.JSONDecodeError or a raw KeyError/TypeError in a caller.
+    """
+    try:
+        obj = json.loads(content or "{}")
+    except json.JSONDecodeError as e:
+        raise SheetFormatError(f"not valid JSON: {e}") from e
+    if not isinstance(obj, dict):
+        raise SheetFormatError("must be a JSON object")
+    data = obj.get("data", [])
+    if not isinstance(data, list) or not all(isinstance(row, list) for row in data):
+        raise SheetFormatError("'data' must be a list of rows")
+    for row in data:
+        if not all(isinstance(cell, (str, int, float)) or cell is None for cell in row):
+            raise SheetFormatError("every cell must be text, a number, or null")
+    bold = obj.get("bold", [])
+    if not isinstance(bold, list) or not all(isinstance(a, str) for a in bold):
+        raise SheetFormatError("'bold' must be a list of cell addresses")
+    align = obj.get("align", {})
+    if not isinstance(align, dict) or not all(
+            isinstance(k, str) and v in ALIGNMENTS for k, v in align.items()):
+        raise SheetFormatError(f"'align' values must be one of {', '.join(ALIGNMENTS)}")
+    return {"data": [[("" if c is None else str(c)) for c in row] for row in data],
+            "bold": set(bold), "align": dict(align)}
+
+
+def _col_letter(index: int) -> str:
+    """0 -> A, 25 -> Z, 26 -> AA — spreadsheet column addressing."""
+    letters = ""
+    index += 1
+    while index > 0:
+        index, rem = divmod(index - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def sheet_json_to_html(content: str) -> str:
+    """The one place a SHEET's stored JSON becomes markup. Both the PDF and DOCX export
+    paths route through this, then through their EXISTING html-table handling — `build_html`
+    already sanitises whatever HTML it's given, and `docx_export._Walker._table()` already
+    turns an HTML `<table>` into a Word table — so a spreadsheet needs no export code of its
+    own beyond this one conversion."""
+    sheet = parse_sheet(content)
+    rows_html = []
+    for r, row in enumerate(sheet["data"]):
+        cells = []
+        for c, cell in enumerate(row):
+            addr = f"{_col_letter(c)}{r + 1}"
+            text = _html.escape(cell)
+            if addr in sheet["bold"]:
+                # <strong>, not <th> — bold here means "this cell's text is bold," not
+                # "this is a header cell." <th> would be a semantic mismatch (bold can be
+                # anywhere in the grid, not just a header row) and would also make
+                # docx_export._table() treat an all-bold first row as a page-repeating
+                # header, which isn't what this means.
+                text = f"<strong>{text}</strong>"
+            align = sheet["align"].get(addr)
+            style = f' style="text-align:{align}"' if align else ""
+            cells.append(f"<td{style}>{text}</td>")
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+    return f"<table>{''.join(rows_html)}</table>" if rows_html else "<table></table>"
 
 
 _PAGE_CSS = """
@@ -83,7 +172,12 @@ def build_html(*, title: str, body_md: str, classification: str, version_label: 
     # P4-S4: authored content is HTML now, but everything written earlier is markdown and
     # stays that way. Feeding HTML through md_to_html is NOT identity — python-markdown
     # reflows it — so the branch is required, not merely an optimisation.
-    body = (body_md or "") if content_format == "HTML" else md_to_html(body_md)
+    if content_format == "SHEET":
+        body = sheet_json_to_html(body_md)
+    elif content_format == "HTML":
+        body = body_md or ""
+    else:
+        body = md_to_html(body_md)
     # Sanitise the RENDERED html, whatever its source. HTML content was already cleaned on
     # write (this is idempotent and cheap), but markdown is deliberately stored raw — and
     # python-markdown both passes inline HTML straight through and turns ![](url) into an

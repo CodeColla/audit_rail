@@ -11,7 +11,7 @@ import { inputCls } from "../lib/ui";
 
 type Page = {
   kind: string; document_title: string; classification: string; version_label: string;
-  content: string; content_format: "MARKDOWN" | "HTML";
+  content: string; content_format: "MARKDOWN" | "HTML" | "SHEET";
   consent_text: string; signer_name: string; signer_email: string;
 };
 type View = "loading" | "ready" | "gone" | "done";
