@@ -25,13 +25,14 @@ The layout mirrors `api.render`'s PDF — same A4 page, same letterhead and foot
 from __future__ import annotations
 
 import io
+import re
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
 from docx.oxml.shared import OxmlElement
-from docx.shared import Mm, Pt
+from docx.shared import Mm, Pt, RGBColor
 from lxml import html as lhtml
 
 from api import render
@@ -212,6 +213,45 @@ class _Walker:
         borders.append(bottom)
         ppr.append(borders)
 
+    @staticmethod
+    def _cell_style(cell, par, css: str) -> None:
+        """Apply a spreadsheet cell's `style=""` to a Word cell.
+
+        `css` arrives whitespace-stripped. Values were validated server-side by
+        `render._STYLE_PROPS` before ever being stored, so the parsing here can stay simple —
+        but it still fails soft: a declaration it doesn't recognise is skipped, never raised,
+        because losing one cell's colour must not fail a whole document export.
+        """
+        for key, val in _ALIGN.items():
+            if f"text-align:{key}" in css:
+                par.alignment = val
+
+        m = re.search(r"font-size:(\d+(?:\.\d+)?)pt", css)
+        if m:
+            for run in par.runs:
+                run.font.size = Pt(float(m.group(1)))
+
+        m = re.search(r"(?<!-)color:#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b", css)
+        if m:
+            hexv = m.group(1)
+            if len(hexv) == 3:                      # #abc -> #aabbcc
+                hexv = "".join(ch * 2 for ch in hexv)
+            for run in par.runs:
+                run.font.color.rgb = RGBColor.from_string(hexv.upper())
+
+        # Cell shading is not wrapped by python-docx — build the w:shd element by hand,
+        # same approach as the w:tblHeader/w:numPr elements elsewhere in this module.
+        m = re.search(r"background-color:#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b", css)
+        if m:
+            hexv = m.group(1)
+            if len(hexv) == 3:
+                hexv = "".join(ch * 2 for ch in hexv)
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:val"), "clear")
+            shd.set(qn("w:color"), "auto")
+            shd.set(qn("w:fill"), hexv.upper())
+            cell._tc.get_or_add_tcPr().append(shd)
+
     def _table(self, el) -> None:
         rows = [r for r in el.iter("tr")]
         if not rows:
@@ -239,14 +279,12 @@ class _Walker:
                         taken.add((r_, c_))
                 par = target.paragraphs[0]
                 self._inline(par, cell, {"bold": True} if cell.tag == "th" else {})
-                # `text-align` on a <td>/<th> — the only cell-level style this walker reads
-                # today, added for P5-S2's spreadsheet export. `_para` already does the same
-                # check for a block-level <p>'s own style; cells needed it separately since
-                # they never go through `_para`.
-                align = (cell.get("style") or "").replace(" ", "")
-                for key, val in _ALIGN.items():
-                    if f"text-align:{key}" in align:
-                        par.alignment = val
+                # Cell-level style on a <td>/<th>. Cells need this separately from `_para`
+                # (which does the same for a block-level <p>) because they never go through
+                # it. The set here must stay in step with render._STYLE_PROPS — anything a
+                # spreadsheet can store and the PDF can show has to survive into Word too,
+                # or formatting silently disappears in one export but not the other.
+                self._cell_style(target, par, (cell.get("style") or "").replace(" ", ""))
                 ci += cspan
 
         # repeat an all-<th> first row as a header on every page

@@ -12,6 +12,8 @@ import io
 import re
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import column_index_from_string, get_column_letter
 
 _QUESTION_HINTS = ("question", "control", "requirement", "particular", "checkpoint")
 _NUMBER_HINTS = ("s.no", "sr.no", "sno", "srno", "s no", "no.", "ref", "#", "control no")
@@ -148,6 +150,91 @@ def _workbook_from_csv(data: bytes):
     return wb
 
 
+def read_rows(data: bytes, sheet: str | None = None) -> tuple[list[str], list[dict]]:
+    """Any .xlsx or .csv -> (headers, rows-as-dicts). The generic reader behind bulk import.
+
+    Deliberately dumb: it takes the FIRST row as the header and makes no attempt to guess
+    which column means what. That guessing is `parse_checklist`'s job and it exists because a
+    bank's checklist arrives in whatever shape the bank chose. A register import is the other
+    situation — the user is filling in OUR template, or telling us the mapping explicitly in
+    the UI — so inferring here would only add a way to be confidently wrong.
+
+    Reuses `_is_csv`/`_workbook_from_csv`, so one path serves both formats exactly as the
+    checklist importer already does.
+    """
+    if _is_csv(data):
+        wb = _workbook_from_csv(data)
+        ws = wb.active
+    else:
+        wb = load_workbook(io.BytesIO(data), read_only=False, data_only=True)
+        if sheet:
+            if sheet not in wb.sheetnames:
+                raise ValueError(
+                    f"no sheet named {sheet!r}; this file has: {', '.join(wb.sheetnames)}")
+            ws = wb[sheet]
+        else:
+            ws = wb.active
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        return [], []
+    headers = [str(h).strip() if h is not None else "" for h in header_row]
+    if not any(headers):
+        raise ValueError("the first row must be a header row naming the columns")
+
+    out: list[dict] = []
+    for values in rows_iter:
+        row = {}
+        for i, h in enumerate(headers):
+            if not h:
+                continue
+            v = values[i] if i < len(values) else None
+            row[h] = str(v).strip() if v is not None and str(v).strip() != "" else None
+        # A wholly blank line is padding, not a row the user meant to import — reporting it
+        # as an error would bury the real failures under trailing-whitespace noise.
+        if any(v is not None for v in row.values()):
+            out.append(row)
+    return headers, out
+
+
+def build_template(columns: list[dict], sheet_name: str = "Import") -> bytes:
+    """A one-sheet .xlsx whose header row is exactly what the importer expects.
+
+    `columns` = [{"key", "label", "help", "required"}].
+
+    Guidance lives on a SECOND sheet, not in a second header row. An earlier version put the
+    hints directly under the headers, which reads nicely and then imports as a junk record
+    the moment the user fills the file in and sends it back — `read_rows` cannot tell a hint
+    from data. Headers are the bare labels for the same reason: a " *" suffix marking
+    "required" would have to be stripped before mapping, and something eventually forgets to.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name[:31] or "Import"
+    ws.append([c["label"] for c in columns])
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    for i, c in enumerate(columns, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = max(14, min(40, len(c["label"]) + 8))
+
+    guide = wb.create_sheet("How to fill this in")
+    guide.append(["Column", "Required", "What to put in it"])
+    for cell in guide[1]:
+        cell.font = Font(bold=True)
+    for c in columns:
+        guide.append([c["label"], "yes" if c.get("required") else "optional", c.get("help", "")])
+    for col, width in (("A", 26), ("B", 12), ("C", 64)):
+        guide.column_dimensions[col].width = width
+    guide["C1"].alignment = Alignment(horizontal="left")
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def parse_checklist(data: bytes, sheet: str | None = None,
                     question_col: int | None = None, number_col: int | None = None,
                     section_col: int | None = None, header_row: int | None = None):
@@ -211,6 +298,102 @@ def parse_checklist(data: bytes, sheet: str | None = None,
     meta = {"sheet": ws.title, "header_row": header_row, "columns": cols,
             "row_count": len(rows)}
     return meta, rows
+
+
+def build_sheet_workbook(title: str, content: str) -> bytes:
+    """A SHEET document version -> a real .xlsx (P5-S2b).
+
+    Jspreadsheet CE cannot write .xlsx — that is a paid-tier feature — so we build it here
+    from our own stored format with openpyxl, which the backend already depends on. That
+    also keeps the file correct regardless of what the browser grid does next; see
+    docs/phase5/04-spreadsheet-library-evaluation.md.
+
+    **Formulas are written as formulas, not as their frozen values.** An .xlsx is a working
+    copy — someone who opens it expects to change an input and see totals move. The
+    controlled, signed artefact remains the PDF, whose numbers are frozen at publish. The
+    consequence, stated plainly because it is a real trade-off: a recipient who edits the
+    spreadsheet will see figures that no longer match the signed PDF, which is exactly what
+    should happen to a working copy.
+    """
+    from api import render  # noqa: PLC0415 — avoids a circular import at module load
+
+    book = render.parse_sheet(content or "")
+    wb = Workbook()
+    wb.remove(wb.active)                     # drop openpyxl's default empty sheet
+
+    for sheet in book["sheets"]:
+        # Excel forbids []:*?/\ in sheet names and caps them at 31 chars. A rejected name
+        # raises deep inside openpyxl on save, so sanitise rather than propagate.
+        safe = re.sub(r"[\[\]:*?/\\]", "-", sheet["name"])[:31] or "Sheet"
+        ws = wb.create_sheet(title=safe)
+        for r, row in enumerate(sheet["data"], start=1):
+            for c, value in enumerate(row, start=1):
+                formula = sheet["formulas"].get(f"{render._col_letter(c - 1)}{r}")
+                cell = ws.cell(row=r, column=c)
+                # Write numbers as numbers — a register exported with every figure stored as
+                # text is useless for sorting or further calculation in Excel.
+                cell.value = formula if formula else _coerce(value)
+                props = sheet["style"].get(f"{render._col_letter(c - 1)}{r}")
+                wrapped = bool(sheet.get("colWrap") and c - 1 < len(sheet["colWrap"])
+                               and sheet["colWrap"][c - 1])
+                if props or wrapped:
+                    _apply_style(cell, props or {}, wrap=wrapped)
+
+        for addr, span in sheet["merges"].items():
+            m = re.match(r"^([A-Z]+)(\d+)$", addr)
+            if not m:
+                continue
+            c0 = column_index_from_string(m.group(1))
+            r0 = int(m.group(2))
+            if span["colspan"] > 1 or span["rowspan"] > 1:
+                ws.merge_cells(start_row=r0, start_column=c0,
+                               end_row=r0 + span["rowspan"] - 1,
+                               end_column=c0 + span["colspan"] - 1)
+
+        for i, width in enumerate(sheet["colWidths"], start=1):
+            # jspreadsheet stores pixels; Excel's unit is roughly one character (~7px).
+            ws.column_dimensions[get_column_letter(i)].width = max(2.0, width / 7.0)
+
+    if not wb.sheetnames:                    # a document with no worksheets at all
+        wb.create_sheet(title="Sheet1")
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _coerce(value: str):
+    """Store a numeric-looking cell as a number so Excel can compute with it."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def _apply_style(cell, props: dict, wrap: bool = False) -> None:
+    """Map our validated style properties onto openpyxl. Values were already checked by
+    `render._STYLE_PROPS`, so hex colours are known-good; openpyxl wants them without '#'
+    and prefixed with an alpha byte."""
+    if any(props.get(k) for k in ("bold", "italic", "underline", "fontSize", "color")):
+        cell.font = Font(
+            bold=bool(props.get("bold")),
+            italic=bool(props.get("italic")),
+            underline="single" if props.get("underline") else None,
+            size=props.get("fontSize") or None,
+            color=f"FF{props['color'].lstrip('#').upper()}" if props.get("color") else None)
+    if props.get("align") or wrap:
+        # Excel needs wrap_text on the Alignment object, so it travels with horizontal
+        # alignment rather than being a separate attribute.
+        cell.alignment = Alignment(horizontal=props.get("align") or None,
+                                   wrap_text=True if wrap else None)
+    if props.get("background"):
+        fill = f"FF{props['background'].lstrip('#').upper()}"
+        cell.fill = PatternFill(fill_type="solid", start_color=fill, end_color=fill)
 
 
 def build_answers_workbook(assessment: dict, rows: list[dict]) -> bytes:

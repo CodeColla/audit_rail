@@ -48,40 +48,52 @@ class SheetFormatError(ValueError):
 
 
 ALIGNMENTS = ("left", "center", "right")
+#: Cell font size, in points. Bounded because it is emitted into a style="" attribute and
+#: because a 5000pt cell would blow up the PDF layout, not because Excel forbids it.
+MIN_FONT_PT, MAX_FONT_PT = 6, 72
+_COLOUR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+_ADDR_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
+
+#: Every style property we persist, and the validator each value must pass. This allow-list
+#: IS the security boundary: `sheet_json_to_html` interpolates these into a style=""
+#: attribute, so anything not validated here would be raw CSS injection into a document that
+#: is later rendered to PDF (and, via xhtml2pdf, could reference external URLs). Adding a
+#: property means adding a validator — never a passthrough.
+_STYLE_PROPS: dict[str, object] = {
+    "bold": lambda v: isinstance(v, bool),
+    "italic": lambda v: isinstance(v, bool),
+    "underline": lambda v: isinstance(v, bool),
+    "align": lambda v: v in ALIGNMENTS,
+    "fontSize": lambda v: isinstance(v, int) and not isinstance(v, bool)
+                          and MIN_FONT_PT <= v <= MAX_FONT_PT,
+    "color": lambda v: isinstance(v, str) and bool(_COLOUR_RE.match(v)),
+    "background": lambda v: isinstance(v, str) and bool(_COLOUR_RE.match(v)),
+}
 
 
-def parse_sheet(content: str) -> dict:
-    """Parse and validate a SHEET version's stored JSON.
+def _cell_text(value) -> str:
+    return "" if value is None else str(value)
 
-    Shape: `{"data": [[cell, ...], ...], "bold": ["A1", ...], "align": {"A1": "center"}}`.
 
-    `data` is a grid of plain-text cell values — P5-S2's stated scope is "values and basic
-    cell formatting only, no formulas": a formula engine that disagrees with Excel's is
-    worse than no formula engine in a compliance record. `bold` and `align` are the two
-    pieces of cell-level formatting supported, both by A1-style address — not arbitrary
-    per-cell CSS, which would be a needless stored-content injection surface for a document
-    type that's meant to hold a grid of numbers, not rich styling. Both map onto mechanisms
-    `docx_export.py` already has (`_MARK_TAGS["strong"]`, `_ALIGN`), so exporting them costs
-    no new Word-writing code, only reading these two attributes where the walker already
-    reads inline style for paragraphs.
+def _blank_sheet(name: str = "Sheet1") -> dict:
+    return {"name": name, "data": [], "formulas": {}, "style": {},
+            "merges": {}, "colWidths": [], "colWrap": []}
 
-    The jspreadsheet-ce editor's own toolbar offers more than this (italic, colour, …); only
-    bold and alignment survive a save — the editor UI says so, so this is not a silent loss.
 
-    Raises `SheetFormatError` with a message safe to surface in a 400, never lets a
-    malformed grid reach json.JSONDecodeError or a raw KeyError/TypeError in a caller.
+def _parse_v1(obj: dict) -> dict:
+    """Upcast the P5-S2 shape — `{data, bold, align}` — into the v2 structure.
+
+    This path is PERMANENT, not a migration window. `freeze_published_version()`
+    (db/schema.sql) makes a published version's `content` immutable and `content_sha256` is
+    GENERATED over it, and that hash backs `electronic_signatures`. A v1 sheet that has been
+    published therefore can never be rewritten on disk — so the reader has to understand it
+    forever. Nothing here writes; it only reshapes in memory.
     """
-    try:
-        obj = json.loads(content or "{}")
-    except json.JSONDecodeError as e:
-        raise SheetFormatError(f"not valid JSON: {e}") from e
-    if not isinstance(obj, dict):
-        raise SheetFormatError("must be a JSON object")
     data = obj.get("data", [])
     if not isinstance(data, list) or not all(isinstance(row, list) for row in data):
         raise SheetFormatError("'data' must be a list of rows")
     for row in data:
-        if not all(isinstance(cell, (str, int, float)) or cell is None for cell in row):
+        if not all(isinstance(c, (str, int, float)) or c is None for c in row):
             raise SheetFormatError("every cell must be text, a number, or null")
     bold = obj.get("bold", [])
     if not isinstance(bold, list) or not all(isinstance(a, str) for a in bold):
@@ -90,8 +102,150 @@ def parse_sheet(content: str) -> dict:
     if not isinstance(align, dict) or not all(
             isinstance(k, str) and v in ALIGNMENTS for k, v in align.items()):
         raise SheetFormatError(f"'align' values must be one of {', '.join(ALIGNMENTS)}")
-    return {"data": [[("" if c is None else str(c)) for c in row] for row in data],
-            "bold": set(bold), "align": dict(align)}
+
+    style: dict[str, dict] = {}
+    for addr in bold:
+        style.setdefault(addr, {})["bold"] = True
+    for addr, a in align.items():
+        style.setdefault(addr, {})["align"] = a
+    sheet = _blank_sheet()
+    sheet["data"] = [[_cell_text(c) for c in row] for row in data]
+    sheet["style"] = style
+    return {"version": 1, "sheets": [sheet]}
+
+
+def _parse_sheet_obj(raw, index: int) -> dict:
+    where = f"sheet {index + 1}"
+    if not isinstance(raw, dict):
+        raise SheetFormatError(f"{where} must be an object")
+    out = _blank_sheet(str(raw.get("name") or f"Sheet{index + 1}"))
+
+    data = raw.get("data", [])
+    if not isinstance(data, list) or not all(isinstance(row, list) for row in data):
+        raise SheetFormatError(f"{where}: 'data' must be a list of rows")
+    for row in data:
+        if not all(isinstance(c, (str, int, float)) or c is None for c in row):
+            raise SheetFormatError(f"{where}: every cell must be text, a number, or null")
+    out["data"] = [[_cell_text(c) for c in row] for row in data]
+
+    formulas = raw.get("formulas", {})
+    if not isinstance(formulas, dict):
+        raise SheetFormatError(f"{where}: 'formulas' must be an object keyed by cell")
+    for addr, expr in formulas.items():
+        if not (isinstance(addr, str) and _ADDR_RE.match(addr)):
+            raise SheetFormatError(f"{where}: '{addr}' is not a cell address")
+        if not (isinstance(expr, str) and expr.startswith("=")):
+            raise SheetFormatError(f"{where}: formula at {addr} must be a string starting '='")
+    out["formulas"] = dict(formulas)
+
+    style = raw.get("style", {})
+    if not isinstance(style, dict):
+        raise SheetFormatError(f"{where}: 'style' must be an object keyed by cell")
+    for addr, props in style.items():
+        if not (isinstance(addr, str) and _ADDR_RE.match(addr)):
+            raise SheetFormatError(f"{where}: '{addr}' is not a cell address")
+        if not isinstance(props, dict):
+            raise SheetFormatError(f"{where}: style at {addr} must be an object")
+        for key, val in props.items():
+            check = _STYLE_PROPS.get(key)
+            if check is None:
+                raise SheetFormatError(
+                    f"{where}: unsupported style '{key}' at {addr} — allowed: "
+                    f"{', '.join(sorted(_STYLE_PROPS))}")
+            if not check(val):  # type: ignore[operator]
+                raise SheetFormatError(f"{where}: invalid value for '{key}' at {addr}")
+    out["style"] = {a: dict(p) for a, p in style.items()}
+
+    merges = raw.get("merges", {})
+    if not isinstance(merges, dict):
+        raise SheetFormatError(f"{where}: 'merges' must be an object keyed by cell")
+    for addr, span in merges.items():
+        if not (isinstance(addr, str) and _ADDR_RE.match(addr)):
+            raise SheetFormatError(f"{where}: '{addr}' is not a cell address")
+        if not isinstance(span, dict):
+            raise SheetFormatError(f"{where}: merge at {addr} must be an object")
+        for k in ("colspan", "rowspan"):
+            v = span.get(k, 1)
+            if not (isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 1000):
+                raise SheetFormatError(f"{where}: merge {k} at {addr} must be 1..1000")
+    out["merges"] = {a: {"colspan": int(s.get("colspan", 1)),
+                         "rowspan": int(s.get("rowspan", 1))} for a, s in merges.items()}
+
+    widths = raw.get("colWidths", [])
+    if not isinstance(widths, list) or not all(
+            isinstance(w, (int, float)) and not isinstance(w, bool) and 0 < w <= 2000
+            for w in widths):
+        raise SheetFormatError(f"{where}: 'colWidths' must be numbers between 0 and 2000")
+    out["colWidths"] = [float(w) for w in widths]
+
+    # Text wrapping is per COLUMN, not per cell. That is a deliberate consequence of how
+    # jspreadsheet works: a per-cell `white-space` set through setStyle is wiped by its own
+    # updateCell the next time that cell's value changes (verified in a browser), whereas
+    # `columns[i].wordWrap` is consulted on every render and therefore survives editing.
+    # It also suits a register, where one long "Description" column wraps and the rest don't.
+    wrap = raw.get("colWrap", [])
+    if not isinstance(wrap, list) or not all(isinstance(w, bool) for w in wrap):
+        raise SheetFormatError(f"{where}: 'colWrap' must be a list of true/false")
+    out["colWrap"] = list(wrap)
+    return out
+
+
+def parse_sheet(content: str) -> dict:
+    """Parse and validate a SHEET version's stored JSON, in either supported shape.
+
+    **v2** (P5-S2b, current) — a workbook::
+
+        {"version": 2, "sheets": [{
+            "name": "Sheet1",
+            "data": [["Control","Owner"], ["MFA","Alice"]],  # COMPUTED values
+            "formulas": {"C2": "=SUM(A2:B2)"},               # formula SOURCE
+            "style": {"A1": {"bold": true, "align": "center", "fontSize": 12,
+                             "color": "#1a2432", "background": "#eef0f2"}},
+            "merges": {"A1": {"colspan": 2, "rowspan": 1}},
+            "colWidths": [120, 100]}]}
+
+    **v1** (P5-S2) — `{"data": …, "bold": […], "align": {…}}`, upcast by `_parse_v1`. That
+    path is permanent; see its docstring for why published rows can never be migrated.
+
+    **Why `data` holds computed values and `formulas` holds the source.** This module and
+    `docx_export` are Python and have no formula engine, so if only `=SUM(A2:B2)` were
+    stored, every export would print the expression instead of the number. Storing the
+    evaluated result is also precisely what makes a published sheet honest: the browser
+    evaluates on save, the value lands in `data`, and publishing freezes it — so `TODAY()`
+    renders forever as the date the version was approved, not as the reader's today, and a
+    signed document always shows the numbers its approvers actually signed.
+
+    Returns a normalised `{"version": int, "sheets": [ … ]}` with every sheet key present, so
+    callers never need `.get()` defaults. Raises `SheetFormatError` with a message safe to
+    surface in a 400 — never lets a malformed grid reach a raw KeyError/TypeError.
+    """
+    try:
+        obj = json.loads(content or "{}")
+    except json.JSONDecodeError as e:
+        raise SheetFormatError(f"not valid JSON: {e}") from e
+    if not isinstance(obj, dict):
+        raise SheetFormatError("must be a JSON object")
+
+    # An empty object is a brand-new sheet, not an error.
+    if not obj:
+        return {"version": 2, "sheets": [_blank_sheet()]}
+
+    version = obj.get("version")
+    if version is None:
+        # No discriminator => the v1 shape. Reject anything that is neither, rather than
+        # silently rendering an empty grid for a typo'd key.
+        if "data" not in obj and "bold" not in obj and "align" not in obj:
+            raise SheetFormatError("missing 'version' (v2) and no v1 'data' key")
+        return _parse_v1(obj)
+    if version == 1:
+        return _parse_v1(obj)
+    if version != 2:
+        raise SheetFormatError(f"unsupported sheet format version {version!r}")
+
+    sheets = obj.get("sheets", [])
+    if not isinstance(sheets, list) or not sheets:
+        raise SheetFormatError("'sheets' must be a non-empty list")
+    return {"version": 2, "sheets": [_parse_sheet_obj(s, i) for i, s in enumerate(sheets)]}
 
 
 def _col_letter(index: int) -> str:
@@ -104,31 +258,126 @@ def _col_letter(index: int) -> str:
     return letters
 
 
-def sheet_json_to_html(content: str) -> str:
-    """The one place a SHEET's stored JSON becomes markup. Both the PDF and DOCX export
-    paths route through this, then through their EXISTING html-table handling — `build_html`
-    already sanitises whatever HTML it's given, and `docx_export._Walker._table()` already
-    turns an HTML `<table>` into a Word table — so a spreadsheet needs no export code of its
-    own beyond this one conversion."""
-    sheet = parse_sheet(content)
+def _cell_css(props: dict) -> str:
+    """Style properties -> a CSS declaration string. Every value has already been validated
+    by `_STYLE_PROPS`; this only decides how to spell it."""
+    decls = []
+    if props.get("align"):
+        decls.append(f"text-align:{props['align']}")
+    if props.get("fontSize"):
+        decls.append(f"font-size:{props['fontSize']}pt")
+    if props.get("color"):
+        decls.append(f"color:{props['color']}")
+    if props.get("background"):
+        # `background-color`, not the `background` shorthand — xhtml2pdf handles the
+        # longhand reliably and the shorthand can swallow the value silently.
+        decls.append(f"background-color:{props['background']}")
+    return ";".join(decls)
+
+
+def _sheet_to_table(sheet: dict) -> str:
+    """One worksheet -> one HTML <table>."""
+    wrap_cols = sheet.get("colWrap") or []
     rows_html = []
     for r, row in enumerate(sheet["data"]):
         cells = []
         for c, cell in enumerate(row):
             addr = f"{_col_letter(c)}{r + 1}"
+            props = sheet["style"].get(addr, {})
             text = _html.escape(cell)
-            if addr in sheet["bold"]:
-                # <strong>, not <th> — bold here means "this cell's text is bold," not
-                # "this is a header cell." <th> would be a semantic mismatch (bold can be
-                # anywhere in the grid, not just a header row) and would also make
-                # docx_export._table() treat an all-bold first row as a page-repeating
-                # header, which isn't what this means.
+            # <strong>/<em>/<u>, not <th> — bold here means "this cell's text is bold," not
+            # "this is a header cell." <th> would be a semantic mismatch (bold can be
+            # anywhere in the grid) and would also make docx_export._table() treat an
+            # all-bold first row as a page-repeating header, which isn't what this means.
+            if props.get("bold"):
                 text = f"<strong>{text}</strong>"
-            align = sheet["align"].get(addr)
-            style = f' style="text-align:{align}"' if align else ""
-            cells.append(f"<td{style}>{text}</td>")
+            if props.get("italic"):
+                text = f"<em>{text}</em>"
+            if props.get("underline"):
+                text = f"<u>{text}</u>"
+            attrs = ""
+            css = _cell_css(props)
+            # Additive by design: a wrapped column gains `pre-wrap`; an unwrapped one is left
+            # exactly as it rendered before this feature existed. Emitting `nowrap` for the
+            # unwrapped case would match the editor more closely, but it would change how
+            # already-published — frozen, hashed, signed — documents render.
+            if c < len(wrap_cols) and wrap_cols[c]:
+                css = f"{css};white-space:pre-wrap" if css else "white-space:pre-wrap"
+            if css:
+                attrs += f' style="{css}"'
+            span = sheet["merges"].get(addr)
+            if span:
+                if span["colspan"] > 1:
+                    attrs += f' colspan="{span["colspan"]}"'
+                if span["rowspan"] > 1:
+                    attrs += f' rowspan="{span["rowspan"]}"'
+            cells.append(f"<td{attrs}>{text}</td>")
         rows_html.append(f"<tr>{''.join(cells)}</tr>")
     return f"<table>{''.join(rows_html)}</table>" if rows_html else "<table></table>"
+
+
+def sheet_diff_lines(content: str) -> list[str]:
+    """Flatten a workbook to one comparable line per non-empty cell, for the version diff.
+
+    Without this a SHEET version diffs as a single line of JSON, so every change reports
+    exactly "1 added, 1 removed" — a diff that can never be wrong and is therefore useless.
+    The same reasoning as the HTML projection in `documents._diff_lines`.
+
+    Each line is `Sheet!A1: value  [=FORMULA]  {bold,center}` — cheap to read, and stable
+    under edits elsewhere in the grid, so a one-cell change shows as a one-line change.
+    Empty cells are skipped: a default sheet is 12x30, and 360 blank rows of noise would
+    bury the handful of lines that actually differ.
+
+    The sheet prefix is omitted for a single-sheet workbook, so those diffs stay terse.
+    """
+    book = parse_sheet(content)
+    multi = len(book["sheets"]) > 1
+    lines: list[str] = []
+    for sheet in book["sheets"]:
+        prefix = f"{sheet['name']}!" if multi else ""
+        for r, row in enumerate(sheet["data"]):
+            for c, cell in enumerate(row):
+                addr = f"{_col_letter(c)}{r + 1}"
+                formula = sheet["formulas"].get(addr)
+                props = sheet["style"].get(addr, {})
+                if not cell and not formula and not props:
+                    continue
+                line = f"{prefix}{addr}: {cell}"
+                if formula:
+                    line += f"  [{formula}]"
+                if props:
+                    # Formatting is content in a controlled document — a cell going bold, or
+                    # a total turning red, is a real change an approver should see in the
+                    # diff rather than have it read as "no change".
+                    flags = ",".join(f"{k}={v}" if not isinstance(v, bool) else k
+                                     for k, v in sorted(props.items()) if v)
+                    if flags:
+                        line += f"  {{{flags}}}"
+                lines.append(line)
+    return lines
+
+
+def sheet_json_to_html(content: str) -> str:
+    """The one place a SHEET's stored JSON becomes markup. Both the PDF and DOCX export
+    paths route through this, then through their EXISTING html-table handling — `build_html`
+    already sanitises whatever HTML it's given, and `docx_export._Walker._table()` already
+    turns an HTML `<table>` into a Word table — so a spreadsheet needs no export code of its
+    own beyond this one conversion.
+
+    A multi-sheet workbook renders as one titled table per worksheet. The heading is emitted
+    only when there is more than one, so a single-sheet document (the overwhelmingly common
+    case, and every v1 document) is byte-for-byte what it was before."""
+    book = parse_sheet(content)
+    sheets = book["sheets"]
+    if len(sheets) == 1:
+        return _sheet_to_table(sheets[0])
+    parts = []
+    for i, sheet in enumerate(sheets):
+        # Page-break before every sheet after the first: a workbook exported to PDF should
+        # read as one worksheet per page, the way Excel prints it.
+        brk = ' style="page-break-before:always"' if i else ""
+        parts.append(f"<h2{brk}>{_html.escape(sheet['name'])}</h2>{_sheet_to_table(sheet)}")
+    return "".join(parts)
 
 
 _PAGE_CSS = """

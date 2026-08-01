@@ -5,6 +5,7 @@ The DoD, made executable. The two that matter most are the Probo fixes:
   • DoD #2 — a MINOR publish still needs approval (no silent bypass).
 """
 
+import io
 import json
 import re
 import uuid
@@ -784,3 +785,113 @@ def test_sheet_pdf_and_docx_export(app_client):
     docx = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.docx", headers=h)
     assert docx.status_code == 200 and docx.content[:2] == b"PK"
     assert "wordprocessingml" in docx.headers["content-type"]
+
+
+# ────────────────────────────────────────────────── P5-S2b: v2 workbook, diff, xlsx
+
+SHEET_V2 = json.dumps({"version": 2, "sheets": [{
+    "name": "Register",
+    "data": [["Item", "Cost"], ["Laptop", "1200"], ["Total", "1200"]],
+    "formulas": {"B3": "=SUM(B2:B2)"},
+    "style": {"A1": {"bold": True, "align": "center", "background": "#eef0f2",
+                     "color": "#1a2432", "fontSize": 12}},
+    "merges": {"A1": {"colspan": 2, "rowspan": 1}},
+    "colWidths": [140, 90]}]})
+
+
+def test_v2_workbook_round_trips(app_client):
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=SHEET_V2)
+    d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
+    assert json.loads(d["open_version"]["content"]) == json.loads(SHEET_V2)
+
+
+def test_v1_sheets_still_render_after_the_v2_upgrade(app_client):
+    """Published v1 sheets can never be migrated (freeze trigger + signature hash), so the
+    v1 path has to keep working forever — including all the way out to PDF and DOCX."""
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=SHEET_JSON)   # v1 shape
+    _publish(app_client, h, approvers, doc_id, ver_id)
+    assert app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.pdf",
+                          headers=h).content[:4] == b"%PDF"
+    assert app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.docx",
+                          headers=h).content[:2] == b"PK"
+
+
+def test_a_malformed_v2_workbook_is_a_400(app_client):
+    h, owner, _ = _setup(app_client)
+    r = app_client.post("/api/documents", headers=h, json={
+        "title": "Bad", "owner_person_id": owner, "content_format": "SHEET",
+        "content": json.dumps({"version": 2, "sheets": [
+            {"data": [["x"]], "style": {"A1": {"position": "absolute"}}}]})})
+    assert r.status_code == 400
+    assert "unsupported style" in r.json()["detail"]
+
+
+def test_sheet_diff_is_per_cell_not_one_json_blob(app_client):
+    """A workbook is a single line of JSON, so an unprojected diff reports '1 added,
+    1 removed' for every possible edit — true, useless, and indistinguishable from any
+    other change."""
+    h, owner, approvers = _setup(app_client)
+    doc_id, v1 = _new_sheet(app_client, h, owner, content=SHEET_V2)
+    _publish(app_client, h, approvers, doc_id, v1)
+    v2 = app_client.post(f"/api/documents/{doc_id}/versions", headers=h,
+                         json={"bump": "minor"}).json()["version_id"]
+    changed = json.loads(SHEET_V2)
+    changed["sheets"][0]["data"][1][1] = "1500"
+    app_client.patch(f"/api/documents/{doc_id}/versions/{v2}", headers=h,
+                     json={"content": json.dumps(changed)})
+
+    diff = app_client.get(f"/api/documents/{doc_id}/diff", headers=h,
+                          params={"from_version": v1, "to_version": v2}).json()
+    body = "\n".join(diff["diff"])
+    assert "B2: 1200" in body and "B2: 1500" in body
+    # one cell changed -> one line each way, not the whole document
+    assert diff["added"] == 1 and diff["removed"] == 1
+
+
+def test_sheet_exports_as_a_real_xlsx(app_client):
+    from openpyxl import load_workbook
+    h, owner, approvers = _setup(app_client)
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=SHEET_V2)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.xlsx", headers=h)
+    assert r.status_code == 200 and r.content[:2] == b"PK"
+    assert "spreadsheetml" in r.headers["content-type"]
+    assert ".xlsx" in r.headers["content-disposition"]
+
+    ws = load_workbook(io.BytesIO(r.content))["Register"]
+    assert ws["A1"].value == "Item" and ws["A1"].font.bold
+    assert ws["B2"].value == 1200                      # numeric, not text
+    assert ws["B3"].value == "=SUM(B2:B2)"             # a live formula, not its frozen value
+    assert "A1:B1" in [str(rng) for rng in ws.merged_cells.ranges]
+
+
+def test_xlsx_export_is_refused_for_a_prose_document(app_client):
+    """There is no sensible workbook projection of a policy — a clear 400 beats a confusing
+    one-cell file."""
+    h, owner, _ = _setup(app_client)
+    doc_id, ver_id = _new_doc(app_client, h, owner)     # MARKDOWN
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.xlsx", headers=h)
+    assert r.status_code == 400
+    assert "spreadsheet" in r.json()["detail"]
+
+
+def test_wrapped_column_reaches_the_xlsx_export(app_client):
+    """openpyxl carries wrap on the Alignment object, so it has to travel with horizontal
+    alignment rather than as a separate attribute — easy to drop silently."""
+    from openpyxl import load_workbook
+    h, owner, approvers = _setup(app_client)
+    body = json.dumps({"version": 2, "sheets": [{
+        "name": "Register",
+        "data": [["a long description that should wrap", "short"]],
+        "colWrap": [True, False]}]})
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=body)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.xlsx", headers=h)
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content))["Register"]
+    assert ws["A1"].alignment.wrap_text is True
+    assert not ws["B1"].alignment.wrap_text        # untouched column stays unwrapped

@@ -56,17 +56,53 @@ test("sign up creates an organisation and lands you in the app", async ({ page }
   await expect(page.getByLabel("Organisation")).toContainText(org);
 });
 
-test("a bad GST number is refused with a readable reason", async ({ page }) => {
-  await page.goto("/signup");
-  await page.getByLabel("Your name").fill("Bad GST");
-  await page.getByLabel("Work email").fill(`bad-${uniq()}@example.com`);
-  await page.getByLabel("Password", { exact: true }).fill("Passw0rdOne");
-  await page.getByLabel("Organisation name").fill("Bad GST Co");
-  await page.getByLabel("GST number").fill("27AAPFU0939F1ZZ");   // wrong check digit
-  await page.getByRole("button", { name: "Create organisation" }).click();
+/**
+ * A GSTIN with a deliberately WRONG check digit, unique per run. Both properties matter: it
+ * must be malformed to prove S6 no longer validates, and unique because the number is still
+ * enforced as unique — a hardcoded one is claimed by the first run and makes the spec fail
+ * on every run after.
+ */
+function badGstin(seed: number): string {
+  const good = gstin(seed);
+  const A = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const wrong = A[(A.indexOf(good[14]) + 1) % 36];   // any other char is, by definition, wrong
+  return good.slice(0, 14) + wrong;
+}
 
-  await expect(page.getByText(/check digit/i)).toBeVisible();
-  expect(page.url(), "should stay on the form").toContain("/signup");
+test("an unusual GST number is accepted — but a duplicate is still refused", async ({ page }) => {
+  /**
+   * P5-S6 reversed this deliberately. GST used to be required and checksum-validated, so a
+   * wrong check digit blocked signup entirely; this spec asserted that block. But the format
+   * is a tax-registration detail that changes, varies by entity, and often is not to hand at
+   * signup — validating it turned a nice-to-have into a wall, which is what Sumit reported.
+   *
+   * Uniqueness is the part worth keeping, so that is what is asserted now: the same GST
+   * cannot register two organisations.
+   */
+  const shared = badGstin(uniq());
+  await page.goto("/signup");
+  await page.getByLabel("Your name").fill("Odd GST");
+  await page.getByLabel("Work email").fill(`odd-${uniq()}@example.com`);
+  await page.getByLabel("Password", { exact: true }).fill("Passw0rdOne");
+  await page.getByLabel("Organisation name").fill(`Odd GST Co ${uniq()}`);
+  await page.getByLabel("GST number").fill(shared);
+  await page.getByRole("button", { name: "Create organisation" }).click();
+  await expect(page.getByRole("link", { name: "Documents", exact: true })).toBeVisible();
+
+  // …now a second organisation claiming the same number is turned away, with the reason.
+  const fresh = await page.context().browser()!.newContext(
+    { storageState: { cookies: [], origins: [] } });
+  const p2 = await fresh.newPage();
+  await p2.goto("/signup");
+  await p2.getByLabel("Your name").fill("Dupe GST");
+  await p2.getByLabel("Work email").fill(`dupe-${uniq()}@example.com`);
+  await p2.getByLabel("Password", { exact: true }).fill("Passw0rdOne");
+  await p2.getByLabel("Organisation name").fill(`Dupe GST Co ${uniq()}`);
+  await p2.getByLabel("GST number").fill(shared);
+  await p2.getByRole("button", { name: "Create organisation" }).click();
+  await expect(p2.locator(".bg-bad-bg")).toContainText(/already/i);
+  expect(p2.url(), "should stay on the form").toContain("/signup");
+  await fresh.close();
 });
 
 test("a weak password is refused", async ({ page }) => {

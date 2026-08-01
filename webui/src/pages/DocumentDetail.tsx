@@ -74,9 +74,17 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
     // A version's format never changes mid-edit (SHEET stays SHEET) — only a pre-S4
     // MARKDOWN version gets migrated to HTML on first edit through the rich text editor,
     // per the editor_html note above.
-    mutationFn: () => api.patch(`/documents/${docId}/versions/${version.id}`,
-                                { content, changelog, content_format: isSheet ? "SHEET" : "HTML" }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["document", docId] }); onDone(); },
+    mutationFn: (_opts?: { stayOpen?: boolean }) =>
+      api.patch(`/documents/${docId}/versions/${version.id}`,
+                { content, changelog, content_format: isSheet ? "SHEET" : "HTML" }),
+    // Saving normally closes the editor — long-standing behaviour of the "Save draft"
+    // button. `stayOpen` is for the sheet's fullscreen bar: closing there would unmount the
+    // editor mid-session and dump the user back on the read view from a full-screen grid.
+    // Same mutation either way, so there is no second save path to drift.
+    onSuccess: (_data, opts) => {
+      qc.invalidateQueries({ queryKey: ["document", docId] });
+      if (!opts?.stayOpen) onDone();
+    },
   });
   const discard = useMutation({
     mutationFn: () => api.delete(`/documents/${docId}/versions/${version.id}`),
@@ -96,7 +104,7 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
       <div className="mb-2 flex items-center gap-2">
         <input value={changelog} onChange={(e) => setChangelog(e.target.value)}
           placeholder="Changelog — what changed in this version?" className={inputCls} />
-        <button disabled={save.isPending} onClick={() => save.mutate()}
+        <button disabled={save.isPending} onClick={() => save.mutate({})}
           className="btn btn-primary shrink-0 disabled:opacity-50">{save.isPending ? "Saving…" : "Save draft"}</button>
         <button onClick={() => (dirty ? setLeaving(true) : onDone())}
           className="btn shrink-0">Done</button>
@@ -116,7 +124,11 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
         </div>
       )}
       {isSheet
-        ? <SheetEditor value={content} onChange={setContent} />
+        ? <SheetEditor value={content} onChange={setContent}
+            // The sheet's own fullscreen mode covers this page's Save/Done buttons, so it
+            // renders its own bar from these. Same mutation either way — there is no second
+            // save path that could behave differently.
+            onSave={() => save.mutate({ stayOpen: true })} saving={save.isPending} dirty={dirty} />
         : <RichTextEditor value={content} onChange={setContent} />}
 
       <Modal open={leaving} onClose={() => setLeaving(false)} title="Leave without saving?">
@@ -125,7 +137,7 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={() => setLeaving(false)} className="btn">Keep editing</button>
-          <button onClick={() => { setLeaving(false); save.mutate(); }}
+          <button onClick={() => { setLeaving(false); save.mutate({}); }}
             className="btn btn-primary">Save and close</button>
           <button onClick={() => { setLeaving(false); onDone(); }}
             className="btn text-bad hover:border-bad">Discard changes</button>
@@ -626,6 +638,16 @@ export default function DocumentDetail() {
             `${doc.title} v${shown.version_label}.docx`)}
             title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
             className="btn py-1.5">Export DOCX ↓</button>)}
+        {/* Spreadsheets only — there is no sensible workbook projection of a prose policy,
+            and the API 400s if you ask for one. The .xlsx is a WORKING copy: it carries live
+            formulas, so a recipient who edits it will see figures diverge from the signed
+            PDF. That is intended; the PDF stays the controlled artefact. */}
+        {shown && shown.content_format === "SHEET" && (
+          <button onClick={() => downloadFile(
+            `/documents/${doc.id}/versions/${shown.id}/render.xlsx`,
+            `${doc.title} v${shown.version_label}.xlsx`)}
+            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
+            className="btn py-1.5">Export XLSX ↓</button>)}
         {can("documents", "edit") && (
           <button onClick={() => archive.mutate(doc.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
             disabled={archive.isPending} className="btn py-1.5 disabled:opacity-50">

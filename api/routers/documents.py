@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import delete, func, insert, select, text, update
 
-from api import activity, docx_export, render, storage, vocabularies
+from api import activity, docx_export, render, storage, vocabularies, xlsx_io
 from api.auth import Principal
 from api.html_sanitize import sanitize_document_html
 from api.permissions import require
@@ -650,6 +650,7 @@ def render_version(doc_id: str, version_id: str,
 
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 @router.get("/{doc_id}/versions/{version_id}/render.docx")
@@ -674,6 +675,35 @@ def render_version_docx(doc_id: str, version_id: str,
             disposition, f'{doc["title"][:80]} v{v["version_label"]}.docx')})
 
 
+@router.get("/{doc_id}/versions/{version_id}/render.xlsx")
+def render_version_xlsx(doc_id: str, version_id: str,
+                        disposition: str = Query("attachment", pattern="^(attachment|inline)$"),
+                        user: Principal = Depends(require("documents", "view")),
+                        conn=Depends(get_conn)):
+    """Spreadsheet export, for SHEET versions only (P5-S2b).
+
+    Rendered on the fly like the DOCX — only the PDF is the controlled artefact stored
+    against the version. Offered only for SHEET because there is no sensible workbook
+    projection of a prose policy; asking for one on a MARKDOWN/HTML version is a 400 rather
+    than a confusing single-cell file.
+    """
+    doc = _doc(conn, user, doc_id)
+    dv = t("document_versions")
+    v = conn.execute(select(dv).where(
+        dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
+    if v is None:
+        raise HTTPException(404, "version not found")
+    if v["content_format"] != "SHEET":
+        raise HTTPException(400, "only spreadsheet documents can be exported as .xlsx")
+    try:
+        data = xlsx_io.build_sheet_workbook(doc["title"], v["content"] or "")
+    except render.SheetFormatError as e:
+        raise HTTPException(400, f"invalid spreadsheet content: {e}") from e
+    return Response(data, media_type=XLSX_MIME, headers={
+        "Content-Disposition": _disposition(
+            disposition, f'{doc["title"][:80]} v{v["version_label"]}.xlsx')})
+
+
 def _diff_lines(content: str | None, fmt: str) -> list[str]:
     """One comparable line per block.
 
@@ -686,6 +716,15 @@ def _diff_lines(content: str | None, fmt: str) -> list[str]:
     A correct diff would need to compare serialized HTML per block, not just its rendered
     text; that is a larger redesign than this projection, and out of scope for now.
     """
+    if fmt == "SHEET":
+        # A workbook is one long line of JSON, so a raw splitlines() diff reports "1 added,
+        # 1 removed" for every possible edit. Project to one line per non-empty cell.
+        try:
+            return render.sheet_diff_lines(content or "")
+        except render.SheetFormatError:
+            # A draft can hold content the validator rejects only if it was written before a
+            # format change; a broken diff must not 500 the endpoint.
+            return (content or "").splitlines()
     if fmt != "HTML":
         return (content or "").splitlines()
     from lxml import html as lhtml  # noqa: PLC0415 — only needed on the HTML branch

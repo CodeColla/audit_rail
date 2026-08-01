@@ -56,10 +56,26 @@ ALLOWED_ATTRS: dict[str, set[str]] = {
     **{f"h{i}": {"style"} for i in range(1, 7)},
 }
 
-#: Declarations kept inside a surviving `style=`. Everything else (position, background,
-#: behaviour) is dropped. Case-sensitive in nh3 — content pasted from Word may arrive as
-#: `TEXT-ALIGN` and lose its alignment. Acceptable; the alternative admits arbitrary CSS.
-FILTER_STYLE_PROPERTIES: set[str] = {"text-align", "width", "min-width"}
+#: Declarations kept inside a surviving `style=`. Everything else (position, behaviour,
+#: `background-image`) is dropped. Case-sensitive in nh3 — content pasted from Word may
+#: arrive as `TEXT-ALIGN` and lose its alignment. Acceptable; the alternative admits
+#: arbitrary CSS.
+#:
+#: P5-S2b added the last three for spreadsheet cells. Without them a coloured or resized cell
+#: rendered correctly in the editor and then silently lost its formatting in the PDF/DOCX —
+#: the worst kind of bug, because nothing reports it. They are safe to admit: none can
+#: execute script, and only the `background-color` LONGHAND is allowed, never the
+#: `background` shorthand, which can carry `url(…)` and would hand xhtml2pdf a server-side
+#: fetch (the same class of hole the img/urlopen note in render.build_html describes).
+#: Values reaching here from a SHEET are additionally pre-validated against
+#: `render._STYLE_PROPS` (hex colours only, font size bounded) before they are ever written.
+FILTER_STYLE_PROPERTIES: set[str] = {
+    "text-align", "width", "min-width",
+    "font-size", "color", "background-color",
+    # P5-S2c: spreadsheet columns marked "wrap text". Purely presentational, no URL, no
+    # script; the value is emitted by our own renderer, never taken from author input.
+    "white-space",
+}
 
 #: Absolute-URL schemes for `href`. `javascript:` and `data:` are absent by construction.
 URL_SCHEMES: set[str] = {"http", "https", "mailto"}

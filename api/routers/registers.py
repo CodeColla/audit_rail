@@ -13,28 +13,31 @@ online for free when their registers land.
 
 from __future__ import annotations
 
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, storage
+from api import activity, importer, register_imports, storage, vocabularies, xlsx_io
 from api.config import settings
 from api.auth import Principal, get_current_user
-from api.permissions import require
+from api.permissions import MODULE_LABELS, load_permissions, require
 from api.database import engine, get_conn, t
 from api.util import IsoDate, StrictModel, now_iso, risk_band
 
 router = APIRouter(tags=["registers"])
 
-TREATMENTS = {"MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED"}
-CRITICALITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-CLASSIFICATIONS = {"PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"}
+# Single source of truth is api/vocabularies.py — register_imports.py needs the same values
+# and cannot import this module. Kept as sets here because the validators below use `in`.
+TREATMENTS = set(vocabularies.TREATMENTS)
+CRITICALITIES = set(vocabularies.CRITICALITIES)
+CLASSIFICATIONS = set(vocabularies.CLASSIFICATIONS)
 # ── Sprint 4b (registers II) ──
-TP_STATUS = {"ACTIVE", "OFFBOARDING", "TERMINATED"}
+TP_STATUS = set(vocabularies.TP_STATUSES)
 AGREEMENT_KINDS = {"DPA", "BAA", "NDA", "SLA", "MSA", "OTHER"}
 SENSITIVITY = {"NONE", "LOW", "MEDIUM", "HIGH"}
 IMPACT = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
@@ -298,7 +301,17 @@ def update_risk(risk_id: str, body: RiskPatch, user: Principal = Depends(require
 def delete_risk(risk_id: str, user: Principal = Depends(require("risks", "delete"))):
     with engine.begin() as conn:
         _get(conn, "risks", user.tenant_id, risk_id, "risk")
-        conn.execute(delete(t("risks")).where(t("risks").c.id == risk_id))   # cascades risk_links
+        try:
+            conn.execute(delete(t("risks")).where(t("risks").c.id == risk_id))  # cascades risk_links
+        except IntegrityError:
+            # `findings.risk_id` is ON DELETE RESTRICT (db/schema.sql:1439) and there is no
+            # global exception handler in api/main.py, so this surfaced as a raw 500. It had
+            # to be fixed BEFORE the DataTable bulk delete shipped: a bulk run over a
+            # register containing one cited risk would otherwise produce a wall of 500s with
+            # nothing legible to show per row. Mirrors delete_third_party's guard.
+            raise HTTPException(
+                409, "this risk is cited by an audit finding — close or reassign that "
+                     "finding first")
     return {"ok": True}
 
 
@@ -1254,6 +1267,11 @@ class IncidentIn(StrictModel):
     reference: str | None = None
     description: str | None = None
     severity: str | None = None
+    # P5-S4: values come from the `incident_category` lookup kind, seeded in P4-S3 and
+    # unused until now because the column did not exist. Free text like every other
+    # lookup-backed field — the vocabulary is a UI affordance, not a DB constraint, so an
+    # admin can extend it from Masters without a migration.
+    category: str | None = None
     detected_at: IsoDate = None
     resolved_at: IsoDate = None
     root_cause: str | None = None
@@ -1269,6 +1287,7 @@ class IncidentPatch(StrictModel):
     reference: str | None = None
     description: str | None = None
     severity: str | None = None
+    category: str | None = None
     detected_at: IsoDate = None
     resolved_at: IsoDate = None
     root_cause: str | None = None
@@ -1485,3 +1504,127 @@ def add_incident_event(incident_id: str, body: IncidentEventIn,
                  action="incident.event_added", entity_type="incident",
                  entity_id=incident_id, detail={"event_type": body.event_type})
     return {"id": eid}
+
+
+# ══════════════════════════════════════════════════════════ bulk import (P5-S5)
+#
+# One generic set of endpoints serves all five registers, driven by
+# `api/register_imports.SPECS`. Writing five near-identical routes would guarantee they
+# drift; the spec table is also what feeds the template and the mapping UI, so a column
+# cannot exist in one and not the others.
+#
+# Paths are `/import/{register}/…`, NOT `/{register}/import…`. The latter reads better and is
+# wrong: FastAPI matches in declaration order, and `/risks/{risk_id}` is declared far earlier
+# in this file, so `/risks/import-columns` would resolve to it with risk_id="import-columns"
+# and 404 as "risk not found". A literal first segment cannot be shadowed.
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _require_permission(user: Principal, module: str, action: str) -> None:
+    """The imperative form of `permissions.require`. The dependency factory cannot be used
+    here because the module being checked is decided by a PATH parameter, not at import
+    time — one route serves all five registers."""
+    if (module, action) not in load_permissions(user):
+        raise HTTPException(403, f"You do not have permission to {action} "
+                                 f"{MODULE_LABELS.get(module, module)}.")
+
+
+def _spec(register: str) -> dict:
+    spec = register_imports.SPECS.get(register)
+    if spec is None:
+        raise HTTPException(404, f"no import for {register!r} — "
+                                 f"try: {', '.join(sorted(register_imports.SPECS))}")
+    return spec
+
+
+@router.get("/import/{register}/columns")
+def import_columns(register: str, user: Principal = Depends(get_current_user)):
+    """What the mapping UI renders, and what the template contains. Served rather than
+    duplicated in the SPA so the two can never disagree."""
+    spec = _spec(register)
+    return {"noun": spec["noun"],
+            "columns": [{k: c[k] for k in ("key", "label", "help", "required")}
+                        for c in spec["columns"]]}
+
+
+@router.get("/import/{register}/template.xlsx")
+def import_template(register: str, user: Principal = Depends(get_current_user)):
+    spec = _spec(register)
+    data = xlsx_io.build_template(spec["columns"], sheet_name=spec["noun"])
+    return Response(data, media_type=XLSX_MIME, headers={
+        "Content-Disposition": f'attachment; filename="{register}-import-template.xlsx"'})
+
+
+@router.post("/import/{register}")
+async def import_register(
+    register: str,
+    file: UploadFile = File(...),
+    mapping: str | None = Form(None, description="JSON {our_field: their_header}"),
+    user: Principal = Depends(get_current_user),
+):
+    """Import a .xlsx or .csv into one of the registers.
+
+    `mapping` comes from the UI's column-mapping table. When it is omitted we fall back to
+    matching the template's own labels, so a downloaded-and-filled template just works — but
+    we never GUESS beyond that. Silently mapping "Owner Name" onto `owner` because it looks
+    close is how a bulk import quietly puts data in the wrong column.
+    """
+    spec = _spec(register)
+    # Gated on the register's own add permission, not a blanket import right: whoever can
+    # create one risk can create fifty, and nobody else can.
+    _require_permission(user, spec["module"], "add")
+
+    raw = await file.read()
+    if len(raw) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {settings.max_upload_mb} MB limit")
+    try:
+        headers, rows = xlsx_io.read_rows(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception:                                            # noqa: BLE001
+        raise HTTPException(400, "could not read that file — is it a .xlsx or .csv?") from None
+
+    if not rows:
+        raise HTTPException(400, "that file has a header row but no data rows")
+
+    if mapping:
+        try:
+            user_map = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "mapping must be JSON") from None
+        if not isinstance(user_map, dict):
+            raise HTTPException(400, "mapping must be a JSON object")
+        known = {c["key"] for c in spec["columns"]}
+        col_map = {k: v for k, v in user_map.items() if k in known and v in headers}
+    else:
+        col_map = {c["key"]: c["label"] for c in spec["columns"] if c["label"] in headers}
+
+    required = [c for c in spec["columns"] if c.get("required") and c["key"] not in col_map]
+    if required:
+        raise HTTPException(400, "map a column to " +
+                            ", ".join(c["label"] for c in required))
+
+    with engine.begin() as conn:
+        result = importer.import_rows(
+            conn, tenant_id=user.tenant_id, table=spec["table"], rows=rows,
+            mapping=col_map, build=spec["build"], label_key=spec["label_key"],
+            friendly=_import_friendly)
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action=f"{register}.imported", entity_type=spec["table"], entity_id=None,
+                 detail={"created": result["created"], "failed": result["failed"]})
+    return result
+
+
+def _import_friendly(e: Exception) -> str:
+    """Postgres constraint noise -> something a person can act on. Anything unrecognised is
+    truncated rather than dropped: an opaque message still beats a silent failure."""
+    s = str(getattr(e, "orig", e))
+    if "duplicate key" in s:
+        return "a record with that reference already exists"
+    if "violates check constraint" in s:
+        return "a value is not one this register allows"
+    if "violates foreign key" in s:
+        return "references something that is not in this organisation"
+    return s.split("\n")[0][:200]

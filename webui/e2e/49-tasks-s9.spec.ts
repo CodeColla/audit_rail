@@ -21,6 +21,10 @@ async function apiGet(page: Page, path: string): Promise<any> {
   return r.json();
 }
 
+/* `getByLabel("Every", { exact: true })` — the exactness is load-bearing. Playwright matches
+   labels as a case-insensitive SUBSTRING by default, so a bare "Every" also matches the global
+   search box added in P5-S6, whose accessible name is "Search everything". Same trap as the
+   `getByText("Photo")` collision in 46-registers-s7. */
 test.describe("create", () => {
   test("a recurring task can be built with the new frequency/interval fields", async ({ page }) => {
     const title = `E2E recurring ${uniq()}`;
@@ -28,7 +32,7 @@ test.describe("create", () => {
     await page.getByRole("button", { name: /New task/ }).click();
     await page.getByLabel("Title *").fill(title);
     await page.getByLabel("Recurrence").selectOption("WEEKLY");
-    await page.getByLabel("Every").fill("2");
+    await page.getByLabel("Every", { exact: true }).fill("2");
     await page.getByLabel(/due$/i).fill("2027-01-04");
     await page.getByRole("button", { name: "Create task" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -49,7 +53,7 @@ test.describe("create", () => {
     await page.getByRole("button", { name: /New task/ }).click();
     await page.getByLabel("Title *").fill(title);
     // Recurrence stays "One-off" — no interval box should even render
-    await expect(page.getByLabel("Every")).toHaveCount(0);
+    await expect(page.getByLabel("Every", { exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Create task" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.locator("tbody tr", { hasText: title })).toContainText("One-off");
@@ -98,7 +102,7 @@ test.describe("edit", () => {
     await page.getByRole("dialog").getByRole("button", { name: "Edit" }).click();
     const editDialog = page.getByRole("dialog").last();
     await editDialog.getByLabel("Recurrence").selectOption("MONTHLY");
-    await editDialog.getByLabel("Every").fill("1");
+    await editDialog.getByLabel("Every", { exact: true }).fill("1");
     await editDialog.getByRole("button", { name: "Save" }).click();
 
     const rows = await apiGet(page, "/tasks?status=all");
@@ -121,7 +125,7 @@ test.describe("complete rolls the schedule forward correctly", () => {
     await page.getByRole("button", { name: /New task/ }).click();
     await page.getByLabel("Title *").fill(title);
     await page.getByLabel("Recurrence").selectOption("MONTHLY");
-    await page.getByLabel("Every").fill("1");
+    await page.getByLabel("Every", { exact: true }).fill("1");
     await page.getByLabel(/due$/i).fill(dueIso);
     await page.getByRole("button", { name: "Create task" }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);

@@ -125,7 +125,13 @@ test.describe("assets are type-aware", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     await page.locator("tbody tr", { hasText: name }).click();
-    await expect(page.getByRole("dialog").getByText("Photo")).toHaveCount(0);
+    // `exact` matters here: getByText(string) is case-INSENSITIVE substring matching, and
+    // this asset is called "E2E no{photo} …", so a loose match hits the drawer's own <h3>
+    // title rather than a Photo card. The card's label is exactly "Photo" (Registers.tsx's
+    // `<div className="eyebrow">Photo</div>`), so anchoring on that is what the test meant.
+    // Without this the assertion only passed by racing the title's render — it went red the
+    // moment anything shifted app timing, while the feature itself was always correct.
+    await expect(page.getByRole("dialog").getByText("Photo", { exact: true })).toHaveCount(0);
   });
 });
 

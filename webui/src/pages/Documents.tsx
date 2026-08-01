@@ -89,7 +89,7 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
             ))}
           </div>
           <p className="mt-1 text-[11.5px] font-normal text-txt3">
-            {kind === "SHEET" ? "A grid you fill in and format — values and basic formatting only, no formulas."
+            {kind === "SHEET" ? "A spreadsheet — formulas, formatting and multiple sheets. Published versions freeze their calculated values."
               : "Free-form text, written in the rich text editor."}
           </p>
         </div>

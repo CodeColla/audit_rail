@@ -8,6 +8,8 @@ import { useCan } from "../lib/auth";
 import { Thumb } from "../components/AttachmentLink";
 import { FilePreview } from "../components/FilePreview";
 import { DataTable, Column } from "../components/DataTable";
+import { MAX_UPLOAD_MB, stem } from "../lib/evidence";
+import { LookupSelect } from "./Registers";
 
 type Ev = {
   id: string; title: string; evidence_type: string; issued_at: string | null; valid_until: string | null;
@@ -15,15 +17,8 @@ type Ev = {
   original_name: string | null; size_bytes: number | null; mime_type: string | null;
 };
 
-const TYPES = ["certificate", "report", "policy_doc", "register", "screenshot", "insurance", "other"];
 
-/** Mirrors `api/config.py`'s `max_upload_mb` default. Not fetched from the server — this is
- * a client-side pre-check to catch an oversize file BEFORE a wasted round trip, not the
- * enforcement boundary; the server's 413 is still the real limit and still applies. */
-const MAX_UPLOAD_MB = 25;
 
-/** Strip only the extension, matching the server's `Path(...).stem` default. */
-const stem = (n: string) => n.replace(/\.[^./\\]+$/, "") || n;
 
 const humanSize = (bytes: number) => bytes < 1_000_000
   ? `${Math.round(bytes / 1000)} kB` : `${(bytes / 1_000_000).toFixed(1)} MB`;
@@ -115,9 +110,9 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="grid grid-cols-3 gap-3">
           <label className="text-[13px] font-medium">Type
-            <select value={type} onChange={(e) => setType(e.target.value)} className={inputCls + " mt-1 capitalize"}>
-              {TYPES.map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
-            </select>
+            {/* P5-S6: was a hardcoded array duplicated in two files. Now the
+                `evidence_type` vocabulary, editable in Masters. */}
+            <LookupSelect kind="evidence_type" value={type} onChange={setType} />
           </label>
           <label className="text-[13px] font-medium">Issued
             <input type="date" value={issued} onChange={(e) => setIssued(e.target.value)} className={inputCls + " mt-1"} />

@@ -64,15 +64,37 @@ def test_signup_creates_account_and_organisation(app_client):
         "email": body["email"], "password": body["password"]}).status_code == 200
 
 
-def test_gst_number_must_be_valid_and_unique(app_client):
-    # a well-formed number with a wrong check digit is refused
-    bad = app_client.post("/api/auth/signup", json={
+def test_gst_is_optional_and_unvalidated_but_still_unique(app_client):
+    """P5-S6 — Sumit's decision. GST used to be REQUIRED and checksum-verified, which blocked
+    signup for anyone without one to hand. `api/gstin.py` is deliberately left intact and
+    unchanged — it is correct and a later "verify your GST" flow should use it — signup
+    simply no longer calls it. (It has no dedicated test module of its own; `uniq_gst` in
+    this file still exercises it indirectly by generating checksum-valid numbers.)
+
+    Uniqueness survives, but only for a value actually supplied: two organisations should not
+    share a GST number, while any number of them may have none."""
+    # no GST at all
+    none_given = app_client.post("/api/auth/signup", json={
+        "full_name": "X", "email": f"x-{uuid.uuid4().hex[:6]}@example.com",
+        "password": "Passw0rdOne", "organisation_name": "No GST Co"})
+    assert none_given.status_code == 201, none_given.text
+
+    # a malformed one is accepted now, rather than 400'd on a check digit
+    malformed = app_client.post("/api/auth/signup", json={
         "full_name": "X", "email": f"x-{uuid.uuid4().hex[:6]}@example.com",
         "password": "Passw0rdOne", "organisation_name": "Bad GST Co",
         "gst_number": "27AAPFU0939F1ZZ"})
-    assert bad.status_code == 400 and "check digit" in bad.json()["detail"]
+    assert malformed.status_code == 201, malformed.text
 
-    # the same GSTIN cannot create a second organisation
+    # blank is treated as absent, so two blank-GST orgs do not collide
+    for _ in range(2):
+        r = app_client.post("/api/auth/signup", json={
+            "full_name": "X", "email": f"x-{uuid.uuid4().hex[:6]}@example.com",
+            "password": "Passw0rdOne", "organisation_name": "Blank GST Co",
+            "gst_number": "   "})
+        assert r.status_code == 201, r.text
+
+    # …but a real duplicate is still refused
     shared = uniq_gst()
     first, _ = _signup(app_client, gst_number=shared)
     assert first.status_code == 201

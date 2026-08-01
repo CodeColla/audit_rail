@@ -80,6 +80,42 @@ body {
 .doc-md th { @apply bg-canvas font-semibold; }
 .doc-md hr { @apply my-5 border-bd; }
 
+/* jspreadsheet-ce inside SheetEditor (P5-S2b).
+
+   NOTE — there is deliberately NO `.jss_container { display: block }` override here, though
+   an earlier pass of this fix added one. jspreadsheet.css does declare
+   `.jss_container { display: inline-block }` (shrink-to-fit), which looks like the cause of
+   the grid opening at ~650px in a ~1172px column. It isn't: that same element also carries
+   jsuites' `jtabs-selected` class, whose rule already resolves it to `display: block`.
+   Measured in the browser with the override removed — still `block`, still full width. The
+   override was dead CSS, so it is gone. The actual width fix lives in SheetEditor.tsx:
+   `tableWidth` (enables the horizontal branch at all) + `minDimensions` (makes the grid wide
+   enough to fill the page). Scoped under `.sheet-editor` — bare `.jss_*` would be global. */
+
+/* The grid is data, not prose — Space Grotesk is inherited from body and is the wrong tool
+   for columns of figures. Tabular numerals keep digits in vertical alignment. */
+.sheet-editor .jss_worksheet { font-variant-numeric: tabular-nums; }
+/* Rounded corners on the wrapper only work if the widget's own square corners are clipped;
+   the wrapper itself can't use overflow-hidden (it would clip the grid's own scrollbars). */
+.sheet-editor > div:last-child { @apply overflow-hidden rounded-b-xl; }
+
+/* Fullscreen (the toolbar's "Toggle Fullscreen"). jspreadsheet implements this as a single
+   `classList.add("fullscreen")` on the very element we mount into — no reparenting, no
+   inline styles — and its own rule is `position:fixed; inset:0; z-index:21`.
+
+   1. z-index. 21 loses to our app header (`Shell.tsx`, `sticky top-0 z-30`), which is
+      `bg-canvas/90` + `backdrop-blur`, so the org name and search bar were painted as a
+      translucent smear directly over the sheet's toolbar. Measured with
+      `document.elementFromPoint` at the toolbar's centre: it returned the header, not the
+      toolbar. 60 clears the header (30), the drawer scrim (40) and modals (50).
+   2. The rule above rounds the bottom corners — correct inline, absurd on a fullscreen box. */
+.sheet-editor > div.fullscreen { z-index: 60; @apply rounded-none; }
+/* `tableHeight` leaves an inline box-shadow on .jss_content that jspreadsheet never clears;
+   harmless inline, but a floating shadow across a fullscreen sheet looks like a rendering
+   artefact. (The inline max-height:60vh is NOT a problem — jspreadsheet's own
+   `.fullscreen .jss_content { max-height:100% !important }` already outranks it.) */
+.sheet-editor > div.fullscreen .jss_content { box-shadow: none !important; }
+
 /* rendered DOCX / XLSX inside FilePreview (P4-S3) — the libraries emit bare HTML */
 .file-preview table { @apply my-2 w-full border-collapse text-[12.5px]; }
 .file-preview th, .file-preview td { @apply border border-bd px-2 py-1 text-left; }

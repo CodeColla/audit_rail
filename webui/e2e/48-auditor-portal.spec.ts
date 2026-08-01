@@ -92,12 +92,18 @@ test("an auditor guest can open the evidence behind an answer", async ({ browser
   const drawer = page.getByRole("dialog");
   await expect(drawer.getByText(f.evTitle)).toBeVisible();
 
-  const download = page.waitForEvent("download");
   await drawer.getByRole("button", { name: f.evTitle }).click();
-  // Before P4-S8 this click resolved to a 403 that nothing caught, so nothing happened at
-  // all — no download, no error, no clue.
-  expect((await download).suggestedFilename()).toBe("guest-proof.pdf");
-  await expect(drawer.getByText(/Could not open/)).toHaveCount(0);
+
+  // P5-S3 changed the delivery: the guest now gets the shared `AttachmentLink`, so a click
+  // PREVIEWS inline instead of downloading. The guarantee P4-S8 established is unchanged and
+  // is what this asserts — that a guest can actually reach the BYTES. Arguably it now proves
+  // it more strongly: FilePreview fetches the blob with the guest's own token and renders it,
+  // so a rendered iframe means the fetch genuinely succeeded. Before P4-S8 the same click hit
+  // a 403 nothing caught: no download, no error, no clue.
+  // FilePreview titles the frame with the ARTIFACT title it was given, not the
+  // stored filename — AttachmentLink passes `name={title}`.
+  await expect(page.locator(`iframe[title="${f.evTitle}"]`)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/Could not|403|Member access/)).toHaveCount(0);
 
   await guestCtx.close();
 });
@@ -133,5 +139,23 @@ test("a guest cannot pull an artifact that is not attached to their assessment",
     headers: { Authorization: `Bearer ${f.guestToken}` } });
   // 404, not 403 — a 403 would confirm the id exists and turn this into an enumeration oracle
   expect(r.status()).toBe(404);
+  await guestCtx.close();
+});
+
+
+test("the auditor portal offers a guest no way to upload", async ({ browser }) => {
+  // P5-S3 gave MEMBERS an upload-here control on tasks and audit questions. The guest
+  // portal deliberately gets none — pytest pins that the API refuses a guest upload
+  // outright; this is the UI half, checked in a context that has never held a member
+  // session (checking the member /audits page would prove nothing).
+  const f = await buildAudit(browser);
+  const guestCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const page = await guestCtx.newPage();
+  await page.goto(`/auditor?token=${f.guestToken}`);
+  await expect(page.getByText(/You are reviewing/)).toBeVisible({ timeout: 15_000 });
+  await page.locator("tbody tr").first().click();
+
+  await expect(page.locator('input[type="file"]'), "no upload control for a guest").toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Upload/i })).toHaveCount(0);
   await guestCtx.close();
 });

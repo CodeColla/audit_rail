@@ -280,3 +280,53 @@ def test_the_whole_evidence_router_stays_member_only(app_client):
                          data={"title": "x", "evidence_type": "report"},
                          files={"file": ("x.txt", b"x", "text/plain")})
     assert up.status_code == 403
+
+
+# ---------------------------------------------------------------- P5-S3: guests never write
+
+def test_guest_cannot_upload_evidence(app_client):
+    """S3 lets a MEMBER upload proof straight from a task or an audit question, using the
+    existing `POST /evidence`. The auditor portal deliberately gains no such affordance —
+    but the UI is not the boundary, so pin the API: a guest token must be refused outright,
+    not merely lack a button."""
+    from api.database import engine
+    aid, _q, _eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g-up")
+    gh, _gid = _guest(app_client, ah, aid)
+
+    r = app_client.post("/api/evidence", headers=gh,
+                        data={"evidence_type": "report", "title": "sneaky"},
+                        files={"file": ("x.txt", b"hello", "text/plain")})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_guest_cannot_link_evidence_to_a_response(app_client):
+    """The other half of the same boundary: a guest may read the evidence behind an answer,
+    never attach to it."""
+    from api.database import engine
+    aid, qid, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g-link")
+    gh, _gid = _guest(app_client, ah, aid)
+
+    r = app_client.post(f"/api/assessments/{aid}/responses/{qid}/evidence",
+                        headers=gh, json={"evidence_id": eid})
+    assert r.status_code in (401, 403), r.text
+
+
+def test_member_upload_then_link_is_the_s3_flow(app_client):
+    """S3 attaches proof with two calls the API already had — upload, then link — rather
+    than a multipart variant of the link route. This pins that both halves still work
+    together, since the UI now depends on the pair."""
+    from api.database import engine
+    aid, qid, _eid, mh, _ah = _assessment_with_evidence(app_client, engine, "-s3")
+
+    up = app_client.post("/api/evidence", headers=mh,
+                         data={"evidence_type": "report", "title": "Fresh proof"},
+                         files={"file": ("proof.txt", b"done", "text/plain")})
+    assert up.status_code == 201, up.text
+    new_id = up.json()["id"]
+
+    link = app_client.post(f"/api/assessments/{aid}/responses/{qid}/evidence",
+                           headers=mh, json={"evidence_id": new_id})
+    assert link.status_code in (200, 201), link.text
+
+    detail = app_client.get(f"/api/assessments/{aid}/responses/{qid}", headers=mh).json()
+    assert new_id in [e["id"] for e in detail["evidence"]]

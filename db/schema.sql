@@ -512,6 +512,11 @@ CREATE TABLE incidents (
     title           text NOT NULL,
     description     text,
     severity        text CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    -- P5-S4. Free text, NOT a CHECK: the allowed values live in `lookup_values` under the
+    -- `incident_category` kind (api/vocabularies.py), so an admin can extend them from the
+    -- Masters screen without a migration. Same shape as risks.category / assets.subtype.
+    -- The vocabulary was seeded in P4-S3 and sat unused because the column never existed.
+    category        text,
     detected_at     iso_ts,
     resolved_at     iso_ts,
     root_cause      text,

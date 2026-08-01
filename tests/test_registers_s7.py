@@ -543,3 +543,66 @@ def test_a_backdated_entry_sorts_by_when_it_happened_not_when_it_was_typed(app_c
                           "occurred_at": "2026-03-01T22:15:00Z"})
     events = app_client.get(f"/api/incidents/{i}", headers=h).json()["events"]
     assert [e["body"] for e in events] == ["alerted", "restored"]
+
+
+# ────────────────────────────────────────────────── P5-S4: delete safety + incident category
+
+def test_deleting_a_risk_cited_by_a_finding_is_409_not_500(app_client):
+    """`findings.risk_id` is ON DELETE RESTRICT (db/schema.sql), and there is no global
+    exception handler in api/main.py — so an unguarded delete surfaced as a raw 500.
+
+    Worth being precise about the exposure: **no API route writes `findings.risk_id` today**
+    (the insert in assessments.create_finding leaves it null), so this state is currently
+    only reachable by a direct write, as done here. The guard is therefore defensive rather
+    than a fix for a live incident — but it had to land before the DataTable bulk delete,
+    because a bulk run over a register holding one cited risk would otherwise emit a wall of
+    500s with nothing legible to report per row.
+    """
+    from api.database import engine
+    h = _h(app_client)
+    tid = _tid(engine)
+    risk_id = app_client.post("/api/risks", headers=h,
+                              json={"title": f"Cited {uuid.uuid4().hex[:5]}"}).json()["id"]
+
+    with engine.begin() as c:
+        c.execute(sqltext(
+            "INSERT INTO findings (id, tenant_id, title, status, risk_id) "
+            "VALUES (:i, :t, 'Cites the risk', 'open', :r)"),
+            {"i": str(uuid.uuid4()), "t": tid, "r": risk_id})
+
+    r = app_client.delete(f"/api/risks/{risk_id}", headers=h)
+    assert r.status_code == 409, r.text
+    assert "finding" in r.json()["detail"]
+    # and the risk is still there — a refused delete must not partially apply
+    assert app_client.get(f"/api/risks/{risk_id}", headers=h).status_code == 200
+
+
+def test_an_uncited_risk_still_deletes(app_client):
+    """The guard must not turn every delete into a 409."""
+    h = _h(app_client)
+    risk_id = app_client.post("/api/risks", headers=h,
+                              json={"title": f"Free {uuid.uuid4().hex[:5]}"}).json()["id"]
+    assert app_client.delete(f"/api/risks/{risk_id}", headers=h).status_code == 200
+    assert app_client.get(f"/api/risks/{risk_id}", headers=h).status_code == 404
+
+
+def test_incident_category_round_trips(app_client):
+    """`incident_category` was seeded as a vocabulary in P4-S3 and had no column to land in;
+    P5-S4 adds `incidents.category`. Free text by design — the lookup is a UI affordance, so
+    an admin can extend it from Masters without a migration."""
+    h = _h(app_client)
+    iid = _incident(app_client, h, category="Phishing")
+    assert app_client.get(f"/api/incidents/{iid}", headers=h).json()["category"] == "Phishing"
+
+    app_client.patch(f"/api/incidents/{iid}", headers=h, json={"category": "Malware"})
+    assert app_client.get(f"/api/incidents/{iid}", headers=h).json()["category"] == "Malware"
+
+    # it also reaches the list, which is what the register column renders
+    row = next(i for i in app_client.get("/api/incidents", headers=h).json() if i["id"] == iid)
+    assert row["category"] == "Malware"
+
+
+def test_incident_category_is_optional(app_client):
+    h = _h(app_client)
+    iid = _incident(app_client, h)
+    assert app_client.get(f"/api/incidents/{iid}", headers=h).json()["category"] is None

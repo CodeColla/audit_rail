@@ -2,9 +2,10 @@ import { ReactNode, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutGrid, ClipboardCheck, Diamond, FileText, FolderCheck,
-  CalendarClock, BarChart3, Settings, Search, Users, Boxes, ShieldCheck,
+  CalendarClock, BarChart3, Settings, Users, Boxes, ShieldCheck,
   Flame, Database, Truck, Siren,
 } from "lucide-react";
+import { GlobalSearch } from "./GlobalSearch";
 import { useAuth, useCan } from "../lib/auth";
 import { cn } from "../lib/ui";
 
@@ -200,10 +201,9 @@ export function Shell({ children }: { children: ReactNode }) {
             {/* chrome, not the page heading — each page renders its own <h1> via PageHead */}
             <div data-testid="page-title" className="text-[20px] font-semibold tracking-[-0.01em]">{title}</div>
           </div>
-          <div className="ml-auto flex items-center gap-2 rounded-full border border-bd bg-paper px-3 py-1.5 text-txt3">
-            <Search size={15} />
-            <input placeholder="Search…" className="w-40 bg-transparent text-[13px] text-ink outline-none placeholder:text-txt3" />
-          </div>
+          {/* P5-S6: this was a bare <input> with no value, no handler and no query — chrome
+              that looked like a feature, and the first item in Sumit's Phase 5 feedback. */}
+          <GlobalSearch />
         </header>
         <div className="mx-auto w-full max-w-[1220px] px-6 pb-16 pt-6">{children}</div>
       </div>

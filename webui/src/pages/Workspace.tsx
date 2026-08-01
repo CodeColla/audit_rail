@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, downloadFile, get } from "../lib/api";
+import { api, downloadFile, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
-import { FilePreview } from "../components/FilePreview";
+import { AttachmentLink } from "../components/AttachmentLink";
+import { uploadEvidence, UploadTooLarge } from "../lib/evidence";
 import { ControlPicker } from "../components/ControlPicker";
 import { Card, cn, Drawer, inputCls, Loading, Modal, Pill, Segment, Table, Td } from "../lib/ui";
 
@@ -27,25 +28,6 @@ type RespDetail = {
   findings: { title: string; risk_rating: string | null; likelihood: number | null; impact: number | null }[];
 };
 type Ev = { id: string; title: string; evidence_type: string };
-
-/** Click an evidence row to preview it inline, without leaving the audit response drawer —
- * mirrors Evidence.tsx's `<FilePreview url={`/evidence/${id}/file`} .../>` usage, but as a
- * Modal (which layers over the Drawer cleanly) rather than navigating away. */
-function EvidencePreviewButton({ id, title }: { id: string; title: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button onClick={() => setOpen(true)} className="text-left text-[12.5px] font-medium text-ink hover:text-accent hover:underline">
-        {title}
-      </button>
-      {open && (
-        <Modal open onClose={() => setOpen(false)} title={title} size="lg">
-          <FilePreview url={`/evidence/${id}/file`} name={title} />
-        </Modal>
-      )}
-    </>
-  );
-}
 
 const VALUES = [
   { v: "yes", label: "Yes", tone: "ok" }, { v: "partial", label: "Partial", tone: "warn" },
@@ -105,6 +87,21 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
     mutationFn: (evId: string) => api.post(`/assessments/${aid}/responses/${qid}/evidence`, { evidence_id: evId }),
     onSuccess: () => { setPickEv(false); refresh(); },
   });
+  // P5-S3: attach proof without first going to the vault. Upload then link — two calls the
+  // API already has; a multipart variant of the link route would duplicate upload logic for
+  // a failure mode that merely leaves the file in the vault, unlinked rather than lost.
+  const [upBusy, setUpBusy] = useState(false);
+  const [upErr, setUpErr] = useState("");
+  async function uploadAndLink(file: File) {
+    setUpBusy(true); setUpErr("");
+    try {
+      const { id } = await uploadEvidence(file, { evidenceType: "report" });
+      await linkEv.mutateAsync(id);
+      qc.invalidateQueries({ queryKey: ["evidence"] });
+    } catch (e: any) {
+      setUpErr(e instanceof UploadTooLarge ? e.message : errText(e, "Could not attach that file."));
+    } finally { setUpBusy(false); }
+  }
   const raiseFinding = useMutation({
     mutationFn: () => api.post(`/assessments/${aid}/findings`, { title: fTitle, response_id: data?.response?.id, likelihood: fL, impact: fI }),
     onSuccess: () => { setShowFinding(false); setFTitle(""); refresh(); },
@@ -186,16 +183,31 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         </div>
         {!data.response && <div className="text-[12px] text-txt3">Answer the question first, then link evidence.</div>}
         {data.evidence.map((e) => (
-          <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
-            <span className="grid h-7 w-7 place-items-center rounded-md bg-info-bg text-info">▣</span>
-            <div>
-              <EvidencePreviewButton id={e.id} title={e.title} />
-              <div className="text-[11px] text-txt3">{e.evidence_type}</div>
-            </div>
+          <div key={e.id} className="border-t border-bd py-2 first:border-t-0">
+            <AttachmentLink id={e.id} title={e.title} />
+            <div className="pl-8 text-[11px] text-txt3">{e.evidence_type}</div>
           </div>
         ))}
         {data.evidence.length === 0 && data.response && (
           <div className="border-t border-bd py-2 text-[12px] text-txt3 first:border-t-0">Nothing attached directly to this question.</div>
+        )}
+        {canEdit && data.response && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-bd pt-2">
+            <label className="btn cursor-pointer py-1 text-[12px]">
+              {upBusy ? "Uploading…" : "⬆ Upload a file"}
+              <input type="file" className="hidden" disabled={upBusy}
+                onChange={(e) => {
+                  // Snapshot before the reset — `files` is live (the P5-S1 upload race).
+                  const f = e.target.files?.[0];
+                  e.target.value = "";
+                  if (f) void uploadAndLink(f);
+                }} />
+            </label>
+            <span className="text-[11.5px] text-txt3">goes straight to the vault and attaches here</span>
+          </div>
+        )}
+        {upErr && (
+          <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-[12px] text-bad">{upErr}</div>
         )}
         {pickEv && (
           <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-bd">
@@ -220,8 +232,8 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
             <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
               <span className="grid h-7 w-7 place-items-center rounded-md bg-canvas text-txt3">▣</span>
               <div>
-                <EvidencePreviewButton id={e.id} title={e.title} />
-                <div className="text-[11px] text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
+                <AttachmentLink id={e.id} title={e.title} />
+                <div className="pl-8 text-[11px] text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
               </div>
             </div>
           ))}

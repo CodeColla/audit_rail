@@ -8,7 +8,7 @@ import { Card, cn, inputCls, Loading, Pill } from "../lib/ui";
 import { useDebounced } from "../lib/useDebounced";
 
 /** The 7 the upload form offers. `evidence_type` has no CHECK, so this is a convention. */
-const TYPES = ["certificate", "report", "policy_doc", "register", "screenshot", "insurance", "other"];
+import { LookupSelect } from "./Registers";
 
 type LinkedControl = { id: string; code: string; statement: string };
 type EvidenceDetailRow = {
@@ -56,12 +56,10 @@ function EditForm({ ev, onDone }: { ev: EvidenceDetailRow; onDone: () => void })
             className={inputCls + " mt-1"} /></label>
         <div className="grid grid-cols-3 gap-3">
           <label className="text-[13px] font-medium">Type
-            <select value={f.evidence_type} onChange={(e) => set("evidence_type")(e.target.value)}
-              className={inputCls + " mt-1 capitalize"}>
-              {/* a type saved before it was on the list stays selectable */}
-              {(TYPES.includes(f.evidence_type) ? TYPES : [f.evidence_type, ...TYPES])
-                .map((t) => <option key={t} value={t}>{t.replace(/_/g, " ")}</option>)}
-            </select></label>
+            {/* LookupSelect keeps an off-list value selectable, which matters here: live
+                data holds both `report` and `REPORT` from the free-text era. */}
+            <LookupSelect kind="evidence_type" value={f.evidence_type}
+              onChange={set("evidence_type")} /></label>
           <label className="text-[13px] font-medium">Issued
             <input type="date" value={f.issued_at} onChange={(e) => set("issued_at")(e.target.value)}
               className={inputCls + " mt-1"} /></label>

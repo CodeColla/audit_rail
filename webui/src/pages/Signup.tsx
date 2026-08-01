@@ -5,8 +5,12 @@ import { errText } from "../lib/api";
 
 /**
  * Create an account and its organisation in one step — the signer becomes its Super Admin.
- * The GST number is what stops the same company being registered twice, so it is required
- * and validated (format + check digit) server-side.
+ *
+ * The GST number is **optional** as of P5-S6. It used to be required and checksum-validated,
+ * which turned a nice-to-have identifier into a wall: anyone without the number to hand — a
+ * new entity, a non-Indian arm, or just someone signing up before finance sends it over —
+ * could not create an account at all. It is still unique when supplied, so it still does the
+ * one job worth keeping: stopping the same company being registered twice.
  */
 export default function Signup() {
   const { signup } = useAuth();
@@ -31,7 +35,8 @@ export default function Signup() {
     }
   }
 
-  const ready = f.full_name && f.email && f.password && f.organisation_name && f.gst_number;
+  // Deliberately NOT gated on gst_number — see the note at the top of the file.
+  const ready = f.full_name && f.email && f.password && f.organisation_name;
 
   return (
     <div className="grid min-h-screen place-items-center bg-canvas px-4 py-10">
@@ -74,12 +79,15 @@ export default function Signup() {
                 className={field} placeholder="KIAM INTL PVT LTD" />
             </div>
             <div>
-              <label htmlFor="su-gst" className="text-[13px] font-medium">GST number</label>
-              <input id="su-gst" required value={f.gst_number} onChange={set("gst_number")}
+              <label htmlFor="su-gst" className="text-[13px] font-medium">
+                GST number <span className="font-normal text-txt3">(optional)</span>
+              </label>
+              <input id="su-gst" value={f.gst_number} onChange={set("gst_number")}
                 aria-describedby="su-gst-hint"
                 className={field + " font-mono uppercase"} placeholder="27AAPFU0939F1ZV" />
               <p id="su-gst-hint" className="mt-1 text-[11px] text-txt3">
-                15 characters. One GST number, one organisation — this prevents duplicates.
+                Add it if you have it — you can leave this blank and fill it in later. One GST
+                number, one organisation, so it also stops a duplicate signup.
               </p>
             </div>
             {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}

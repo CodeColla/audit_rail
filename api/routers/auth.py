@@ -14,7 +14,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, domains, gstin, passwords, permissions, vocabularies
+# NB: `gstin` is intentionally NOT imported any more. It still exists, still works
+# and is still tested — signup just no longer validates against it (P5-S6).
+from api import activity, domains, passwords, permissions, vocabularies
 from api.auth import (Principal, authenticate, create_access_token, get_caller,
                       get_current_user, memberships)
 from api.database import engine, t
@@ -35,12 +37,19 @@ def _slug(name: str, conn) -> str:
     return slug
 
 
-def _create_org(conn, *, name: str, gst: str, super_admin_user_id: str) -> str:
-    try:
-        gst_clean = gstin.validate(gst)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    if conn.execute(select(t("tenants").c.name).where(
+def _create_org(conn, *, name: str, gst: str | None, super_admin_user_id: str) -> str:
+    """P5-S6 — Sumit's decision: **GST is optional and unvalidated.**
+
+    It used to be required and checksum-verified via `api/gstin.py`, which blocked signup for
+    anyone who did not have one to hand, or who had one in a shape the validator disliked.
+    That module is deliberately left intact and untouched — it is correct, it is tested, and
+    a later "verify your GST" flow should use it. Signup simply no longer calls it.
+
+    The uniqueness check is kept, but only for a value actually supplied: two organisations
+    genuinely should not share a GST number, while any number of them may have none.
+    """
+    gst_clean = (gst or "").strip() or None
+    if gst_clean and conn.execute(select(t("tenants").c.name).where(
             t("tenants").c.gst_number == gst_clean)).first():
         raise HTTPException(409, "an organisation with that GST number already exists")
     tid = str(uuid.uuid4())
@@ -145,7 +154,7 @@ class SignupIn(StrictModel):
     email: str
     password: str
     organisation_name: str
-    gst_number: str
+    gst_number: str | None = None          # optional since P5-S6 — see _create_org
 
 
 @router.post("/signup", status_code=201, response_model=TokenOut)
@@ -181,7 +190,7 @@ def signup(body: SignupIn):
 
 class OrgIn(StrictModel):
     name: str
-    gst_number: str
+    gst_number: str | None = None          # optional since P5-S6 — see _create_org
 
 
 @router.post("/orgs", status_code=201)

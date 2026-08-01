@@ -163,3 +163,61 @@ def test_cross_tenant_manager_rejected(app_client):
 
 def test_people_requires_auth(app_client):
     assert app_client.get("/api/people").status_code == 401
+
+
+# ────────────────────────────────────────────────── P5-S5: real delete, blocked when cited
+
+def test_deleting_an_unreferenced_person_works(app_client):
+    h = _h(app_client)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Temp Duplicate", "email": f"dup-{uuid.uuid4().hex[:6]}@kiam.example"}).json()["id"]
+    assert app_client.delete(f"/api/people/{pid}", headers=h).status_code == 200
+    assert app_client.get(f"/api/people/{pid}", headers=h).status_code == 404
+
+
+def test_deleting_a_person_who_owns_something_is_409_naming_it(app_client):
+    """Sumit's decision was a real delete, blocked when referenced. There are 20+ RESTRICT
+    columns pointing at `people`, so the blockers are derived from the Postgres catalog
+    rather than a hand-list that would rot the first time a FK is added."""
+    h = _h(app_client)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Risk Owner", "email": f"owner-{uuid.uuid4().hex[:6]}@kiam.example"}).json()["id"]
+    app_client.post("/api/risks", headers=h,
+                    json={"title": "Owned risk", "owner_person_id": pid})
+
+    r = app_client.delete(f"/api/people/{pid}", headers=h)
+    assert r.status_code == 409, r.text
+    # it must say WHAT blocks it, not just "cannot delete"
+    assert "risk" in r.json()["detail"]
+    assert app_client.get(f"/api/people/{pid}", headers=h).status_code == 200
+
+
+def test_the_blocker_message_counts_every_kind_of_reference(app_client):
+    h = _h(app_client)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Busy Person", "email": f"busy-{uuid.uuid4().hex[:6]}@kiam.example"}).json()["id"]
+    app_client.post("/api/risks", headers=h, json={"title": "R1", "owner_person_id": pid})
+    app_client.post("/api/assets", headers=h, json={"name": "A1", "owner_person_id": pid})
+
+    detail = app_client.delete(f"/api/people/{pid}", headers=h).json()["detail"]
+    assert "risk" in detail and "asset" in detail
+
+
+def test_a_manager_link_does_not_block_deletion(app_client):
+    """`people.manager_id` is ON DELETE SET NULL, so a manager with reports is deletable —
+    the reports are orphaned, not refused. Pinning it so the catalog query is not quietly
+    widened to treat SET NULL as a blocker."""
+    h = _h(app_client)
+    boss = app_client.post("/api/people", headers=h, json={
+        "full_name": "The Boss", "email": f"boss-{uuid.uuid4().hex[:6]}@kiam.example"}).json()["id"]
+    report = app_client.post("/api/people", headers=h, json={
+        "full_name": "The Report", "email": f"rep-{uuid.uuid4().hex[:6]}@kiam.example",
+        "manager_id": boss}).json()["id"]
+
+    assert app_client.delete(f"/api/people/{boss}", headers=h).status_code == 200
+    assert app_client.get(f"/api/people/{report}", headers=h).json()["manager_id"] is None
+
+
+def test_cannot_delete_a_person_in_another_tenant(app_client):
+    h = _h(app_client)
+    assert app_client.delete(f"/api/people/{uuid.uuid4()}", headers=h).status_code == 404

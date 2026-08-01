@@ -45,7 +45,51 @@ KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
         "Availability", "Data breach", "Malware", "Phishing", "Unauthorised access",
         "Configuration error", "Hardware failure", "Third-party outage", "Other",
     )),
+    # ── P5-S6 ──────────────────────────────────────────────────────────────────
+    # The four fields Sumit could not extend. Each was free text or a hardcoded array
+    # before this, which is precisely why "Department can't be extended" was reported:
+    # People.tsx rendered an <input list="dept-list"> whose options were built from values
+    # ALREADY IN USE, so it looked like a fixed dropdown that refused new entries when in
+    # fact typing a new value always worked. A real vocabulary makes the affordance honest.
+    "department": ("Department", (
+        "Compliance", "Information Security", "IT", "Operations", "Finance",
+        "Human Resources", "Legal", "Sales", "Engineering", "Field Operations",
+    )),
+    "position": ("Position / job title", (
+        "Director", "Manager", "Team Lead", "Analyst", "Engineer", "Administrator",
+        "Consultant", "Auditor", "Field Engineer", "Intern",
+    )),
+    # Seeded in Title Case, but the column stays free text and `LookupSelect` keeps an
+    # off-list value selectable — live data already holds both `report` and `REPORT`, and
+    # silently dropping either from an artifact's record would be data loss dressed up as
+    # tidying. S6 makes new entries consistent; it does not rewrite history.
+    "evidence_type": ("Evidence type", (
+        "Certificate", "Report", "Policy document", "Register", "Screenshot",
+        "Insurance", "Contract", "Other",
+    )),
+    "obligation_area": ("Obligation area", (
+        "Cyber security", "Data protection", "Outsourcing", "Business continuity",
+        "Incident reporting", "Governance", "Audit", "Customer protection",
+    )),
+    "regulator": ("Regulator", (
+        "RBI", "SEBI", "IRDAI", "MeitY", "CERT-In", "NPCI", "DPDP Authority", "Other",
+    )),
 }
+
+#: Register enums, mirroring the CHECK constraints in db/schema.sql. They live here rather
+#: than in the registers router because `api/register_imports.py` needs them too, and that
+#: module cannot import the router (the router imports IT). Getting these wrong is not a
+#: theoretical risk: the bulk importer was first written against invented spellings
+#: ("MITIGATE", "ONBOARDING", "RESTRICTED") and every affected row failed with an opaque
+#: constraint error instead of a readable one.
+TREATMENTS = ("MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED")
+CRITICALITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+CLASSIFICATIONS = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET")
+TP_STATUSES = ("ACTIVE", "OFFBOARDING", "TERMINATED")
+RISK_STATUSES = ("OPEN", "CLOSED")
+ASSET_TYPES = ("PHYSICAL", "VIRTUAL")
+INCIDENT_STATUSES = ("OPEN", "INVESTIGATING", "RESOLVED", "CLOSED")
+
 
 #: Document types, mirroring the CHECK on `documents.document_type` (db/schema.sql).
 #: NOT a lookup_values kind: the database enforces this set, so an admin cannot be allowed

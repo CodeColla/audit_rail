@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, insert, select, text, update
 
-from api import activity
+from api import activity, importer, xlsx_io
 from api.auth import Principal, get_current_user
 from api.permissions import require
 from api.database import engine, get_conn, t
@@ -254,6 +255,97 @@ def update_person(person_id: str, body: PersonPatch,
     return {"ok": True}
 
 
+# ------------------------------------------------------------------ delete (P5-S5)
+
+#: Postgres FK delete rules that REFUSE the parent delete. 'r' = RESTRICT, 'a' = NO ACTION
+#: (the default when no ON DELETE is written, and it blocks just the same). 'n' (SET NULL)
+#: and 'c' (CASCADE) resolve themselves and are deliberately absent.
+_BLOCKING_FK_RULES = ("r", "a")
+
+_REFERRERS_SQL = text("""
+SELECT src.relname AS table_name, att.attname AS column_name
+  FROM pg_constraint con
+  JOIN pg_class src ON src.oid = con.conrelid
+  JOIN pg_class tgt ON tgt.oid = con.confrelid
+  JOIN unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+  JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+ WHERE con.contype = 'f'
+   AND tgt.relname = 'people'
+   AND att.attname <> 'tenant_id'
+   AND con.confdeltype = ANY(:rules)
+ ORDER BY src.relname, att.attname
+""")
+
+_IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+#: `table_name` -> what a user calls it. Anything unlisted falls back to the table name.
+_REFERRER_LABELS = {
+    "risks": "risk", "assets": "asset", "data_items": "data item", "controls": "control",
+    "incidents": "incident", "tasks": "task", "documents": "document",
+    "third_parties": "third party", "obligations": "obligation", "findings": "finding",
+    "trainings": "training", "training_assignments": "training assignment",
+    "document_signatures": "signed document", "electronic_signatures": "signature",
+    "document_approval_decisions": "approval decision",
+    "access_review_decisions": "access review decision",
+    "access_review_entries": "access review entry",
+    "trust_center_document_access": "trust-centre grant",
+}
+
+
+def _person_blockers(conn, tenant_id: str, person_id: str) -> list[str]:
+    """Which records still point at this person through a FK that would refuse the delete.
+
+    Derived from the Postgres catalog rather than a hand-written list. There are 20+ such
+    columns today and the schema keeps growing; a hardcoded list would silently rot the
+    first time someone adds a FK, and the failure mode is a raw 500 on delete. This way a
+    new referrer is covered the day it is created.
+
+    Identifiers come from the catalog, never from user input, but they are still checked
+    against `_IDENT` before being interpolated — a table name reaching an f-string is
+    exactly the shape of bug worth refusing to write.
+    """
+    blockers: dict[str, int] = {}
+    for row in conn.execute(_REFERRERS_SQL, {"rules": list(_BLOCKING_FK_RULES)}).mappings():
+        table, column = row["table_name"], row["column_name"]
+        if not (_IDENT.match(table) and _IDENT.match(column)):   # pragma: no cover - defence
+            continue
+        n = conn.execute(text(
+            f"SELECT count(*) FROM {table} WHERE {column} = :p AND tenant_id = :t"),
+            {"p": person_id, "t": tenant_id}).scalar() or 0
+        if n:
+            label = _REFERRER_LABELS.get(table, table.replace("_", " "))
+            blockers[label] = blockers.get(label, 0) + n
+    return [f"{n} {label}{'' if n == 1 else 's'}" for label, n in sorted(blockers.items())]
+
+
+@router.delete("/{person_id}")
+def delete_person(person_id: str, user: Principal = Depends(require("people", "delete"))):
+    """Really delete a person — Sumit's decision — but refuse while anything still cites them.
+
+    A soft "departed" state already exists (`v_people_effective_state`) and is the right tool
+    for someone who has left. This is for a genuine mistake: a duplicate, or a typo'd row
+    created minutes ago. Blocking-when-referenced is what keeps that from silently rewriting
+    history, and the 409 names what to fix rather than saying "cannot delete".
+    """
+    p = t("people")
+    with engine.begin() as conn:
+        if conn.execute(select(p.c.id).where(
+                p.c.id == person_id, p.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(404, "person not found")
+
+        blockers = _person_blockers(conn, user.tenant_id, person_id)
+        if blockers:
+            raise HTTPException(409, "this person is still referenced by "
+                                     + ", ".join(blockers)
+                                     + " — reassign those first, or mark them a leaver instead")
+        # `people.manager_id` is ON DELETE SET NULL, so reports are orphaned, not blocked.
+        conn.execute(p.delete().where(p.c.id == person_id, p.c.tenant_id == user.tenant_id))
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="person.deleted", entity_type="person", entity_id=person_id, detail={})
+    return {"ok": True}
+
+
 CSV_COLUMNS = ("full_name", "email", "employee_number", "department", "position",
                "contract_start_date", "contract_end_date")
 
@@ -263,42 +355,47 @@ async def import_people(
     file: UploadFile = File(...),
     user: Principal = Depends(require("people", "add")),
 ):
-    """CSV → people (source=IMPORT). Bad rows are REPORTED, never silently dropped."""
-    try:
-        text_data = (await file.read()).decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise HTTPException(400, "file must be UTF-8 encoded CSV")
-    reader = csv.DictReader(io.StringIO(text_data))
-    if not reader.fieldnames or "full_name" not in reader.fieldnames:
-        raise HTTPException(400,
-                            f"CSV needs a header row with at least: full_name, email. "
-                            f"Recognised columns: {', '.join(CSV_COLUMNS)}")
+    """CSV **or .xlsx** -> people (source=IMPORT). Bad rows are REPORTED, never silently dropped.
 
-    created, errors = 0, []
-    now = now_iso()
+    P5-S5 moved this onto the shared `api.importer` loop and the shared `xlsx_io.read_rows`,
+    so it gained xlsx support and now fails rows identically to the register importers. The
+    header contract is unchanged — the snake_case names in `CSV_COLUMNS`, not the register
+    importers' human labels — because customers already have files in that shape and
+    renaming their columns to tidy up our code would be a poor trade.
+    """
+    raw = await file.read()
+    try:
+        headers, rows = xlsx_io.read_rows(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception:                                            # noqa: BLE001
+        raise HTTPException(400, "could not read that file — is it a .csv or .xlsx?") from None
+
+    if "full_name" not in headers:
+        raise HTTPException(400,
+                            f"the file needs a header row with at least: full_name, email. "
+                            f"Recognised columns: {', '.join(CSV_COLUMNS)}")
+    if not rows:
+        raise HTTPException(400, "that file has a header row but no data rows")
+
+    def build(mapped: dict, _resolver) -> dict:
+        data = {k: v for k, v in mapped.items() if v is not None}
+        try:
+            person = PersonIn(**data)
+        except Exception as e:                                   # noqa: BLE001
+            raise importer.RowError(_pydantic_msg(e)) from e
+        return {**person.model_dump(), "state": "ACTIVE", "source": "IMPORT"}
+
     with engine.begin() as conn:
-        for i, raw in enumerate(reader, start=2):    # row 1 is the header
-            data = {k: (raw.get(k) or "").strip() or None for k in CSV_COLUMNS}
-            try:
-                person = PersonIn(**{k: v for k, v in data.items() if v is not None})
-            except Exception as e:  # noqa: BLE001
-                errors.append({"row": i, "name": data.get("full_name"),
-                               "error": _pydantic_msg(e)})
-                continue
-            try:
-                with conn.begin_nested():            # one bad row must not kill the batch
-                    conn.execute(insert(t("people")).values(
-                        id=str(uuid.uuid4()), tenant_id=user.tenant_id,
-                        **person.model_dump(), state="ACTIVE", source="IMPORT",
-                        created_at=now, updated_at=now))
-                created += 1
-            except Exception as e:  # noqa: BLE001
-                errors.append({"row": i, "name": data.get("full_name"),
-                               "error": _friendly(e)})
+        result = importer.import_rows(
+            conn, tenant_id=user.tenant_id, table="people", rows=rows,
+            mapping={c: c for c in CSV_COLUMNS},     # identity: our headers are the field names
+            build=build, label_key="full_name", friendly=_friendly)
+
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="people.imported", entity_type="person", entity_id=None,
-                 detail={"created": created, "errors": len(errors)})
-    return {"created": created, "failed": len(errors), "errors": errors}
+                 detail={"created": result["created"], "errors": result["failed"]})
+    return result
 
 
 def _friendly(e: Exception) -> str:

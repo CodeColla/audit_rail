@@ -19,6 +19,11 @@ from tests.test_registers import _h, _person, _tid
 from tests.test_identity import uniq_gst
 from api import tasks_engine
 
+
+def engine_conn():
+    from api.database import engine
+    return engine.connect()
+
 TODAY = dt.date.today()
 
 
@@ -400,3 +405,68 @@ def test_complete_requires_the_run_to_belong_to_the_named_task(app_client):
     assert r.status_code == 404
     # task_b's run is untouched
     assert app_client.get(f"/api/tasks/{task_b}", headers=h).json()["runs"][0]["status"] == "pending"
+
+
+# ────────────────────────────────────────────────── P5-S3: evidence produced by the task
+
+def test_upload_then_complete_attaches_fresh_evidence(app_client):
+    """The S3 flow. The proof of a completed task usually does not exist in the vault yet —
+    the activity log for 2026-07-31 shows a task being closed against a three-day-old
+    unrelated PDF because picking was the only option.
+
+    Deliberately two existing calls rather than a multipart `complete`: FastAPI cannot serve
+    JSON and multipart on one route, so keeping the `evidence_id` contract working means the
+    upload happens separately. This pins the pair the UI now depends on.
+    """
+    h = _h(app_client)
+    task = _task(app_client, h, next_due_at=iso(1))
+    run_id = app_client.get(f"/api/tasks/{task}", headers=h).json()["runs"][0]["id"]
+
+    up = app_client.post("/api/evidence", headers=h,
+                         data={"evidence_type": "report", "title": "Access review Q3"},
+                         files={"file": ("review.txt", b"reviewed", "text/plain")})
+    assert up.status_code == 201, up.text
+    ev_id = up.json()["id"]
+
+    done = app_client.post(f"/api/tasks/{task}/runs/{run_id}/complete", headers=h,
+                           json={"evidence_id": ev_id, "notes": "done"})
+    assert done.status_code == 200, done.text
+
+    # `task_runs.status` vocabulary is lowercase ('pending'|'done'|'overdue'|'skipped'),
+    # per db/schema.sql — not the uppercase used elsewhere in the app.
+    runs = app_client.get(f"/api/tasks/{task}", headers=h).json()["runs"]
+    done_run = next(r for r in runs if r["id"] == run_id)
+    assert done_run["status"] == "done"
+
+    # the freshly uploaded artifact is the one now attached to the run
+    with engine_conn() as c:
+        linked = c.execute(sqltext("SELECT evidence_id FROM task_runs WHERE id = :r"),
+                           {"r": run_id}).scalar()
+    assert linked == ev_id
+
+
+def test_complete_without_any_evidence_still_works(app_client):
+    """S3 added an upload option; it must stay OPTIONAL. Not every task produces a file."""
+    h = _h(app_client)
+    task = _task(app_client, h, next_due_at=iso(1))
+    run_id = app_client.get(f"/api/tasks/{task}", headers=h).json()["runs"][0]["id"]
+    r = app_client.post(f"/api/tasks/{task}/runs/{run_id}/complete", headers=h,
+                        json={"evidence_id": None, "notes": "nothing to attach"})
+    assert r.status_code == 200, r.text
+
+
+def test_completing_with_another_tenants_evidence_is_refused(app_client):
+    """Upload-then-complete means the client chooses the id it sends. That id is still
+    validated server-side — the UI is not the boundary."""
+    h = _h(app_client)
+    _other_tid, other_h = _other_org(app_client)
+    stolen = app_client.post("/api/evidence", headers=other_h,
+                             data={"evidence_type": "report", "title": "theirs"},
+                             files={"file": ("x.txt", b"x", "text/plain")})
+    assert stolen.status_code == 201, stolen.text
+
+    task = _task(app_client, h, next_due_at=iso(1))
+    run_id = app_client.get(f"/api/tasks/{task}", headers=h).json()["runs"][0]["id"]
+    r = app_client.post(f"/api/tasks/{task}/runs/{run_id}/complete", headers=h,
+                        json={"evidence_id": stolen.json()["id"]})
+    assert r.status_code in (400, 403, 404), r.text

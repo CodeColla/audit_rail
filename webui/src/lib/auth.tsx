@@ -20,7 +20,7 @@ type User = {
 
 type SignupIn = {
   full_name: string; email: string; password: string;
-  organisation_name: string; gst_number: string;
+  organisation_name: string; gst_number?: string;
 };
 
 const AuthCtx = createContext<{

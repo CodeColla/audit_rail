@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, downloadFile, get } from "../lib/api";
+import { api, get } from "../lib/api";
+import { AttachmentLink } from "./AttachmentLink";
 import { useAuth } from "../lib/auth";
 import { Card, cn, Drawer, inputCls, Loading, Pill, Table, Td } from "../lib/ui";
 
@@ -20,7 +21,6 @@ function AuditorDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClos
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["resp", aid, qid], queryFn: () => get<RespDetail>(`/assessments/${aid}/responses/${qid}`) });
   const [remark, setRemark] = useState("");
-  const [dlErr, setDlErr] = useState("");
   const [showF, setShowF] = useState(false);
   const [fTitle, setFTitle] = useState(""); const [fL, setFL] = useState(2); const [fI, setFI] = useState(2);
 
@@ -56,19 +56,20 @@ function AuditorDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClos
         <div className="eyebrow mb-2">Evidence</div>
         {data.evidence.length === 0 ? <div className="text-[12.5px] text-txt3">No evidence attached.</div>
           : data.evidence.map((e) => (
-            <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
-              <span className="grid h-7 w-7 place-items-center rounded-md bg-info-bg text-info">▣</span>
-              {/* P4-S8: the assessment-scoped route. /evidence/{id}/file is member-only, so
-                  this used to 403 for every guest — the auditor could read the titles of the
-                  proof and open none of it. */}
-              <button onClick={() => downloadFile(`/assessments/${aid}/evidence/${e.id}/file`, e.title)
-                .then(() => setDlErr("")).catch(() => setDlErr(`Could not open "${e.title}".`))}
-                className="text-left text-[12.5px] font-medium hover:text-accent">{e.title}</button>
+            <div key={e.id} className="border-t border-bd py-2 first:border-t-0">
+              {/* P5-S3: same AttachmentLink the member-side workspace uses, so an auditor
+                  gets the underline, the type glyph and inline preview instead of a bare
+                  download. `fileUrl` is REQUIRED here: the default `/evidence/{id}/file` is
+                  member-only and 403s for every guest — P4-S8's bug. This is the
+                  assessment-scoped route, which is the only one a guest token can reach.
+                  Read-only by construction: no upload affordance is rendered for guests. */}
+              <AttachmentLink id={e.id} title={e.title}
+                fileUrl={`/assessments/${aid}/evidence/${e.id}/file`} />
+              <div className="pl-8 text-[11px] text-txt3">{e.evidence_type}</div>
             </div>
           ))}
         {/* downloadFile rejects on a failed request and nothing used to catch it: the axios
             interceptor only acts on 401, so a 404 or 410 made the click do nothing at all. */}
-        {dlErr && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{dlErr}</div>}
       </Card>
 
       <Card>

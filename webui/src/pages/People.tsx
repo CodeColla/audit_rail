@@ -1,7 +1,9 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
+import { LookupSelect } from "./Registers";
 import {
   Card, cn, Drawer, inputCls, Loading, Modal, PageHead, Pill, Table, Td,
 } from "../lib/ui";
@@ -70,7 +72,6 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
     onError: (e: any) => setErr(errText(e, "Could not save.")),
   });
 
-  const depts = [...new Set((people.data ?? []).map((p) => p.department).filter(Boolean))];
   const submit = (e: FormEvent) => { e.preventDefault(); setErr(""); save.mutate(); };
 
   return (
@@ -87,12 +88,18 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
           <label className="text-[13px] font-medium">Employee number
             <input value={f.employee_number} onChange={set("employee_number")} className={inputCls + " mt-1"} />
           </label>
+          {/* P5-S6: these were an <input list="dept-list"> whose datalist was built from
+              departments ALREADY IN USE, and a bare text box. The first is what Sumit
+              reported as "Department can't be extended" — it looked like a fixed dropdown
+              that refused new values, when in fact typing anything always worked. A real
+              vocabulary, editable in Masters, makes the affordance match the behaviour. */}
           <label className="text-[13px] font-medium">Department
-            <input list="dept-list" value={f.department} onChange={set("department")} className={inputCls + " mt-1"} />
-            <datalist id="dept-list">{depts.map((d) => <option key={d} value={d!} />)}</datalist>
+            <LookupSelect kind="department" value={f.department}
+              onChange={(v) => set("department")({ target: { value: v } } as any)} />
           </label>
           <label className="text-[13px] font-medium">Position
-            <input value={f.position} onChange={set("position")} className={inputCls + " mt-1"} />
+            <LookupSelect kind="position" value={f.position}
+              onChange={(v) => set("position")({ target: { value: v } } as any)} />
           </label>
           <label className="text-[13px] font-medium">Manager
             <select value={f.manager_id} onChange={set("manager_id")} className={inputCls + " mt-1"}>
@@ -121,6 +128,41 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
   );
 }
 
+/**
+ * Really delete a person — Sumit's decision for P5-S5 — but the API refuses while anything
+ * still cites them, naming what blocks it. That 409 is what makes offering this safe: the
+ * destructive case (silently orphaning a risk's owner) cannot happen, so the button does not
+ * need to hedge. Anyone who has merely LEFT should be marked a leaver instead, which is why
+ * the confirm says so rather than just asking "are you sure?".
+ */
+function DeletePersonButton({ id, name }: { id: string; name: string }) {
+  const qc = useQueryClient();
+  const [err, setErr] = useState("");
+  const del = useMutation({
+    mutationFn: () => api.delete(`/people/${id}`),
+    onSuccess: () => { setErr(""); qc.invalidateQueries({ queryKey: ["people"] }); },
+    onError: (e: any) => setErr(errText(e, "Could not delete.")),
+  });
+  return (
+    <>
+      <button
+        onClick={() => { if (confirm(
+            `Delete ${name}?\n\nThis is for a duplicate or a mistake. If they have simply ` +
+            `left, set a contract end date instead so their history stays intact.`))
+            del.mutate(); }}
+        disabled={del.isPending}
+        aria-label={`Delete ${name}`}
+        className="grid h-7 w-7 place-items-center rounded-md border border-bd text-txt2 hover:border-bad hover:text-bad disabled:opacity-50">
+        <Trash2 size={14} />
+      </button>
+      {err && (
+        <div role="alert" className="mt-1 max-w-[22rem] rounded-md bg-bad-bg px-2 py-1 text-[11.5px] text-bad">
+          {err}
+        </div>)}
+    </>
+  );
+}
+
 function ImportModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
@@ -136,7 +178,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
   });
 
   return (
-    <Modal open onClose={onClose} title="Import people from CSV">
+    <Modal open onClose={onClose} title="Import people">
       {!result ? (
         <>
           <p className="mb-3 text-[12.5px] text-txt2">
@@ -269,7 +311,7 @@ export default function People() {
         lead="Everyone in the company — with or without a login. Field engineers never log in; they sign policies by emailed link."
         action={
           <div className="flex gap-2">
-            <button onClick={() => setImporting(true)} className="btn">Import CSV</button>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
             {can("people", "add") && (
               <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add person</button>
             )}
@@ -284,7 +326,7 @@ export default function People() {
             need a login.
           </p>
           <div className="mt-4 flex justify-center gap-2">
-            <button onClick={() => setImporting(true)} className="btn">Import a CSV roster</button>
+            <button onClick={() => setImporting(true)} className="btn">Import a roster</button>
             <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add your first person</button>
           </div>
         </div>
@@ -307,7 +349,7 @@ export default function People() {
             </select>
           </div>
 
-          <Table head={["Name", "Department", "Position", "Manager", "Access", "Status"]}>
+          <Table head={["Name", "Department", "Position", "Manager", "Access", "Status", ""]}>
             {rows.map((p) => (
               <tr key={p.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(p.id)}>
                 <Td>
@@ -324,6 +366,10 @@ export default function People() {
                 <Td className="text-txt2">{p.manager_id ? byId[p.manager_id]?.full_name ?? "—" : "—"}</Td>
                 <Td><AccessPill p={p} /></Td>
                 <Td><StatusPill p={p} /></Td>
+                <Td>{can("people", "delete") && (
+                  <span onClick={(e) => e.stopPropagation()}>
+                    <DeletePersonButton id={p.id} name={p.full_name} />
+                  </span>)}</Td>
               </tr>
             ))}
           </Table>

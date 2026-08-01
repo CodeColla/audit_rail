@@ -4,6 +4,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { api, downloadFile, errText, fetchBlob, get } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { useDebounced } from "../lib/useDebounced";
+import { AttachmentLink } from "../components/AttachmentLink";
+import { DataTable, Column } from "../components/DataTable";
+import { BulkImportModal } from "../components/BulkImportModal";
 import { Card, cn, Drawer, inputCls, Loading, Modal, Pill, Table, Td } from "../lib/ui";
 
 // ─────────────────────────────────────────────────────────── types
@@ -258,11 +261,16 @@ function AttachEvidenceCard({ base, invalidateKey, rows }: {
           ＋ Attach</button>
       </div>
       {rows.length === 0 && <p className="text-[12.5px] text-txt3">Nothing attached yet.</p>}
+      {/* P5-S4: was a plain unstyled <span> — the worst attachment presentation in the app
+          (no link affordance, no icon, no way to actually LOOK at the proof without going
+          to the vault and finding it again). `AttachmentLink` is the shared component S1
+          built for exactly this. */}
       {rows.map((e) => (
         <div key={e.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
-          <span className="min-w-0 flex-1 truncate font-medium">{e.title}</span>
+          <div className="min-w-0 flex-1"><AttachmentLink id={e.id} title={e.title} /></div>
           <span className="shrink-0 text-txt3">{nice(e.evidence_type)}</span>
-          <button onClick={() => detach.mutate(e.id)} className="shrink-0 text-txt3 hover:text-bad">✕</button>
+          <button onClick={() => detach.mutate(e.id)} aria-label={`Detach ${e.title}`}
+            className="shrink-0 text-txt3 hover:text-bad">✕</button>
         </div>))}
       {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
       {picking && (() => {
@@ -352,42 +360,86 @@ function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
+/**
+ * The register list query, shared by all five tabs (P5-S4).
+ *
+ * Every one of these endpoints already accepted `?q=`; none of the screens ever sent it.
+ * `q` belongs in the queryKey because several components share these caches — a filtered
+ * result written under the bare key would silently truncate the list for everything else
+ * reading it (the same trap `AttachEvidenceCard` documents for the evidence vault).
+ */
+function useRegisterList<T>(key: string, path: string, q: string) {
+  return useQuery({
+    queryKey: [key, q],
+    queryFn: () => get<T[]>(`${path}${q ? `?${new URLSearchParams({ q })}` : ""}`),
+    placeholderData: keepPreviousData,
+  });
+}
+
 // ─────────────────────────────────────────────────────────── risks tab
 export function RisksTab() {
   const can = useCan();
+  const qc = useQueryClient();
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [q, setQ] = useState("");
   const [openId, setOpenId] = useDrawerRoute("/risks");
-  const { data, isLoading } = useQuery({ queryKey: ["risks"], queryFn: () => get<Risk[]>("/risks") });
+  const { data, isLoading } = useRegisterList<Risk>("risks", "/risks", q);
   if (isLoading) return <Loading />;
   const rows = data ?? [];
+
+  const columns: Column<Risk>[] = [
+    { key: "ref", label: "Ref", sortValue: (r) => r.reference,
+      render: (r) => <span className="font-mono text-txt3">{r.reference ?? "—"}</span> },
+    { key: "title", label: "Risk", sortValue: (r) => r.title.toLowerCase(),
+      render: (r) => <span className="font-medium">{r.title}</span> },
+    { key: "inherent", label: "Inherent", sortValue: (r) => r.inherent_score,
+      render: (r) => <ScoreCell score={r.inherent_score} band={r.inherent_band} /> },
+    { key: "residual", label: "Residual", sortValue: (r) => r.residual_score,
+      render: (r) => <ScoreCell score={r.residual_score} band={r.residual_band} /> },
+    { key: "treatment", label: "Treatment", sortValue: (r) => r.treatment,
+      render: (r) => <span className="text-txt2">{cap(r.treatment)}</span> },
+    { key: "owner", label: "Owner", sortValue: (r) => r.owner_name,
+      render: (r) => <span className="text-txt2">{r.owner_name ?? "—"}</span> },
+    { key: "links", label: "Links", sortValue: (r) => r.link_count,
+      render: (r) => <span className="text-txt2 tnum">{r.link_count}</span> },
+    { key: "status", label: "Status", sortValue: (r) => r.status,
+      render: (r) => <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{cap(r.status)}</Pill> },
+  ];
+
   return (
     <>
       <div className="mb-3 flex justify-end">
         {can("risks", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New risk</button>
+          <>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New risk</button>
+          </>
         )}
       </div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !q ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
           No risks yet. This is the register a bank asks for first — add your top risks, score them, and link the controls that treat them.
         </div>
       ) : (
-        <Table head={["Ref", "Risk", "Inherent", "Residual", "Treatment", "Owner", "Links", "Status"]}>
-          {rows.map((r) => (
-            <tr key={r.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(r.id)}>
-              <Td className="font-mono text-txt3">{r.reference ?? "—"}</Td>
-              <Td className="font-medium">{r.title}</Td>
-              <Td><ScoreCell score={r.inherent_score} band={r.inherent_band} /></Td>
-              <Td><ScoreCell score={r.residual_score} band={r.residual_band} /></Td>
-              <Td className="text-txt2">{cap(r.treatment)}</Td>
-              <Td className="text-txt2">{r.owner_name ?? "—"}</Td>
-              <Td className="text-txt2 tnum">{r.link_count}</Td>
-              <Td><Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{cap(r.status)}</Pill></Td>
-            </tr>
-          ))}
-        </Table>
+        <DataTable
+          rows={rows} getId={(r) => r.id} columns={columns}
+          onSearch={setQ} searchPlaceholder="Search risks…"
+          onRowClick={(r) => setOpenId(r.id)}
+          canDelete={can("risks", "delete")}
+          // A risk cited by an audit finding is refused with a 409 (see delete_risk).
+          // DataTable reports each failure against its own row, which is exactly why that
+          // guard had to land before this rollout — otherwise it would be a row of 500s.
+          onDeleteOne={(id) => api.delete(`/risks/${id}`).then(() => {
+            qc.invalidateQueries({ queryKey: ["risks"] });
+          })}
+          noMatchMessage={`No risks match "${q}".`}
+        />
       )}
       {adding && <NewRiskModal onClose={() => setAdding(false)} />}
+      {importing && (
+        <BulkImportModal register="risks" onClose={() => setImporting(false)} />
+      )}
       {openId && <RiskDrawer id={openId} onClose={() => setOpenId(null)} />}
     </>
   );
@@ -632,34 +684,52 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 export function AssetsTab() {
   const can = useCan();
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [openId, setOpenId] = useDrawerRoute("/assets");
-  const { data, isLoading } = useQuery({ queryKey: ["assets"], queryFn: () => get<Asset[]>("/assets") });
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const { data, isLoading } = useRegisterList<Asset>("assets", "/assets", q);
   if (isLoading) return <Loading />;
   const rows = data ?? [];
+  const columns: Column<Asset>[] = [
+    { key: "name", label: "Asset", sortValue: (a) => a.name.toLowerCase(),
+      render: (a) => <span className="font-medium">{a.name}</span> },
+    { key: "type", label: "Type", sortValue: (a) => a.asset_type,
+      render: (a) => <span className="capitalize text-txt2">{a.asset_type.toLowerCase()}</span> },
+    { key: "crit", label: "Criticality", sortValue: (a) => a.criticality,
+      render: (a) => a.criticality ? <Pill tone={CRIT_TONE[a.criticality]}>{cap(a.criticality)}</Pill> : <span className="text-txt3">—</span> },
+    { key: "data", label: "Data", sortValue: (a) => a.data_types_stored.length,
+      render: (a) => <span className="text-txt2 tnum">{a.data_types_stored.length || "—"}</span> },
+    { key: "owner", label: "Owner", sortValue: (a) => a.owner_name,
+      render: (a) => <span className="text-txt2">{a.owner_name ?? "—"}</span> },
+    { key: "loc", label: "Location", sortValue: (a) => a.location,
+      render: (a) => <span className="text-txt2">{a.location ?? "—"}</span> },
+  ];
   return (
     <>
       <div className="mb-3 flex justify-end">{can("assets", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New asset</button>
+          <>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New asset</button>
+          </>
         )}</div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !q ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
           No assets yet. Track your servers, laptops and services — what they are, how critical, and what data they hold.
         </div>
       ) : (
-        <Table head={["Asset", "Type", "Criticality", "Data", "Owner", "Location"]}>
-          {rows.map((a) => (
-            <tr key={a.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(a.id)}>
-              <Td className="font-medium">{a.name}</Td>
-              <Td className="capitalize text-txt2">{a.asset_type.toLowerCase()}</Td>
-              <Td>{a.criticality ? <Pill tone={CRIT_TONE[a.criticality]}>{cap(a.criticality)}</Pill> : <span className="text-txt3">—</span>}</Td>
-              <Td className="text-txt2 tnum">{a.data_types_stored.length || "—"}</Td>
-              <Td className="text-txt2">{a.owner_name ?? "—"}</Td>
-              <Td className="text-txt2">{a.location ?? "—"}</Td>
-            </tr>
-          ))}
-        </Table>
+        <DataTable rows={rows} getId={(a) => a.id} columns={columns}
+          onSearch={setQ} searchPlaceholder="Search assets…"
+          onRowClick={(a) => setOpenId(a.id)}
+          canDelete={can("assets", "delete")}
+          onDeleteOne={(id) => api.delete(`/assets/${id}`).then(() => {
+            qc.invalidateQueries({ queryKey: ["assets"] }); })}
+          noMatchMessage={`No assets match "${q}".`} />
       )}
       {adding && <NewAssetModal onClose={() => setAdding(false)} />}
+      {importing && (
+        <BulkImportModal register="assets" onClose={() => setImporting(false)} />
+      )}
       {openId && <AssetDrawer id={openId} onClose={() => setOpenId(null)} />}
     </>
   );
@@ -711,32 +781,48 @@ function NewDataModal({ onClose }: { onClose: () => void }) {
 export function DataTab() {
   const can = useCan();
   const [adding, setAdding] = useState(false);
-  const { data, isLoading } = useQuery({ queryKey: ["data-items"], queryFn: () => get<DataItem[]>("/data-items") });
+  const [importing, setImporting] = useState(false);
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const { data, isLoading } = useRegisterList<DataItem>("data-items", "/data-items", q);
   if (isLoading) return <Loading />;
   const rows = data ?? [];
+  const columns: Column<DataItem>[] = [
+    { key: "name", label: "Data item", sortValue: (d) => d.name.toLowerCase(),
+      render: (d) => <span className="font-medium">{d.name}</span> },
+    { key: "class", label: "Classification", sortValue: (d) => d.classification,
+      render: (d) => <Pill tone={CLASS_TONE[d.classification]}>{cap(d.classification)}</Pill> },
+    { key: "where", label: "Where it lives", sortValue: (d) => d.data_type,
+      render: (d) => <span className="text-txt2">{d.data_type ?? "—"}</span> },
+    { key: "owner", label: "Owner", sortValue: (d) => d.owner_name,
+      render: (d) => <span className="text-txt2">{d.owner_name ?? "—"}</span> },
+    { key: "ret", label: "Retention", sortValue: (d) => d.retention_note,
+      render: (d) => <span className="text-txt2">{d.retention_note ?? "—"}</span> },
+  ];
   return (
     <>
       <div className="mb-3 flex justify-end">{can("data", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New data item</button>
+          <>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New data item</button>
+          </>
         )}</div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !q ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
           No data inventory yet. List the kinds of data you hold and how each is classified — assets link to these.
         </div>
       ) : (
-        <Table head={["Data item", "Classification", "Where it lives", "Owner", "Retention"]}>
-          {rows.map((d) => (
-            <tr key={d.id} className="hover:bg-canvas">
-              <Td className="font-medium">{d.name}</Td>
-              <Td><Pill tone={CLASS_TONE[d.classification]}>{cap(d.classification)}</Pill></Td>
-              <Td className="text-txt2">{d.data_type ?? "—"}</Td>
-              <Td className="text-txt2">{d.owner_name ?? "—"}</Td>
-              <Td className="text-txt2">{d.retention_note ?? "—"}</Td>
-            </tr>
-          ))}
-        </Table>
+        <DataTable rows={rows} getId={(d) => d.id} columns={columns}
+          onSearch={setQ} searchPlaceholder="Search data items…"
+          canDelete={can("data", "delete")}
+          onDeleteOne={(id) => api.delete(`/data-items/${id}`).then(() => {
+            qc.invalidateQueries({ queryKey: ["data-items"] }); })}
+          noMatchMessage={`No data items match "${q}".`} />
       )}
       {adding && <NewDataModal onClose={() => setAdding(false)} />}
+      {importing && (
+        <BulkImportModal register="data-items" onClose={() => setImporting(false)} />
+      )}
     </>
   );
 }
@@ -768,7 +854,7 @@ type ObligationDetail = Obligation & {
 };
 type Incident = {
   id: string; reference: string | null; title: string; severity: string | null; status: string;
-  detected_at: string | null; owner_name: string | null;
+  detected_at: string | null; owner_name: string | null; category: string | null;
 };
 type IncidentDetail = Incident & {
   description: string | null; resolved_at: string | null; root_cause: string | null; lessons_learnt: string | null;
@@ -1020,34 +1106,53 @@ function ThirdPartyDrawer({ id, onClose }: { id: string; onClose: () => void }) 
 export function ThirdPartiesTab() {
   const can = useCan();
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [openId, setOpenId] = useDrawerRoute("/third-parties");
-  const { data, isLoading } = useQuery({ queryKey: ["third-parties"], queryFn: () => get<ThirdParty[]>("/third-parties") });
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const { data, isLoading } = useRegisterList<ThirdParty>("third-parties", "/third-parties", q);
   if (isLoading) return <Loading />;
   const rows = data ?? [];
+  const columns: Column<ThirdParty>[] = [
+    { key: "name", label: "Vendor", sortValue: (v) => v.name.toLowerCase(),
+      render: (v) => <span className="font-medium">{v.name}</span> },
+    { key: "cat", label: "Category", sortValue: (v) => v.category,
+      render: (v) => <span className="text-txt2">{v.category ?? "—"}</span> },
+    { key: "crit", label: "Criticality", sortValue: (v) => v.criticality,
+      render: (v) => v.criticality ? <Pill tone={CRIT_TONE[v.criticality]}>{cap(v.criticality)}</Pill> : <span className="text-txt3">—</span> },
+    { key: "status", label: "Status", sortValue: (v) => v.status,
+      render: (v) => <Pill tone={v.status === "ACTIVE" ? "ok" : v.status === "TERMINATED" ? "bad" : "warn"}>{nice(v.status)}</Pill> },
+    { key: "owner", label: "Owner", sortValue: (v) => v.business_owner_name,
+      render: (v) => <span className="text-txt2">{v.business_owner_name ?? "—"}</span> },
+    { key: "parent", label: "Sub-processor of", sortValue: (v) => v.parent_name,
+      render: (v) => <span className="text-txt2">{v.parent_name ?? "—"}</span> },
+  ];
   return (
     <>
       <div className="mb-3 flex justify-end">{can("third_parties", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New third party</button>
+          <>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New third party</button>
+          </>
         )}</div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !q ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
           No vendors yet. Track who you rely on, their sub-processors (the bank's 4th parties), and when each was last assessed.
         </div>
       ) : (
-        <Table head={["Vendor", "Category", "Criticality", "Status", "Owner", "Sub-processor of"]}>
-          {rows.map((v) => (
-            <tr key={v.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(v.id)}>
-              <Td className="font-medium">{v.name}</Td>
-              <Td className="text-txt2">{v.category ?? "—"}</Td>
-              <Td>{v.criticality ? <Pill tone={CRIT_TONE[v.criticality]}>{cap(v.criticality)}</Pill> : <span className="text-txt3">—</span>}</Td>
-              <Td><Pill tone={v.status === "ACTIVE" ? "ok" : v.status === "TERMINATED" ? "bad" : "warn"}>{nice(v.status)}</Pill></Td>
-              <Td className="text-txt2">{v.business_owner_name ?? "—"}</Td>
-              <Td className="text-txt2">{v.parent_name ?? "—"}</Td>
-            </tr>
-          ))}
-        </Table>
+        <DataTable rows={rows} getId={(v) => v.id} columns={columns}
+          onSearch={setQ} searchPlaceholder="Search vendors…"
+          onRowClick={(v) => setOpenId(v.id)}
+          canDelete={can("third_parties", "delete")}
+          // 409 when an asset still names the vendor — delete_third_party's guard.
+          onDeleteOne={(id) => api.delete(`/third-parties/${id}`).then(() => {
+            qc.invalidateQueries({ queryKey: ["third-parties"] }); })}
+          noMatchMessage={`No vendors match "${q}".`} />
       )}
       {adding && <NewThirdPartyModal onClose={() => setAdding(false)} />}
+      {importing && (
+        <BulkImportModal register="third-parties" onClose={() => setImporting(false)} />
+      )}
       {openId && <ThirdPartyDrawer id={openId} onClose={() => setOpenId(null)} />}
     </>
   );
@@ -1075,9 +1180,9 @@ function NewObligationModal({ onClose }: { onClose: () => void }) {
             className={inputCls + " mt-1 min-h-[70px]"} placeholder="Outsourcing risk management per RBI IT outsourcing directions" /></label>
         <div className="grid grid-cols-2 gap-3">
           <label className="text-[13px] font-medium">Area
-            <input value={f.area} onChange={(e) => set("area")(e.target.value)} className={inputCls + " mt-1"} placeholder="Outsourcing" /></label>
+            <LookupSelect kind="obligation_area" value={f.area} onChange={set("area")} /></label>
           <label className="text-[13px] font-medium">Regulator
-            <input value={f.regulator} onChange={(e) => set("regulator")(e.target.value)} className={inputCls + " mt-1"} placeholder="RBI" /></label>
+            <LookupSelect kind="regulator" value={f.regulator} onChange={set("regulator")} /></label>
           <label className="text-[13px] font-medium">Type
             <select value={f.type} onChange={(e) => set("type")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option><option value="LEGAL">Legal</option><option value="CONTRACTUAL">Contractual</option></select></label>
@@ -1190,12 +1295,13 @@ export function ObligationsTab() {
 // ── incidents
 function NewIncidentModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
-  const [f, setF] = useState({ title: "", reference: "", severity: "", detected_at: "", description: "", owner_person_id: "" });
+  const [f, setF] = useState({ title: "", reference: "", severity: "", category: "", detected_at: "", description: "", owner_person_id: "" });
   const [err, setErr] = useState("");
   const set = (k: string) => (v: string) => setF({ ...f, [k]: v });
   const create = useMutation({
     mutationFn: () => api.post("/incidents", {
       title: f.title, reference: f.reference || null, severity: f.severity || null,
+      category: f.category || null,
       detected_at: f.detected_at || null, description: f.description || null,
       owner_person_id: f.owner_person_id || null }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["incidents"] }); onClose(); },
@@ -1216,6 +1322,11 @@ function NewIncidentModal({ onClose }: { onClose: () => void }) {
               <option value="">—</option>{CRITICALITIES.map((c) => <option key={c} value={c}>{cap(c)}</option>)}</select></label>
           <label className="text-[13px] font-medium">Detected
             <input type="date" value={f.detected_at} onChange={(e) => set("detected_at")(e.target.value)} className={inputCls + " mt-1"} /></label>
+          {/* P5-S4: the `incident_category` vocabulary was seeded in P4-S3 and had no column
+              to write to until now. Lookup-backed like risk category and asset subtype, so
+              Masters (S6) can extend it without a migration. */}
+          <label className="text-[13px] font-medium">Category
+            <LookupSelect kind="incident_category" value={f.category} onChange={set("category")} /></label>
         </div>
         {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
         <button disabled={!f.title || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
@@ -1340,34 +1451,55 @@ function IncidentDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 export function IncidentsTab() {
   const can = useCan();
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [openId, setOpenId] = useDrawerRoute("/incidents");
-  const { data, isLoading } = useQuery({ queryKey: ["incidents"], queryFn: () => get<Incident[]>("/incidents") });
+  const qc = useQueryClient();
+  const [q, setQ] = useState("");
+  const { data, isLoading } = useRegisterList<Incident>("incidents", "/incidents", q);
   if (isLoading) return <Loading />;
   const rows = data ?? [];
+  const columns: Column<Incident>[] = [
+    { key: "ref", label: "Ref", sortValue: (i) => i.reference,
+      render: (i) => <span className="font-mono text-txt3">{i.reference ?? "—"}</span> },
+    { key: "title", label: "Incident", sortValue: (i) => i.title.toLowerCase(),
+      render: (i) => <span className="font-medium">{i.title}</span> },
+    // P5-S4: the column the `incident_category` vocabulary finally has to land in.
+    { key: "cat", label: "Category", sortValue: (i) => i.category,
+      render: (i) => <span className="text-txt2">{i.category ?? "—"}</span> },
+    { key: "sev", label: "Severity", sortValue: (i) => i.severity,
+      render: (i) => i.severity ? <Pill tone={CRIT_TONE[i.severity]}>{cap(i.severity)}</Pill> : <span className="text-txt3">—</span> },
+    { key: "det", label: "Detected", sortValue: (i) => i.detected_at,
+      render: (i) => <span className="text-txt2">{i.detected_at?.slice(0, 10) ?? "—"}</span> },
+    { key: "owner", label: "Owner", sortValue: (i) => i.owner_name,
+      render: (i) => <span className="text-txt2">{i.owner_name ?? "—"}</span> },
+    { key: "status", label: "Status", sortValue: (i) => i.status,
+      render: (i) => <Pill tone={INC_TONE[i.status] ?? "na"}>{nice(i.status)}</Pill> },
+  ];
   return (
     <>
       <div className="mb-3 flex justify-end">{can("incidents", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New incident</button>
+          <>
+            <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New incident</button>
+          </>
         )}</div>
-      {rows.length === 0 ? (
+      {rows.length === 0 && !q ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
           No incidents logged. Banks ask for the <b>RCA</b>, not the ticket — record what happened, the root cause, and the lessons learnt.
         </div>
       ) : (
-        <Table head={["Ref", "Incident", "Severity", "Detected", "Owner", "Status"]}>
-          {rows.map((i) => (
-            <tr key={i.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(i.id)}>
-              <Td className="font-mono text-txt3">{i.reference ?? "—"}</Td>
-              <Td className="font-medium">{i.title}</Td>
-              <Td>{i.severity ? <Pill tone={CRIT_TONE[i.severity]}>{cap(i.severity)}</Pill> : <span className="text-txt3">—</span>}</Td>
-              <Td className="text-txt2">{i.detected_at?.slice(0, 10) ?? "—"}</Td>
-              <Td className="text-txt2">{i.owner_name ?? "—"}</Td>
-              <Td><Pill tone={INC_TONE[i.status] ?? "na"}>{nice(i.status)}</Pill></Td>
-            </tr>
-          ))}
-        </Table>
+        <DataTable rows={rows} getId={(i) => i.id} columns={columns}
+          onSearch={setQ} searchPlaceholder="Search incidents…"
+          onRowClick={(i) => setOpenId(i.id)}
+          canDelete={can("incidents", "delete")}
+          onDeleteOne={(id) => api.delete(`/incidents/${id}`).then(() => {
+            qc.invalidateQueries({ queryKey: ["incidents"] }); })}
+          noMatchMessage={`No incidents match "${q}".`} />
       )}
       {adding && <NewIncidentModal onClose={() => setAdding(false)} />}
+      {importing && (
+        <BulkImportModal register="incidents" onClose={() => setImporting(false)} />
+      )}
       {openId && <IncidentDrawer id={openId} onClose={() => setOpenId(null)} />}
     </>
   );

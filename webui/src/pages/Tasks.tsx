@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
+import { uploadEvidence, UploadTooLarge } from "../lib/evidence";
 import { inputCls, cn, Card, Drawer, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
 import { useCan } from "../lib/auth";
 import { OwnerSelect } from "./Registers";
@@ -150,30 +151,73 @@ function EditTaskModal({ task, onClose }: { task: TaskDetail; onClose: () => voi
 function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
   const qc = useQueryClient();
   const [evId, setEvId] = useState(""); const [notes, setNotes] = useState("");
+  // P5-S3: the proof of a completed task usually does not exist in the vault yet — before
+  // this you could only PICK something already uploaded, which is how a task once got closed
+  // out against a three-day-old unrelated PDF (see docs/phase5/01-findings.md §4e).
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
   // A native <select>; no search box to feed, so it holds the unfiltered slot of the key.
   const evList = useQuery({ queryKey: ["evidence", ""], queryFn: () => get<Ev[]>("/evidence") });
-  const complete = useMutation({
-    mutationFn: () => api.post(`/tasks/${task.id}/runs/${task.next_run!.id}/complete`,
-      { evidence_id: evId || null, notes: notes || null }),
-    onSuccess: () => {
+
+  async function submit() {
+    setBusy(true); setErr("");
+    try {
+      // Upload first, then complete with the resulting id — two calls the API already has,
+      // rather than a multipart variant of `complete`. If the second call fails the file is
+      // still in the vault (unlinked, not lost), which is the cheap failure direction.
+      let evidenceId = evId || null;
+      if (file) evidenceId = (await uploadEvidence(file, { evidenceType: "report" })).id;
+      await api.post(`/tasks/${task.id}/runs/${task.next_run!.id}/complete`,
+        { evidence_id: evidenceId, notes: notes || null });
       qc.invalidateQueries({ queryKey: ["tasks"] });
       qc.invalidateQueries({ queryKey: ["task", task.id] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["evidence"] });
       onClose();
-    },
-  });
+    } catch (e: any) {
+      // Report the real failure. Uploading and completing fail for different reasons, and
+      // "Could not complete" on a rejected upload would send the user hunting in the wrong
+      // place entirely.
+      setErr(e instanceof UploadTooLarge ? e.message
+        : errText(e, file ? "Could not upload that file." : "Could not complete the task."));
+    } finally { setBusy(false); }
+  }
+
   return (
     <Modal open onClose={onClose} title="Complete task">
       <p className="mb-3 text-[13px] font-medium">{task.title}</p>
-      <label className="text-[13px] font-medium">Attach produced evidence <span className="text-txt3">(optional)</span>
-        <select value={evId} onChange={(e) => setEvId(e.target.value)} className={inputCls + " mt-1"}>
-          <option value="">— none —</option>
-          {(evList.data ?? []).map((e) => <option key={e.id} value={e.id}>{e.title}</option>)}
-        </select>
+
+      <div className="text-[13px] font-medium">Attach produced evidence <span className="text-txt3">(optional)</span></div>
+      <label className="btn mt-1 w-full cursor-pointer justify-center py-1.5 text-[12.5px]">
+        {file ? `Selected: ${file.name}` : "⬆ Upload a new file"}
+        <input type="file" className="hidden" disabled={busy}
+          onChange={(e) => {
+            // Snapshot before the input is reset — `files` is a live FileList (the P5-S1
+            // evidence-upload race).
+            const f = e.target.files?.[0] ?? null;
+            e.target.value = "";
+            setFile(f); setErr("");
+            if (f) setEvId("");     // a new upload replaces any vault pick, never both
+          }} />
       </label>
+      {file && (
+        <button onClick={() => setFile(null)} className="mt-1 text-[11.5px] text-txt3 underline">
+          Remove file
+        </button>
+      )}
+
+      <div className="mt-2 text-[11.5px] text-txt3">…or pick something already in the vault</div>
+      <select value={evId} disabled={!!file}
+        onChange={(e) => setEvId(e.target.value)} className={inputCls + " mt-1 disabled:opacity-50"}>
+        <option value="">— none —</option>
+        {(evList.data ?? []).map((e) => <option key={e.id} value={e.id}>{e.title}</option>)}
+      </select>
+
       <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes…" className={inputCls + " mt-3 min-h-[60px]"} />
-      <button disabled={complete.isPending} onClick={() => complete.mutate()} className="btn btn-primary mt-3 w-full justify-center disabled:opacity-50">
-        {complete.isPending ? "Completing…" : "Mark complete & roll forward"}
+      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      <button disabled={busy} onClick={submit} className="btn btn-primary mt-3 w-full justify-center disabled:opacity-50">
+        {busy ? (file ? "Uploading…" : "Completing…") : "Mark complete & roll forward"}
       </button>
     </Modal>
   );
