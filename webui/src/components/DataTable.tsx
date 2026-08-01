@@ -42,7 +42,7 @@ const DEFAULT_BULK_COPY = {
 export function DataTable<T>({
   rows, getId, columns,
   onSearch, searchPlaceholder = "Search…",
-  onDeleteOne, canDelete = false, bulkActionCopy,
+  onDeleteOne, canDelete = false, getRowLabel, bulkActionCopy,
   onRowClick,
   emptyMessage = "Nothing here yet.",
   noMatchMessage,
@@ -59,6 +59,10 @@ export function DataTable<T>({
    * this need not be destructive — see `bulkActionCopy`. */
   onDeleteOne?: (id: string) => Promise<void>;
   canDelete?: boolean;
+  /** Names a row in the bulk-failure report. Without it failures are listed by raw id, which
+   * is useless to a human — supply it on any page where a row action can legitimately be
+   * refused. */
+  getRowLabel?: (row: T) => string;
   /** Override the bulk-action button/confirm/error wording — e.g. Documents' bulk action
    * archives (reversible, existing Restore button) rather than deletes, so "Delete selected"
    * and "cannot be undone" would both be false. Defaults to delete wording. */
@@ -76,7 +80,7 @@ export function DataTable<T>({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkErrors, setBulkErrors] = useState<string[]>([]);
+  const [bulkErrors, setBulkErrors] = useState<{ label: string; message: string }[]>([]);
 
   const sorted = useMemo(() => {
     if (!sortKey) return rows;
@@ -115,13 +119,20 @@ export function DataTable<T>({
     const label = ids.length === 1 ? "this item" : `these ${ids.length} items`;
     if (!confirm(copy.confirm(label))) return;
     setBulkBusy(true);
-    const errors: string[] = [];
+    setBulkErrors([]);            // clear the previous run's report before starting a new one
+    // Row labels are resolved BEFORE the loop: a successful delete removes the row from
+    // `rows` on the next refetch, so looking a label up afterwards can find nothing.
+    const labels = new Map(sorted.map((r) => [getId(r), getRowLabel?.(r) ?? getId(r)]));
+    const errors: { label: string; message: string }[] = [];
     for (const id of ids) {
       try {
         await onDeleteOne(id);
         setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
       } catch (e: any) {
-        errors.push(e?.response?.data?.detail ?? e?.message ?? `Could not process ${id}.`);
+        errors.push({
+          label: labels.get(id) ?? id,
+          message: e?.response?.data?.detail ?? e?.message ?? "could not be processed",
+        });
       }
     }
     setBulkBusy(false);
@@ -148,8 +159,19 @@ export function DataTable<T>({
         </div>
       )}
       {bulkErrors.length > 0 && (
-        <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">
-          {bulkErrors.length} {copy.errorPrefix}: {bulkErrors.join("; ")}
+        // One line PER ROW, named. Joining the raw messages into a sentence was fine while
+        // failures were rare, but on People a blocked delete is the normal outcome (25 FK
+        // columns cite `people`), and ten near-identical "still referenced by…" messages with
+        // no names is a wall of text nobody can act on. Everything not listed here succeeded.
+        <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">
+          <div className="font-medium">
+            {bulkErrors.length} {copy.errorPrefix} — everything else was done.
+          </div>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {bulkErrors.map((e, i) => (
+              <li key={i}><span className="font-medium">{e.label}</span> — {e.message}</li>
+            ))}
+          </ul>
         </div>
       )}
 

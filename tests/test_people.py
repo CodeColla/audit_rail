@@ -221,3 +221,36 @@ def test_a_manager_link_does_not_block_deletion(app_client):
 def test_cannot_delete_a_person_in_another_tenant(app_client):
     h = _h(app_client)
     assert app_client.delete(f"/api/people/{uuid.uuid4()}", headers=h).status_code == 404
+
+
+def test_a_refused_delete_does_not_break_the_ones_after_it(app_client):
+    """P5-S7 — the contract the bulk-delete UI depends on.
+
+    `DataTable` issues N independent DELETEs in a loop, so a 409 in the middle must leave the
+    connection and the transaction perfectly usable for the rows that follow. A failed
+    statement poisoning its session is a real SQLAlchemy failure mode, and it would show up as
+    "the first blocked person makes every later delete fail too" — indistinguishable, from the
+    UI, from those people also being referenced.
+    """
+    h = _h(app_client)
+
+    def person(name):
+        return app_client.post("/api/people", headers=h, json={
+            "full_name": name,
+            "email": f"{name.replace(' ', '')}-{uuid.uuid4().hex[:6]}@kiam.example"},
+        ).json()["id"]
+
+    first, blocked, last = person("Batch First"), person("Batch Blocked"), person("Batch Last")
+    app_client.post("/api/risks", headers=h,
+                    json={"title": "Blocks the middle one", "owner_person_id": blocked})
+
+    # exactly the order the UI sends them in: good, refused, good
+    assert app_client.delete(f"/api/people/{first}", headers=h).status_code == 200
+    refused = app_client.delete(f"/api/people/{blocked}", headers=h)
+    assert refused.status_code == 409, refused.text
+    assert app_client.delete(f"/api/people/{last}", headers=h).status_code == 200, \
+        "a 409 on the previous row must not take the next one down with it"
+
+    assert app_client.get(f"/api/people/{first}", headers=h).status_code == 404
+    assert app_client.get(f"/api/people/{last}", headers=h).status_code == 404
+    assert app_client.get(f"/api/people/{blocked}", headers=h).status_code == 200

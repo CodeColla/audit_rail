@@ -4,8 +4,9 @@ import { Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { LookupSelect } from "./Registers";
+import { Column, DataTable } from "../components/DataTable";
 import {
-  Card, cn, Drawer, inputCls, Loading, Modal, PageHead, Pill, Table, Td,
+  Card, cn, Drawer, inputCls, Loading, Modal, PageHead, Pill,
 } from "../lib/ui";
 
 type Person = {
@@ -279,11 +280,34 @@ export default function People() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<Detail | null>(null);
   const [importing, setImporting] = useState(false);
+  const [q, setQ] = useState("");
+  const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
+  /**
+   * TWO queries, deliberately.
+   *
+   * `["people"]` is a SHARED key — Documents, DocumentDetail and Registers all read it to
+   * populate owner pickers. Writing a search-filtered result under it would silently truncate
+   * every one of those pickers the moment someone typed here. So the search lives under its
+   * own key, and the unfiltered list keeps the shared one.
+   *
+   * The unfiltered copy also backs `byId` for manager names: a manager who does not match the
+   * current search must still resolve, or the column would read "—" and look like missing data.
+   * With no search term there is only ONE request, because the list reuses that same result.
+   */
+  const all = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
+  const searching = q.trim().length > 0;
+  const found = useQuery({
+    queryKey: ["people", "search", q.trim()],
+    queryFn: () => get<Person[]>(`/people?q=${encodeURIComponent(q.trim())}`),
+    enabled: searching,
+  });
   const depts = useQuery({ queryKey: ["departments"], queryFn: () => get<{ department: string; count: number }[]>("/people/departments") });
-  const people = data ?? [];
-  const byId = useMemo(() => Object.fromEntries(people.map((p) => [p.id, p])), [people]);
+
+  const isLoading = all.isLoading;
+  const people = (searching ? found.data : all.data) ?? [];
+  const byId = useMemo(
+    () => Object.fromEntries((all.data ?? []).map((p) => [p.id, p])), [all.data]);
 
   const match = (p: Person) => {
     const d = daysUntil(p.contract_end_date);
@@ -305,6 +329,15 @@ export default function People() {
   const rows = people.filter(match).filter((p) => !dept || p.department === dept);
   if (isLoading) return <Loading />;
 
+  // Invalidating inside the per-row call is the pattern the other four DataTable pages use.
+  // The bare `["people"]` prefix also matches `["people","search",q]`, so both the shared list
+  // and the current search refresh; `["departments"]` carries the per-department counts.
+  const deletePerson = async (id: string) => {
+    await api.delete(`/people/${id}`);
+    qc.invalidateQueries({ queryKey: ["people"] });
+    qc.invalidateQueries({ queryKey: ["departments"] });
+  };
+
   return (
     <>
       <PageHead eyebrow="Company · People" title="People"
@@ -317,7 +350,7 @@ export default function People() {
             )}
           </div>} />
 
-      {people.length === 0 ? (
+      {(all.data ?? []).length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center">
           <h3 className="text-[15px] font-semibold">Start here — this is the floor of the platform</h3>
           <p className="mx-auto mt-2 max-w-[52ch] text-[13px] text-txt2">
@@ -349,34 +382,55 @@ export default function People() {
             </select>
           </div>
 
-          <Table head={["Name", "Department", "Position", "Manager", "Access", "Status", ""]}>
-            {rows.map((p) => (
-              <tr key={p.id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenId(p.id)}>
-                <Td>
+          <DataTable<Person>
+            rows={rows}
+            getId={(p) => p.id}
+            getRowLabel={(p) => p.full_name}
+            onSearch={setQ}
+            searchPlaceholder="Search name, email or employee number…"
+            onRowClick={(p) => setOpenId(p.id)}
+            onDeleteOne={deletePerson}
+            canDelete={can("people", "delete")}
+            bulkActionCopy={{
+              button: "Delete selected", busy: "Deleting…",
+              // The per-row confirm has always said this; the bulk one must too, because
+              // being refused is the NORMAL outcome for anyone with history behind them.
+              confirm: (label) =>
+                `Delete ${label}?\n\nThis is for duplicates and mistakes. Anyone still ` +
+                `referenced by a risk, task or audit will be refused — if they have simply ` +
+                `left, set a contract end date instead so their history stays intact.`,
+              errorPrefix: "could not be deleted",
+            }}
+            emptyMessage="No people match this filter."
+            noMatchMessage="Nobody matches that search."
+            columns={[
+              { key: "name", label: "Name", sortValue: (p) => p.full_name.toLowerCase(),
+                render: (p) => (
                   <div className="flex items-center gap-2.5">
                     <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-ink text-[10px] font-bold text-white">{initials(p.full_name)}</span>
                     <div>
                       <div className="font-medium">{p.full_name}</div>
                       {p.employee_number && <div className="font-mono text-[11px] text-txt3">{p.employee_number}</div>}
                     </div>
-                  </div>
-                </Td>
-                <Td className="text-txt2">{p.department ?? "—"}</Td>
-                <Td className="text-txt2">{p.position ?? "—"}</Td>
-                <Td className="text-txt2">{p.manager_id ? byId[p.manager_id]?.full_name ?? "—" : "—"}</Td>
-                <Td><AccessPill p={p} /></Td>
-                <Td><StatusPill p={p} /></Td>
-                <Td>{can("people", "delete") && (
+                  </div>) },
+              { key: "department", label: "Department", className: "text-txt2",
+                sortValue: (p) => p.department?.toLowerCase(), render: (p) => p.department ?? "—" },
+              { key: "position", label: "Position", className: "text-txt2",
+                sortValue: (p) => p.position?.toLowerCase(), render: (p) => p.position ?? "—" },
+              { key: "manager", label: "Manager", className: "text-txt2",
+                sortValue: (p) => p.manager_id ? byId[p.manager_id]?.full_name?.toLowerCase() : null,
+                render: (p) => p.manager_id ? byId[p.manager_id]?.full_name ?? "—" : "—" },
+              { key: "access", label: "Access", sortValue: (p) => p.user_id ? 0 : 1,
+                render: (p) => <AccessPill p={p} /> },
+              { key: "status", label: "Status", sortValue: (p) => p.effective_state,
+                render: (p) => <StatusPill p={p} /> },
+              { key: "actions", label: "",
+                render: (p) => can("people", "delete") ? (
                   <span onClick={(e) => e.stopPropagation()}>
                     <DeletePersonButton id={p.id} name={p.full_name} />
-                  </span>)}</Td>
-              </tr>
-            ))}
-          </Table>
-          {rows.length === 0 && (
-            <div className="mt-3 rounded-xl border border-dashed border-bd bg-paper p-6 text-center text-[13px] text-txt3">
-              No people match this filter.
-            </div>)}
+                  </span>) : null },
+            ] as Column<Person>[]}
+          />
         </>
       )}
 
