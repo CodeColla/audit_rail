@@ -254,3 +254,222 @@ def test_a_refused_delete_does_not_break_the_ones_after_it(app_client):
     assert app_client.get(f"/api/people/{first}", headers=h).status_code == 404
     assert app_client.get(f"/api/people/{last}", headers=h).status_code == 404
     assert app_client.get(f"/api/people/{blocked}", headers=h).status_code == 200
+
+
+# ──────────────────────────────────────────────────── P5-S8: logins for people
+
+def _new_org(client, tag):
+    r = client.post("/api/auth/signup", json={
+        "full_name": f"{tag} owner", "email": f"{tag}@example.com",
+        "password": "Passw0rdOne", "organisation_name": f"Org {tag}"})
+    assert r.status_code == 201, r.text
+    j = r.json()
+    return j, {"Authorization": f"Bearer {j['access_token']}"}
+
+
+def test_cannot_take_over_an_existing_account_from_another_tenant(app_client):
+    """The reason P5-S8 touched security before it touched UI.
+
+    `users.email` is globally unique, so `invite_person` resolving an account by email finds
+    OTHER organisations' users and attaches them. It then minted an invite token for that
+    account and returned the raw token in the response body — and `accept_invite` sets the
+    password of whoever the token names. Chained, that was a working cross-tenant account
+    takeover available to any member holding `users.add` in any organisation:
+
+        add a "person" carrying the victim's email -> invite -> read the token out of your own
+        response -> accept it with a password you choose -> sign in as them, in THEIR org.
+
+    Verified end to end before the fix (login returned 200). Now the invite carries no token
+    for a pre-existing account, and `accept_invite` refuses to overwrite a live password.
+    """
+    vtag = f"victim{uuid.uuid4().hex[:6]}"
+    victim, _ = _new_org(app_client, vtag)
+    victim_email = f"{vtag}@example.com"
+
+    _attacker, ah = _new_org(app_client, f"attacker{uuid.uuid4().hex[:6]}")
+    pid = app_client.post("/api/people", headers=ah, json={
+        "full_name": "Totally Normal Hire", "email": victim_email}).json()["id"]
+
+    granted = app_client.post(f"/api/people/{pid}/invite", headers=ah, json={})
+    assert granted.status_code == 201, granted.text
+    body = granted.json()
+
+    # THE SECURITY PROPERTY, asserted by running the whole attack rather than by inspecting
+    # the response shape: whatever comes back, the attacker must not end up able to sign in
+    # as the victim. (Written this way on purpose — an earlier version asserted only that no
+    # token was returned, which fails against the vulnerable code with a KeyError and so
+    # proves nothing about the exploit itself.)
+    token = body.get("token")
+    if token:
+        app_client.post("/api/auth/accept-invite",
+                        json={"token": token, "password": "Attacker1Pass"})
+    app_client.post(f"/api/people/{pid}/invite", headers=ah, json={"password": "Attacker1Pass"})
+
+    assert app_client.post("/api/auth/login", json={
+        "email": victim_email, "password": "Attacker1Pass",
+        "tenant_id": victim["tenant_id"]}).status_code == 401, \
+        "CROSS-TENANT ACCOUNT TAKEOVER: the attacker set the victim's password"
+    # …and the victim's own credentials are untouched
+    assert app_client.post("/api/auth/login", json={
+        "email": victim_email, "password": "Passw0rdOne",
+        "tenant_id": victim["tenant_id"]}).status_code == 200
+
+    # the specific defences, once the property above is established
+    assert body["existing_account"] is True
+    assert body["token"] is None, "no set-password token may be minted for someone else's account"
+    assert body["invite_path"] is None
+
+
+def test_an_invite_cannot_reset_a_password_that_already_exists(app_client):
+    """Defence in depth: even holding a valid token, accepting it must not overwrite a live
+    password. Belt-and-braces behind the `invite_person` fix, because this endpoint is what
+    actually performs the write."""
+    tag = f"acc{uuid.uuid4().hex[:6]}"
+    _org, h = _new_org(app_client, tag)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Fresh Hire", "email": f"fresh-{tag}@example.com"}).json()["id"]
+    token = app_client.post(f"/api/people/{pid}/invite", headers=h, json={}).json()["token"]
+    assert token, "a brand-new account SHOULD get a set-password link"
+
+    first = app_client.post("/api/auth/accept-invite",
+                            json={"token": token, "password": "TheirOwn1Pass"})
+    assert first.status_code == 200, first.text
+
+    # a replayed/second token for the same account cannot re-set it
+    again = app_client.post(f"/api/people/{pid}/invite", headers=h, json={})
+    assert again.status_code == 409          # already has a login
+
+
+def _roles(client, h) -> dict:
+    return {r["name"]: r["id"] for r in client.get("/api/roles", headers=h).json()}
+
+
+def test_an_admin_set_password_must_be_changed_at_first_sign_in(app_client):
+    """Sumit asked to type a password and hand it over. It works — and it is temporary.
+
+    The product carries legally-meaningful `electronic_signatures`; a live password the admin
+    knows makes every signature under it repudiable. So the account is forced through
+    ChangePassword before a single screen is reachable, using the existing 30-day expiry
+    rather than a new mechanism.
+    """
+    tag = f"temp{uuid.uuid4().hex[:6]}"
+    org, h = _new_org(app_client, tag)
+    email = f"hire-{tag}@example.com"
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "New Hire", "email": email}).json()["id"]
+
+    granted = app_client.post(f"/api/people/{pid}/invite", headers=h, json={
+        "role_id": _roles(app_client, h)["Editor"], "password": "Temp1234"})
+    assert granted.status_code == 201, granted.text
+    assert granted.json()["temporary_password"] is True
+    assert granted.json()["token"] is None, "a typed password needs no set-password link"
+
+    signed_in = app_client.post("/api/auth/login", json={
+        "email": email, "password": "Temp1234", "tenant_id": org["tenant_id"]})
+    assert signed_in.status_code == 200, signed_in.text
+    th = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+
+    me = app_client.get("/api/auth/me", headers=th).json()
+    assert me["must_change_password"] is True, "the temporary password must not be a lasting one"
+    assert me["role"] is not None
+
+    # and once they choose their own, they are through
+    changed = app_client.post("/api/auth/change-password", headers=th, json={
+        "current_password": "Temp1234", "new_password": "TheirOwn9Pass"})
+    assert changed.status_code == 200, changed.text
+    after = app_client.post("/api/auth/login", json={
+        "email": email, "password": "TheirOwn9Pass", "tenant_id": org["tenant_id"]})
+    assert after.status_code == 200
+    assert app_client.get("/api/auth/me", headers={
+        "Authorization": f"Bearer {after.json()['access_token']}"}).json()["must_change_password"] is False
+
+
+def test_a_weak_admin_set_password_is_refused_by_the_same_policy(app_client):
+    tag = f"weak{uuid.uuid4().hex[:6]}"
+    _org, h = _new_org(app_client, tag)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Weak Pw", "email": f"weak-{tag}@example.com"}).json()["id"]
+    r = app_client.post(f"/api/people/{pid}/invite", headers=h, json={"password": "letters"})
+    assert r.status_code == 400
+    assert "letters and numbers" in r.text or "8" in r.text
+    # and no half-made login is left behind
+    assert app_client.get(f"/api/people/{pid}", headers=h).json()["has_login"] is False
+
+
+def test_the_role_on_a_login_can_be_changed_and_bites_immediately(app_client):
+    tag = f"role{uuid.uuid4().hex[:6]}"
+    org, h = _new_org(app_client, tag)
+    roles = _roles(app_client, h)
+    email = f"mover-{tag}@example.com"
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Role Mover", "email": email}).json()["id"]
+    app_client.post(f"/api/people/{pid}/invite", headers=h,
+                    json={"role_id": roles["Viewer"], "password": "Temp1234"})
+    assert app_client.get(f"/api/people/{pid}", headers=h).json()["role_name"] == "Viewer"
+
+    tok = app_client.post("/api/auth/login", json={
+        "email": email, "password": "Temp1234", "tenant_id": org["tenant_id"]}).json()
+    th = {"Authorization": f"Bearer {tok['access_token']}"}
+    assert "risks.add" not in app_client.get("/api/auth/me", headers=th).json()["permissions"]
+
+    promoted = app_client.patch(f"/api/people/{pid}/login", headers=h,
+                                json={"role_id": roles["Editor"]})
+    assert promoted.status_code == 200, promoted.text
+    assert app_client.get(f"/api/people/{pid}", headers=h).json()["role_name"] == "Editor"
+    # permissions resolve per request, so the SAME token now carries the new role
+    assert "risks.add" in app_client.get("/api/auth/me", headers=th).json()["permissions"]
+
+
+def test_revoking_a_login_keeps_the_person_but_ends_the_access(app_client):
+    tag = f"revoke{uuid.uuid4().hex[:6]}"
+    org, h = _new_org(app_client, tag)
+    email = f"leaver-{tag}@example.com"
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "The Leaver", "email": email}).json()["id"]
+    app_client.post(f"/api/people/{pid}/invite", headers=h, json={"password": "Temp1234"})
+    assert app_client.post("/api/auth/login", json={
+        "email": email, "password": "Temp1234", "tenant_id": org["tenant_id"]}).status_code == 200
+
+    gone = app_client.delete(f"/api/people/{pid}/login", headers=h)
+    assert gone.status_code == 200, gone.text
+
+    # the PERSON survives — their ownerships, history and signatures are still theirs
+    still = app_client.get(f"/api/people/{pid}", headers=h).json()
+    assert still["full_name"] == "The Leaver"
+    assert still["has_login"] is False and still["role_name"] is None
+    # but they can no longer get in
+    assert app_client.post("/api/auth/login", json={
+        "email": email, "password": "Temp1234",
+        "tenant_id": org["tenant_id"]}).status_code == 401
+
+
+def test_you_cannot_revoke_your_own_access_or_the_super_admins(app_client):
+    """Both guards exist because either one missed locks an organisation out of itself."""
+    tag = f"lock{uuid.uuid4().hex[:6]}"
+    org, h = _new_org(app_client, tag)
+    # the signer is both the caller and the Super Admin; give them a person record to aim at
+    me = app_client.get("/api/auth/me", headers=h).json()
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "The Owner", "email": f"{tag}@example.com",
+        "user_id": me["user_id"]}).json()["id"]
+
+    r = app_client.delete(f"/api/people/{pid}/login", headers=h)
+    assert r.status_code == 400
+    assert "your own" in r.text.lower() or "super admin" in r.text.lower()
+    assert app_client.get(f"/api/people/{pid}", headers=h).json()["has_login"] is True
+
+
+def test_only_user_admins_can_hand_out_or_take_away_logins(app_client):
+    tag = f"perm{uuid.uuid4().hex[:6]}"
+    org, h = _new_org(app_client, tag)
+    pid = app_client.post("/api/people", headers=h, json={
+        "full_name": "Target", "email": f"target-{tag}@example.com"}).json()["id"]
+
+    from tests.test_rbac import _member_with_role
+    for role in ("Viewer", "Editor"):
+        hh, _ = _member_with_role(app_client, org["tenant_id"], role)
+        assert app_client.post(f"/api/people/{pid}/invite", headers=hh,
+                               json={"password": "Temp1234"}).status_code == 403, role
+        assert app_client.patch(f"/api/people/{pid}/login", headers=hh,
+                                json={"role_id": "x"}).status_code == 403, role
+        assert app_client.delete(f"/api/people/{pid}/login", headers=hh).status_code == 403, role

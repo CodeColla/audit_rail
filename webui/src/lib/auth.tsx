@@ -8,6 +8,10 @@ type User = {
   role: string;
   tenant_id: string | null;
   full_name: string;
+  /** Present for members; `/auth/me` has always returned it. Needed to tell "this is my own
+   * account" from someone else's — see People's LoginCard, which must not offer you a button
+   * that revokes your own access. */
+  user_id?: string;
   assessment_id?: string | null;
   // P4: an account can belong to several organisations and switch between them.
   organisations?: Org[];
@@ -56,7 +60,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function adoptToken(data: any) {
     localStorage.setItem("ar_token", data.access_token);
     persist({
-      kind: "member", role: data.role, tenant_id: data.tenant_id,
+      kind: "member", user_id: data.user_id, role: data.role, tenant_id: data.tenant_id,
       full_name: data.full_name, organisations: data.organisations ?? [],
       permissions: data.permissions ?? [], is_super_admin: !!data.is_super_admin,
       must_change_password: !!data.must_change_password,

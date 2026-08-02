@@ -87,6 +87,10 @@ class LoginIn(StrictModel):
 class TokenOut(StrictModel):
     access_token: str
     token_type: str = "bearer"
+    #: P5-S8. The client needs to recognise its OWN account — People's login card must not
+    #: offer you a button that removes your own access. `/auth/me` has always carried this;
+    #: the token response had not, so the frontend had no way to know who it was.
+    user_id: str
     role: str
     tenant_id: str
     full_name: str
@@ -107,7 +111,8 @@ def _issue(principal: Principal) -> TokenOut:
         conn.execute(update(t("users")).where(t("users").c.id == principal.user_id)
                      .values(last_login_at=now_iso()))
     return TokenOut(
-        access_token=token, role=principal.role, tenant_id=principal.tenant_id,
+        access_token=token, user_id=principal.user_id,
+        role=principal.role, tenant_id=principal.tenant_id,
         full_name=principal["full_name"],
         organisations=[{"tenant_id": o["tenant_id"], "name": o["tenant_name"],
                         "role": o["role"]} for o in orgs],
@@ -254,6 +259,15 @@ def accept_invite(body: AcceptInviteIn, request: Request):
                            .returning(inv)).mappings().first()
         if row is None:
             raise HTTPException(410, "This invitation link is no longer valid.")
+        # Defence in depth for the takeover closed in P5-S8. `invite_person` no longer mints a
+        # token for a pre-existing account, but this endpoint sets a password on whoever the
+        # token names — so it refuses outright to overwrite one that already exists, whatever
+        # issued the token. An invite is for claiming a NEW account, never for resetting a
+        # live one.
+        if conn.execute(select(users.c.password_hash).where(
+                users.c.id == row["user_id"])).scalar():
+            raise HTTPException(409, "That account already has a password — sign in with it, "
+                                     "or use the forgotten-password flow.")
         try:
             passwords.set_password(conn, row["user_id"], body.password)
         except ValueError as e:

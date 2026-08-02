@@ -86,6 +86,11 @@ test("the People search box filters server-side", async ({ page }) => {
     { full_name: `${tag} findable`, email: `${tag}@example.com`, employee_number: `EMP-${tag}` });
 
   await page.reload();
+  // `.count()` does NOT auto-wait — it answers immediately, so reading it straight after a
+  // reload returns 0 on any run slow enough that the table has not painted yet. Wait for a
+  // row to exist first, THEN count. (This spec passed in isolation and failed in the full
+  // suite for exactly that reason.)
+  await expect(page.locator("tbody tr").first()).toBeVisible();
   const before = await page.locator("tbody tr").count();
   expect(before).toBeGreaterThan(1);
 

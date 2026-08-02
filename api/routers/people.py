@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, insert, select, text, update
 
-from api import activity, importer, xlsx_io
+from api import activity, importer, passwords, xlsx_io
 from api.auth import Principal, get_current_user
 from api.permissions import require
 from api.database import engine, get_conn, t
@@ -145,9 +145,21 @@ def person_detail(person_id: str, user: Principal = Depends(require("people", "v
     reports = [dict(r) for r in conn.execute(
         select(p.c.id, p.c.full_name, p.c.position)
         .where(p.c.manager_id == person_id)).mappings()]
+    # P5-S8: which role their login actually holds. Without this the drawer can say "has a
+    # login" but not what it can do, which is the half of the answer that matters.
+    role = None
+    if d["user_id"]:
+        tm, roles = t("tenant_members"), t("roles")
+        role = conn.execute(
+            select(roles.c.id, roles.c.name)
+            .select_from(tm.join(roles, tm.c.role_id == roles.c.id))
+            .where(tm.c.tenant_id == user.tenant_id,
+                   tm.c.user_id == d["user_id"])).mappings().first()
     return {**d, "effective_state": _effective(d, today_iso()),
             "manager": dict(mgr) if mgr else None, "reports": reports,
-            "has_login": d["user_id"] is not None}
+            "has_login": d["user_id"] is not None,
+            "role_id": role["id"] if role else None,
+            "role_name": role["name"] if role else None}
 
 
 @router.post("", status_code=201)
@@ -166,8 +178,21 @@ def create_person(body: PersonIn, user: Principal = Depends(require("people", "a
     return {"id": pid}
 
 
+def _long_expired() -> str:
+    """A password-history timestamp far enough in the past that the 30-day policy has already
+    elapsed, so `must_change_password` is true the moment the account first signs in."""
+    import datetime as dt
+
+    return (dt.date.today() - dt.timedelta(days=passwords.MAX_AGE_DAYS + 1)
+            ).isoformat() + "T00:00:00Z"
+
+
 class InviteIn(StrictModel):
     role_id: str | None = None          # defaults to the Viewer system role
+    #: P5-S8. When supplied, the admin sets a TEMPORARY password instead of sending a
+    #: set-your-own link. It is forced to be changed at first sign-in — see `invite_person`.
+    #: Only ever honoured for an account this call creates; never for a pre-existing one.
+    password: str | None = None
 
 
 @router.post("/{person_id}/invite", status_code=201)
@@ -175,13 +200,30 @@ def invite_person(person_id: str, body: InviteIn,
                   user: Principal = Depends(require("users", "add"))):
     """Give a person a login.
 
-    Creates the user in `invited` state with NO password — they set their own via the
-    returned link — plus a membership carrying the chosen role, and bridges the two through
-    the existing `people.user_id` column. Staff who never sign in still attest by magic
-    link, so this is additive.
+    Creates the account plus a membership carrying the chosen role, and bridges the two
+    through the existing `people.user_id` column. Staff who never sign in still attest by
+    magic link, so this is additive.
 
-    The link is returned in the response (there is no mailer yet — same copy-the-link
-    approach as attestation).
+    Two ways to set the password, and the difference is a security boundary, not a preference:
+
+    * **`password` supplied** (P5-S8, what the People form does) — the admin sets a temporary
+      one and hands it over. It is immediately backdated past the 30-day expiry so
+      `must_change_password` is already true, and the account cannot reach a single screen
+      before choosing its own. That matters because this product carries legally-meaningful
+      `electronic_signatures`: a live password the admin knows would make every signature
+      under it repudiable.
+    * **omitted** — the account is created with no password and a single-use link is returned
+      for them to set their own (there is no mailer; same copy-the-link approach as
+      attestation).
+
+    **Neither is ever applied to an account that already exists.** `users.email` is globally
+    unique, so an email belonging to another organisation's user resolves to *that* account.
+    Minting a set-password token for it — and handing it to the caller in the response — was a
+    working cross-tenant account takeover: any member with `users.add` anywhere could seize any
+    account whose email they knew. Verified end to end, then closed (see
+    `test_cannot_take_over_an_existing_account_from_another_tenant`). An existing account is
+    still attached to this organisation, because one person genuinely can work for two — they
+    simply sign in with the credentials they already have.
     """
     from api.routers.auth import issue_invite
 
@@ -204,14 +246,23 @@ def invite_person(person_id: str, body: InviteIn,
                 t("roles").c.tenant_id == user.tenant_id)).first() is None:
             raise HTTPException(400, "that role is not in this organisation")
 
-        # users.email is globally unique — an existing login is attached, not duplicated
+        # users.email is globally unique — an existing login is attached, not duplicated.
+        # `fresh` is the security-relevant bit: only an account we just created here may have
+        # its password set or a set-password link minted for it.
         uid = conn.execute(select(users.c.id).where(users.c.email == person["email"])).scalar()
-        if uid is None:
+        fresh = uid is None
+        if fresh:
             uid = str(uuid.uuid4())
             conn.execute(insert(users).values(
                 id=uid, email=person["email"], full_name=person["full_name"],
                 auth_provider="local", is_platform_admin=0, status="invited",
                 created_at=now_iso()))
+        elif body.password:
+            # Refusing loudly rather than silently ignoring it: the admin typed a password and
+            # must not walk away believing they set one.
+            raise HTTPException(409, f"{person['email']} already has an account — it has been "
+                                     f"added to this organisation, but its password can only "
+                                     f"be changed by whoever owns it")
 
         already = conn.execute(select(t("tenant_members").c.id).where(
             t("tenant_members").c.tenant_id == user.tenant_id,
@@ -222,13 +273,118 @@ def invite_person(person_id: str, body: InviteIn,
                 role="member", role_id=role_id, created_at=now_iso()))
         # the composite FK requires the membership to exist first
         conn.execute(update(p).where(p.c.id == person_id).values(user_id=uid))
-        raw = issue_invite(conn, tenant_id=user.tenant_id, user_id=uid,
-                           invited_by=user.user_id)
+
+        raw = None
+        if not fresh:
+            # Attached an account somebody else already owns: no token, no password. They
+            # sign in with what they have.
+            pass
+        elif body.password:
+            try:
+                passwords.set_password(conn, uid, body.password)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from None
+            # Backdate the history row past MAX_AGE_DAYS so `must_change_password` is already
+            # true — the account is forced through ChangePassword before any screen loads.
+            # Re-using the existing expiry rather than inventing a `must_change` column keeps
+            # one mechanism enforcing this, in the API as well as the UI.
+            h = t("user_password_history")
+            conn.execute(update(h).where(h.c.user_id == uid, h.c.level == 0)
+                         .values(changed_at=_long_expired()))
+        else:
+            raw = issue_invite(conn, tenant_id=user.tenant_id, user_id=uid,
+                               invited_by=user.user_id)
 
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="person.invited", entity_type="person", entity_id=person_id,
-                 detail={"email": person["email"]})
-    return {"user_id": uid, "invite_path": f"/accept-invite/{raw}", "token": raw}
+                 detail={"email": person["email"], "temporary_password": bool(body.password)})
+    return {
+        "user_id": uid,
+        "existing_account": not fresh,
+        "temporary_password": fresh and bool(body.password),
+        "invite_path": f"/accept-invite/{raw}" if raw else None,
+        "token": raw,
+    }
+
+
+class LoginPatch(StrictModel):
+    role_id: str
+
+
+@router.patch("/{person_id}/login")
+def change_person_role(person_id: str, body: LoginPatch,
+                       user: Principal = Depends(require("users", "edit"))):
+    """Change which role a person's login holds.
+
+    Permissions resolve per request from the database (P4-S2), so this bites immediately —
+    a demotion does not wait for the user's token to expire.
+    """
+    p = t("people")
+    with engine.begin() as conn:
+        person = conn.execute(select(p).where(
+            p.c.id == person_id, p.c.tenant_id == user.tenant_id)).mappings().first()
+        if person is None:
+            raise HTTPException(404, "person not found")
+        if not person["user_id"]:
+            raise HTTPException(409, f"{person['full_name']} does not have a login yet")
+        if conn.execute(select(t("roles").c.id).where(
+                t("roles").c.id == body.role_id,
+                t("roles").c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "that role is not in this organisation")
+
+        tm = t("tenant_members")
+        conn.execute(tm.update().where(tm.c.tenant_id == user.tenant_id,
+                                       tm.c.user_id == person["user_id"])
+                     .values(role_id=body.role_id))
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="person.role_changed", entity_type="person", entity_id=person_id,
+                 detail={"role_id": body.role_id})
+    return {"ok": True}
+
+
+@router.delete("/{person_id}/login")
+def revoke_person_login(person_id: str,
+                        user: Principal = Depends(require("users", "delete"))):
+    """Remove someone's access without deleting the person.
+
+    The person record stays — their history, ownerships and signatures are all still theirs.
+    Only the membership goes, and `people.user_id` is cleared. The `users` row itself is left
+    alone deliberately: it may be a member of other organisations, and deleting it would reach
+    outside this tenant.
+
+    Two guards, both of which lock an organisation out of itself if missed: you cannot revoke
+    **your own** access, and you cannot revoke the **Super Admin**, who is the only account
+    guaranteed to be able to hand it back.
+    """
+    p = t("people")
+    with engine.begin() as conn:
+        person = conn.execute(select(p).where(
+            p.c.id == person_id, p.c.tenant_id == user.tenant_id)).mappings().first()
+        if person is None:
+            raise HTTPException(404, "person not found")
+        uid = person["user_id"]
+        if not uid:
+            raise HTTPException(409, f"{person['full_name']} does not have a login")
+        if uid == user.user_id:
+            raise HTTPException(400, "you cannot remove your own access — ask another "
+                                     "administrator to do it")
+        super_admin = conn.execute(select(t("tenants").c.super_admin_user_id).where(
+            t("tenants").c.id == user.tenant_id)).scalar()
+        if uid == super_admin:
+            raise HTTPException(400, "the Super Admin's access cannot be removed — transfer "
+                                     "the organisation first")
+
+        # ORDER MATTERS: people.user_id carries a composite FK onto the membership, so the
+        # link must be cleared before the membership row can go.
+        conn.execute(update(p).where(p.c.id == person_id).values(user_id=None))
+        tm = t("tenant_members")
+        conn.execute(tm.delete().where(tm.c.tenant_id == user.tenant_id, tm.c.user_id == uid))
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="person.login_revoked", entity_type="person", entity_id=person_id,
+                 detail={"user_id": uid})
+    return {"ok": True}
 
 
 @router.patch("/{person_id}")

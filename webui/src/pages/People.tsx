@@ -2,7 +2,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
-import { useCan } from "../lib/auth";
+import { useAuth, useCan } from "../lib/auth";
 import { LookupSelect } from "./Registers";
 import { Column, DataTable } from "../components/DataTable";
 import {
@@ -19,7 +19,10 @@ type Detail = Person & {
   manager: { id: string; full_name: string } | null;
   reports: { id: string; full_name: string; position: string | null }[];
   has_login: boolean;
+  role_id: string | null;      // P5-S8 — "has a login" without "holding what?" is half an answer
+  role_name: string | null;
 };
+type Role = { id: string; name: string; description?: string | null };
 
 const initials = (n: string) =>
   n.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
@@ -57,12 +60,37 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
   const [err, setErr] = useState("");
   const set = (k: string) => (e: any) => setF({ ...f, [k]: e.target.value });
 
+  // P5-S8 — the optional login. Off by default: most staff never sign in, which is the
+  // load-bearing decision this whole module is built on (D-SIGN), and a form that implies
+  // otherwise would push every field engineer towards an account they do not need.
+  const canGrant = useCan()("users", "add");
+  const [withLogin, setWithLogin] = useState(false);
+  const [login, setLogin] = useState({ role_id: "", password: "" });
+  const roles = useQuery({
+    queryKey: ["roles"], queryFn: () => get<Role[]>("/roles"), enabled: canGrant });
+  const roleList = roles.data ?? [];
+  // Default to Viewer — the same default the API applies, and the safe one to land on.
+  const roleId = login.role_id || roleList.find((r) => r.name === "Viewer")?.id || "";
+
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const body: any = Object.fromEntries(
         Object.entries(f).map(([k, v]) => [k, v === "" ? null : v]));
       if (editing) { delete body.email; return api.patch(`/people/${editing.id}`, body); }
-      return api.post("/people", body);
+      const made = await api.post("/people", body);
+      if (withLogin) {
+        // Two calls, not one: `POST /people` and the invite are separate endpoints with
+        // separate permissions (`people.add` vs `users.add`). If the second fails the person
+        // still exists — so the error says exactly that rather than implying nothing saved.
+        try {
+          await api.post(`/people/${made.data.id}/invite`,
+                         { role_id: roleId, password: login.password });
+        } catch (e: any) {
+          throw new Error(errText(e, "Could not create the login.") +
+            ` — ${f.full_name} was added, but without one. Grant it from their profile.`);
+        }
+      }
+      return made;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["people"] });
@@ -116,11 +144,48 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
             <input type="date" value={f.contract_end_date} onChange={set("contract_end_date")} className={inputCls + " mt-1"} />
           </label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
-        <p className="rounded-md bg-canvas px-3 py-2 text-[11.5px] text-txt2">
-          Adding a person does <b>not</b> create a login. They'll sign policies by emailed link.
-          Grant an account from <b>Admin → Members</b> only if they need to sign in.
-        </p>
+        {!editing && canGrant && (
+          <div className="rounded-md border border-bd">
+            <label className="flex cursor-pointer items-start gap-2.5 px-3 py-2.5">
+              <input type="checkbox" checked={withLogin} className="mt-0.5"
+                onChange={(e) => setWithLogin(e.target.checked)} />
+              <span className="text-[12.5px]">
+                <span className="font-medium">Give them a login</span>
+                <span className="block text-[11.5px] text-txt3">
+                  Most people never need one — they sign policies by emailed link. Tick this
+                  only for someone who has to sign in.
+                </span>
+              </span>
+            </label>
+            {withLogin && (
+              <div className="grid grid-cols-2 gap-3 border-t border-bd px-3 py-3">
+                <label className="text-[13px] font-medium">Role
+                  <select value={roleId} onChange={(e) => setLogin({ ...login, role_id: e.target.value })}
+                    className={inputCls + " mt-1"}>
+                    {roleList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                </label>
+                <label className="text-[13px] font-medium">Temporary password
+                  <input value={login.password} required minLength={8} autoComplete="new-password"
+                    onChange={(e) => setLogin({ ...login, password: e.target.value })}
+                    className={inputCls + " mt-1"} />
+                </label>
+                <p className="col-span-2 text-[11.5px] text-txt3">
+                  They sign in with <b>{f.email || "their email address"}</b> and this password,
+                  and must choose their own before they can use anything — so a password you
+                  know can never be the one behind their signatures.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+        {err && <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {!withLogin && (
+          <p className="rounded-md bg-canvas px-3 py-2 text-[11.5px] text-txt2">
+            Adding a person does <b>not</b> create a login. They'll sign policies by emailed
+            link — tick <b>Give them a login</b> above, or grant one later from their profile.
+          </p>
+        )}
         <button disabled={save.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {save.isPending ? "Saving…" : editing ? "Save changes" : "Add person"}
         </button>
@@ -222,6 +287,134 @@ function ImportModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * The login controls for one person (P5-S8).
+ *
+ * Sumit: *"i dont see any menu, how am i supposed to create login details for any employee,
+ * and why separate menu, in the people menu itself."* Correct on both counts — the form
+ * pointed at "Admin → Members", a screen that has never existed, while
+ * `POST /people/{id}/invite` sat complete and uncalled since P4-S2. So the whole lifecycle
+ * lives here, on the person, rather than behind a separate menu.
+ *
+ * "No login" stays the celebrated default: it is the load-bearing decision of this module,
+ * and most staff genuinely never need an account.
+ */
+function LoginCard({ person }: { person: Detail }) {
+  const qc = useQueryClient();
+  const can = useCan();
+  const { user } = useAuth();
+  const [granting, setGranting] = useState(false);
+  const [role, setRole] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+
+  const roles = useQuery({
+    queryKey: ["roles"], queryFn: () => get<Role[]>("/roles"),
+    enabled: can("users", "add") || can("users", "edit") });
+  const roleList = roles.data ?? [];
+  const done = () => {
+    setErr(""); setGranting(false); setPassword("");
+    qc.invalidateQueries({ queryKey: ["person", person.id] });
+    qc.invalidateQueries({ queryKey: ["people"] });
+  };
+  const fail = (fallback: string) => (e: any) => setErr(errText(e, fallback));
+
+  const grant = useMutation({
+    mutationFn: () => api.post(`/people/${person.id}/invite`, {
+      role_id: role || roleList.find((r) => r.name === "Viewer")?.id, password }),
+    onSuccess: done, onError: fail("Could not create the login."),
+  });
+  const changeRole = useMutation({
+    mutationFn: (role_id: string) => api.patch(`/people/${person.id}/login`, { role_id }),
+    onSuccess: done, onError: fail("Could not change the role."),
+  });
+  const revoke = useMutation({
+    mutationFn: () => api.delete(`/people/${person.id}/login`),
+    onSuccess: done, onError: fail("Could not remove the access."),
+  });
+
+  const isMe = person.user_id === user?.user_id;
+
+  if (!person.has_login) {
+    return (
+      <Card className="border-l-[3px] border-l-na">
+        <div className="eyebrow mb-1">No login — this is normal</div>
+        <p className="text-[12.5px] text-txt2">
+          {person.full_name.split(" ")[0]} doesn't need an account. When a policy needs signing,
+          they get a one-time link at <span className="font-mono">{person.email}</span>; the
+          signature still records consent, IP and a hash of the exact version signed.
+        </p>
+        {can("users", "add") && !granting && (
+          <button onClick={() => setGranting(true)} className="btn mt-3">Give them a login</button>
+        )}
+        {granting && (
+          <form className="mt-3 flex flex-col gap-2"
+            onSubmit={(e) => { e.preventDefault(); setErr(""); grant.mutate(); }}>
+            <label className="text-[12.5px] font-medium">Role
+              <select value={role || roleList.find((r) => r.name === "Viewer")?.id || ""}
+                onChange={(e) => setRole(e.target.value)} className={inputCls + " mt-1"}>
+                {roleList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </label>
+            <label className="text-[12.5px] font-medium">Temporary password
+              <input value={password} required minLength={8} autoComplete="new-password"
+                onChange={(e) => setPassword(e.target.value)} className={inputCls + " mt-1"} />
+            </label>
+            <p className="text-[11.5px] text-txt3">
+              They sign in with <span className="font-mono">{person.email}</span> and must
+              choose their own password before they can use anything.
+            </p>
+            {err && <div role="alert" className="rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+            <div className="flex gap-2">
+              <button disabled={grant.isPending} className="btn btn-primary disabled:opacity-50">
+                {grant.isPending ? "Creating…" : "Create login"}
+              </button>
+              <button type="button" onClick={() => { setGranting(false); setErr(""); }}
+                className="btn">Cancel</button>
+            </div>
+          </form>
+        )}
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-l-[3px] border-l-info">
+      <div className="eyebrow mb-1">Has a login</div>
+      <p className="text-[12.5px] text-txt2">
+        Signs in as <span className="font-mono">{person.email}</span>
+        {person.role_name && <> holding the <b>{person.role_name}</b> role</>}.
+      </p>
+      {can("users", "edit") && (
+        <label className="mt-3 block text-[12.5px] font-medium">Role
+          <select value={person.role_id ?? ""} disabled={changeRole.isPending}
+            onChange={(e) => changeRole.mutate(e.target.value)}
+            className={inputCls + " mt-1"}>
+            {roleList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </label>
+      )}
+      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+      {can("users", "delete") && !isMe && (
+        <button
+          onClick={() => { if (confirm(
+              `Remove ${person.full_name}'s access?\n\nThey stay in People — their history, ` +
+              `ownerships and signatures are untouched. They simply can no longer sign in.`))
+            { setErr(""); revoke.mutate(); } }}
+          disabled={revoke.isPending}
+          className="btn mt-3 text-bad hover:border-bad disabled:opacity-50">
+          {revoke.isPending ? "Removing…" : "Remove access"}
+        </button>
+      )}
+      {isMe && (
+        <p className="mt-3 text-[11.5px] text-txt3">
+          This is your own account — another administrator has to change or remove it.
+        </p>
+      )}
+    </Card>
+  );
+}
+
 function PersonDrawer({ id, onClose, onEdit }:
   { id: string; onClose: () => void; onEdit: (d: Detail) => void }) {
   const { data } = useQuery({ queryKey: ["person", id], queryFn: () => get<Detail>(`/people/${id}`) });
@@ -244,16 +437,7 @@ function PersonDrawer({ id, onClose, onEdit }:
           </div>
         ))}
       </Card>
-      {!data.has_login && (
-        <Card className="border-l-[3px] border-l-na">
-          <div className="eyebrow mb-1">No login — this is normal</div>
-          <p className="text-[12.5px] text-txt2">
-            {data.full_name.split(" ")[0]} doesn't need an account. When a policy needs signing,
-            they get a one-time link at <span className="font-mono">{data.email}</span>; the
-            signature still records consent, IP and a hash of the exact version signed.
-          </p>
-        </Card>
-      )}
+      <LoginCard person={data} />
       <Card>
         <div className="eyebrow mb-2">Direct reports ({data.reports.length})</div>
         {data.reports.length === 0
