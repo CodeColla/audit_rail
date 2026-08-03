@@ -16,7 +16,8 @@ from sqlalchemy.exc import IntegrityError
 
 # NB: `gstin` is intentionally NOT imported any more. It still exists, still works
 # and is still tested — signup just no longer validates against it (P5-S6).
-from api import activity, domains, passwords, permissions, vocabularies
+from api import (activity, control_library, domains, frameworks, passwords,
+                 permissions, vocabularies)
 from api.auth import (Principal, authenticate, create_access_token, get_caller,
                       get_current_user, memberships)
 from api.database import engine, t
@@ -61,6 +62,12 @@ def _create_org(conn, *, name: str, gst: str | None, super_admin_user_id: str) -
     domains.seed(conn, tid)                    # …and the 16-domain control framework —
     # without this, controls.domain_id (NOT NULL) makes "Add control" a dead end for
     # every organisation except the one scripts/init_db.py seeded by hand
+    # …and the controls themselves (P5-S9). MUST run after domains.seed: it resolves each
+    # control's domain by code, and controls.domain_id is NOT NULL. Empty domains were only
+    # half the fix — an org still opened Controls to nothing at all.
+    control_library.seed(conn, tid)
+    # …and the certification frameworks those controls get mapped to (P5-S9).
+    frameworks.seed(conn, tid)
     return tid
 
 

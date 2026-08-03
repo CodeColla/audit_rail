@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
@@ -128,9 +128,15 @@ export default function Controls() {
     <>
       <PageHead eyebrow="Standard control framework" title="Controls"
         lead="Your own master list of controls. Every bank's checklist points map onto these, so one answer serves every audit."
-        action={can("controls", "add")
-          ? <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New control</button>
-          : undefined} />
+        action={
+          <div className="flex gap-2">
+            {/* P5-S9: certification readiness lives beside Controls rather than in the
+                sidebar — a framework is a lens over this library, not a separate module. */}
+            <Link to="/frameworks" className="btn">Certifications</Link>
+            {can("controls", "add") && (
+              <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New control</button>
+            )}
+          </div>} />
 
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["framework", "crosswalk"] as const).map((t) => (

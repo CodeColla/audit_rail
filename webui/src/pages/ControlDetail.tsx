@@ -41,9 +41,16 @@ type LinkedDocument = {
   id: string; title: string; document_type: string; status: string;
   published_version: string | null;
 };
+type LinkedClause = {
+  id: string; ref: string; title: string;
+  framework_id: string; framework_code: string; framework_name: string;
+};
+type Framework = { id: string; code: string; name: string; version: string | null };
+type Clause = { id: string; ref: string; title: string };
 type Detail = Control & {
   mapped_points: MappedPoint[]; linked_risks: LinkedRisk[]; linked_obligations: LinkedObligation[];
   linked_evidence: LinkedEvidence[]; linked_documents: LinkedDocument[];
+  linked_clauses: LinkedClause[];
 };
 type Evidence = { id: string; title: string; evidence_type: string };
 type Doc = { id: string; title: string; document_type: string };
@@ -342,6 +349,102 @@ function AttachDocument({ controlId, linked, canEdit }:
   );
 }
 
+/**
+ * Which certification clauses this control satisfies (P5-S9).
+ *
+ * The card that makes the whole design visible. One control is expected to appear against ISO
+ * A.8.5 AND SOC 2 CC6.1 AND an RBI clause at the same time — that is precisely why there is
+ * one control library with clause tags rather than a separate master control set per
+ * certification, which would duplicate this control three times with three evidence trails.
+ */
+function SatisfiesClauses({ controlId, linked, canEdit }:
+  { controlId: string; linked: LinkedClause[]; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [picking, setPicking] = useState(false);
+  const [frameworkId, setFrameworkId] = useState("");
+
+  const frameworks = useQuery({
+    queryKey: ["frameworks"], queryFn: () => get<Framework[]>("/frameworks"),
+    enabled: picking });
+  const fwList = frameworks.data ?? [];
+  const activeFw = frameworkId || fwList[0]?.id || "";
+  const clauses = useQuery({
+    queryKey: ["framework-clauses", activeFw],
+    queryFn: () => get<Clause[]>(`/frameworks/${activeFw}/clauses`),
+    enabled: picking && !!activeFw });
+
+  const done = () => qc.invalidateQueries({ queryKey: ["control", controlId] });
+  const link = useMutation({
+    mutationFn: (clause_id: string) =>
+      api.post(`/library/controls/${controlId}/clauses`, { clause_id }),
+    onSuccess: () => { done(); setPicking(false); },
+  });
+  const unlink = useMutation({
+    mutationFn: (clause_id: string) =>
+      api.delete(`/library/controls/${controlId}/clauses/${clause_id}`),
+    onSuccess: done,
+  });
+
+  const linkedIds = new Set(linked.map((c) => c.id));
+  // grouped by framework, because "this answers three standards" is the point being made
+  const byFramework = linked.reduce<Record<string, LinkedClause[]>>((acc, c) => {
+    (acc[c.framework_code] ??= []).push(c);
+    return acc;
+  }, {});
+
+  return (
+    <Card>
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="eyebrow">Satisfies</div>
+        {canEdit && (
+          <button onClick={() => setPicking((s) => !s)}
+            className="text-[12px] font-medium text-accent">＋ Map a clause</button>
+        )}
+      </div>
+      {linked.length === 0 && (
+        <div className="text-[12.5px] text-txt3">
+          Not mapped to any certification clause yet. Mapping it here is what makes this
+          control — and its evidence — count toward ISO, SOC 2 or an RBI requirement.
+        </div>
+      )}
+      {Object.entries(byFramework).map(([code, rows]) => (
+        <div key={code} className="border-t border-bd py-2 first:border-t-0">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.09em] text-txt3">
+            {code}
+          </div>
+          {rows.map((c) => (
+            <div key={c.id} className="flex items-baseline gap-2.5 py-0.5 text-[12.5px]">
+              <span className="shrink-0 font-mono text-[11.5px] font-medium">{c.ref}</span>
+              <span className="min-w-0 flex-1 truncate text-txt2">{c.title}</span>
+              {canEdit && (
+                <button onClick={() => unlink.mutate(c.id)}
+                  className="shrink-0 text-[11.5px] text-bad hover:underline">remove</button>
+              )}
+            </div>
+          ))}
+        </div>
+      ))}
+      {picking && (
+        <div className="mt-2 rounded-md border border-bd">
+          <select value={activeFw} onChange={(e) => setFrameworkId(e.target.value)}
+            aria-label="Framework" className={inputCls + " rounded-b-none border-0 border-b"}>
+            {fwList.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+          <div className="max-h-48 overflow-y-auto">
+            {(clauses.data ?? []).filter((c) => !linkedIds.has(c.id)).map((c) => (
+              <button key={c.id} onClick={() => link.mutate(c.id)}
+                className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-canvas">
+                <span className="shrink-0 font-mono text-[11.5px] font-medium">{c.ref}</span>
+                <span className="min-w-0 flex-1 truncate text-txt2">{c.title}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ─────────────────────────────────────────────────────── page
 export default function ControlDetail() {
   const { id } = useParams();
@@ -460,6 +563,7 @@ export default function ControlDetail() {
         )}
         <AttachEvidence controlId={doc.id} linked={doc.linked_evidence} canEdit={canEdit} />
         <AttachDocument controlId={doc.id} linked={doc.linked_documents} canEdit={canEdit} />
+        <SatisfiesClauses controlId={doc.id} linked={doc.linked_clauses ?? []} canEdit={canEdit} />
       </div>
     </>
   );

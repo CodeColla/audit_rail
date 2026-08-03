@@ -142,6 +142,22 @@ def main() -> None:
                 "VALUES (:i,:t,:c,:n,:o)"),
                 {"i": uid(), "t": tenant_id, "c": code, "n": name, "o": i})
 
+        # ── certification frameworks + their clauses (P5-S9) ─────────────────
+        # Raw SQL like everything else in this function: the reflected metadata is not
+        # available while the schema is still being built in this same transaction.
+        from api.frameworks import BASELINE  # noqa: E402
+        for code, (fname, version, clauses) in BASELINE.items():
+            fid = uid()
+            conn.execute(text(
+                "INSERT INTO frameworks (id,tenant_id,code,name,version,source) "
+                "VALUES (:i,:t,:c,:n,:v,'AUTHORED')"),
+                {"i": fid, "t": tenant_id, "c": code, "n": fname, "v": version})
+            for i, (ref, title) in enumerate(clauses):
+                conn.execute(text(
+                    "INSERT INTO framework_clauses (id,tenant_id,framework_id,ref,title,"
+                    "sort_order) VALUES (:i,:t,:f,:r,:ti,:o)"),
+                    {"i": uid(), "t": tenant_id, "f": fid, "r": ref, "ti": title, "o": i})
+
         # ── the 3 checklists → templates / sections / questions ─────────────
         records = json.loads(CONTROLS_JSON.read_text())
         by_source: dict = {}

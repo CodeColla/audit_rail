@@ -183,11 +183,24 @@ def control_detail(
         .where(cd.c.control_id == control_id)
         .order_by(documents.c.title)
     ).mappings().all()
+    # certification clauses this control satisfies (P5-S9). Many-to-many by design: the same
+    # control routinely answers ISO, SOC 2 and an RBI clause at once, which is what lets the
+    # evidence above be gathered once and count toward every certification.
+    ccm, fc, fw = t("control_clause_map"), t("framework_clauses"), t("frameworks")
+    linked_clauses = conn.execute(
+        select(fc.c.id, fc.c.ref, fc.c.title, fw.c.id.label("framework_id"),
+               fw.c.code.label("framework_code"), fw.c.name.label("framework_name"))
+        .select_from(ccm.join(fc, ccm.c.clause_id == fc.c.id)
+                        .join(fw, fc.c.framework_id == fw.c.id))
+        .where(ccm.c.control_id == control_id, ccm.c.tenant_id == user.tenant_id)
+        .order_by(fw.c.code, fc.c.sort_order, fc.c.ref)
+    ).mappings().all()
     return {**dict(row), "mapped_points": [dict(m) for m in mapped],
             "linked_risks": [dict(r) for r in linked_risks],
             "linked_obligations": [dict(o) for o in linked_obligations],
             "linked_evidence": linked_evidence,
-            "linked_documents": [dict(d) for d in linked_documents]}
+            "linked_documents": [dict(d) for d in linked_documents],
+            "linked_clauses": [dict(c) for c in linked_clauses]}
 
 
 # ------------------------------------------------------------------ write path (P4-S5)
@@ -477,6 +490,53 @@ def unlink_control_document(control_id: str, document_id: str,
         conn.execute(delete(cd).where(
             cd.c.tenant_id == user.tenant_id, cd.c.control_id == control_id,
             cd.c.document_id == document_id))
+    return {"ok": True}
+
+
+class ControlClauseIn(StrictModel):
+    clause_id: str
+    note: str | None = None
+
+
+@router.post("/controls/{control_id}/clauses", status_code=201)
+def link_control_clause(control_id: str, body: ControlClauseIn,
+                        user: Principal = Depends(require("controls", "edit"))):
+    """Record that this control satisfies a framework clause (P5-S9).
+
+    Many-to-many on purpose: the SAME control is expected to be linked to ISO A.8.5, SOC 2
+    CC6.1 and an RBI clause at once. That is what lets evidence be gathered once and count
+    toward every certification, instead of maintaining a parallel control set per standard.
+    """
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        fc = t("framework_clauses")
+        if conn.execute(select(fc.c.id).where(
+                fc.c.id == body.clause_id,
+                fc.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "clause not found in this organisation")
+        try:
+            conn.execute(insert(t("control_clause_map")).values(
+                tenant_id=user.tenant_id, control_id=control_id, clause_id=body.clause_id,
+                note=_norm({"note": body.note})["note"], created_at=now_iso()))
+        except IntegrityError as e:
+            if not _is_unique_violation(e):
+                raise
+            raise HTTPException(409, "that clause is already linked to this control")
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="control.clause_linked", entity_type="control", entity_id=control_id,
+                 detail={"clause_id": body.clause_id})
+    return {"ok": True}
+
+
+@router.delete("/controls/{control_id}/clauses/{clause_id}")
+def unlink_control_clause(control_id: str, clause_id: str,
+                          user: Principal = Depends(require("controls", "edit"))):
+    with engine.begin() as conn:
+        _control(conn, user.tenant_id, control_id)
+        ccm = t("control_clause_map")
+        conn.execute(delete(ccm).where(
+            ccm.c.tenant_id == user.tenant_id, ccm.c.control_id == control_id,
+            ccm.c.clause_id == clause_id))
     return {"ok": True}
 
 

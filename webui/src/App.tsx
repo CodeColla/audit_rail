@@ -9,6 +9,7 @@ import AuditorEntry from "./pages/AuditorEntry";
 import Sign from "./pages/Sign";
 import Dashboard from "./pages/Dashboard";
 import Controls from "./pages/Controls";
+import Frameworks from "./pages/Frameworks";
 import ControlDetail from "./pages/ControlDetail";
 import Registers from "./pages/Registers";
 import Risks from "./pages/Risks";
@@ -79,6 +80,8 @@ export default function App() {
         <Route path="/audits/:id" element={<Workspace />} />
         <Route path="/people" element={<People />} />
         <Route path="/controls" element={<Controls />} />
+        <Route path="/frameworks" element={<Frameworks />} />
+        <Route path="/frameworks/:id" element={<Frameworks />} />
         {/* P4-S3: the five registers are top-level modules with deep-linkable rows.
             /registers redirects to /risks so old links still work. */}
         <Route path="/registers" element={<Registers />} />
