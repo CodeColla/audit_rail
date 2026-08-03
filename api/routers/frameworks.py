@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import json
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity
+from api import activity, importer, xlsx_io
+from api.config import settings
 from api.auth import Principal
 from api.database import engine, get_conn, t
 from api.permissions import require
@@ -257,3 +260,115 @@ def readiness(framework_id: str, user: Principal = Depends(require("controls", "
                     "controls": [{"id": x["id"], "code": x["code"],
                                   "statement": x["statement"]} for x in controls]})
     return {"clauses": out, "summary": tally, "total": len(out)}
+
+
+# ─────────────────────────────────────────────────────────────── clause import
+
+#: One spec drives the downloadable template, the mapping UI and the row builder — the same
+#: shape `api/register_imports.py` uses, and for the same reason: a column that exists in one
+#: and not the others is drift nobody notices until an import silently drops data.
+CLAUSE_COLUMNS = [
+    {"key": "ref", "label": "Reference", "required": True,
+     "help": "the clause number as the standard writes it, e.g. A.8.5 or CC6.1"},
+    {"key": "title", "label": "Title", "required": True,
+     "help": "the clause's short name"},
+    {"key": "description", "label": "Description", "required": False,
+     "help": "the full text, if your licence lets you store it"},
+]
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _build_clause(mapped: dict, _resolver) -> dict:
+    return {
+        "ref": importer.require(mapped, "ref", "Reference"),
+        "title": importer.require(mapped, "title", "Title"),
+        "description": (mapped.get("description") or "").strip() or None,
+    }
+
+
+def _clause_friendly(e: Exception) -> str:
+    s = str(getattr(e, "orig", e))
+    if "duplicate key" in s:
+        return "this framework already has a clause with that reference"
+    return s.split("\n")[0][:200]
+
+
+@router.get("/{framework_id}/import/columns")
+def clause_import_columns(framework_id: str,
+                          user: Principal = Depends(require("controls", "view")),
+                          conn=Depends(get_conn)):
+    f = _framework(conn, user.tenant_id, framework_id)
+    return {"noun": f"{f['name']} clauses", "columns": CLAUSE_COLUMNS}
+
+
+@router.get("/{framework_id}/import/template.xlsx")
+def clause_import_template(framework_id: str,
+                           user: Principal = Depends(require("controls", "view")),
+                           conn=Depends(get_conn)):
+    f = _framework(conn, user.tenant_id, framework_id)
+    data = xlsx_io.build_template(CLAUSE_COLUMNS, sheet_name="Clauses")
+    return Response(data, media_type=XLSX_MIME, headers={
+        "Content-Disposition": f'attachment; filename="{f["code"]}-clauses-template.xlsx"'})
+
+
+@router.post("/{framework_id}/import")
+async def import_clauses(
+    framework_id: str,
+    file: UploadFile = File(...),
+    mapping: str | None = Form(None, description="JSON {our_field: their_header}"),
+    user: Principal = Depends(require("controls", "edit")),
+):
+    """Bring your own clause list.
+
+    This is the primary path for any standard we do not ship, and the reason we never have to
+    bundle licensed text: an organisation with a copy of ISO 27001 or the TSC pastes its own
+    wording into a spreadsheet and imports it. Row-level errors are reported individually, so
+    one malformed reference does not cost the other four hundred.
+    """
+    with engine.begin() as conn:
+        _framework(conn, user.tenant_id, framework_id)
+
+    raw = await file.read()
+    if len(raw) > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {settings.max_upload_mb} MB limit")
+    try:
+        headers, rows = xlsx_io.read_rows(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception:                                            # noqa: BLE001
+        raise HTTPException(400, "could not read that file — is it a .xlsx or .csv?") from None
+    if not rows:
+        raise HTTPException(400, "that file has a header row but no data rows")
+
+    if mapping:
+        try:
+            user_map = json.loads(mapping)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "mapping must be JSON") from None
+        if not isinstance(user_map, dict):
+            raise HTTPException(400, "mapping must be a JSON object")
+        known = {c["key"] for c in CLAUSE_COLUMNS}
+        col_map = {k: v for k, v in user_map.items() if k in known and v in headers}
+    else:
+        # A downloaded-and-filled template just works. Nothing fuzzier: guessing that
+        # "Clause No." means `ref` is how an import quietly fills the wrong column.
+        col_map = {c["key"]: c["label"] for c in CLAUSE_COLUMNS if c["label"] in headers}
+
+    missing = [c for c in CLAUSE_COLUMNS if c["required"] and c["key"] not in col_map]
+    if missing:
+        raise HTTPException(400, "map a column to " + ", ".join(c["label"] for c in missing))
+
+    with engine.begin() as conn:
+        # `framework_clauses` has no created_at/updated_at, and framework_id comes from the
+        # URL rather than the file — hence timestamps=False and `extra`.
+        result = importer.import_rows(
+            conn, tenant_id=user.tenant_id, table="framework_clauses", rows=rows,
+            mapping=col_map, build=_build_clause, label_key="ref",
+            friendly=_clause_friendly, extra={"framework_id": framework_id},
+            timestamps=False)
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="framework.clauses_imported", entity_type="framework",
+                 entity_id=framework_id,
+                 detail={"created": result["created"], "failed": result["failed"]})
+    return result

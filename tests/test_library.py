@@ -88,3 +88,42 @@ def test_controls_and_crosswalk(app_client):
 
 def test_crosswalk_requires_auth(app_client):
     assert app_client.get("/api/library/crosswalk").status_code == 401
+
+
+def test_the_unreviewed_mapping_backlog_is_visible_on_the_template_list(app_client):
+    """P5-S10. Proposed crosswalk mappings are meant to be confirmed by a human, but the
+    review only ever existed inside the import wizard — gated on the in-memory result of an
+    import that had just happened. Navigate away and there was no route back, so they piled
+    up unseen: 667 of them at ~0.30 average confidence on this install.
+
+    That matters beyond tidiness: an unconfirmed mapping still points a bank's question at a
+    control, and that control's stock answer still prefills the audit response. The backlog is
+    unverified answers. Surfacing the count is what makes it a visible piece of work.
+    """
+    from api.database import engine
+    from sqlalchemy import text as sqltext
+
+    tok = token(app_client, "admin@kiam.example", "secret1")
+    h = {"Authorization": f"Bearer {tok}"}
+    before = app_client.get("/api/templates", headers=h).json()
+    assert before, "the seeded install has templates"
+    assert all("unconfirmed_mappings" in t for t in before)
+
+    target = next((t for t in before if t["unconfirmed_mappings"] > 0), None)
+    if target is None:                       # pragma: no cover - depends on seed state
+        return
+    n = target["unconfirmed_mappings"]
+
+    # confirming one drops the count by exactly one
+    with engine.connect() as c:
+        qid = c.execute(sqltext(
+            "SELECT q.id FROM questions q JOIN question_control_map m ON m.question_id = q.id "
+            "WHERE q.template_id = :t AND m.status = 'suggested' LIMIT 1"),
+            {"t": target["id"]}).scalar()
+    r = app_client.post(f"/api/templates/{target['id']}/proposals/confirm", headers=h,
+                        json={"decisions": [{"question_id": qid, "action": "confirm"}]})
+    assert r.status_code == 200, r.text
+
+    after = next(t for t in app_client.get("/api/templates", headers=h).json()
+                 if t["id"] == target["id"])
+    assert after["unconfirmed_mappings"] == n - 1

@@ -10,6 +10,7 @@ import Sign from "./pages/Sign";
 import Dashboard from "./pages/Dashboard";
 import Controls from "./pages/Controls";
 import Frameworks from "./pages/Frameworks";
+import Mappings from "./pages/Mappings";
 import ControlDetail from "./pages/ControlDetail";
 import Registers from "./pages/Registers";
 import Risks from "./pages/Risks";
@@ -77,6 +78,8 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/audits" element={<Audits />} />
         <Route path="/audits/import" element={<Import />} />
+        <Route path="/mappings" element={<Mappings />} />
+        <Route path="/mappings/:id" element={<Mappings />} />
         <Route path="/audits/:id" element={<Workspace />} />
         <Route path="/people" element={<People />} />
         <Route path="/controls" element={<Controls />} />

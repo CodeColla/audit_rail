@@ -8,6 +8,9 @@ control counts toward every certification it satisfies, with evidence gathered o
 
 import uuid
 
+XLSX_MIME = ("application/vnd.openxmlformats-officedocument"
+              ".spreadsheetml.sheet")
+
 
 def _new_org(client, tag):
     r = client.post("/api/auth/signup", json={
@@ -179,3 +182,114 @@ def test_only_control_editors_can_reshape_frameworks(app_client):
     assert app_client.post(f"/api/frameworks/{iso['id']}/clauses", headers=viewer,
                            json={"ref": "X.1", "title": "No"}).status_code == 403
     assert app_client.delete(f"/api/frameworks/{iso['id']}", headers=viewer).status_code == 403
+
+
+# ─────────────────────────────────────────── P5-S10: bring your own clause list
+
+def _xlsx(rows: list[list[str]]) -> bytes:
+    import io
+
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_clauses_can_be_imported_from_a_spreadsheet(app_client):
+    """The primary path for any standard we do not ship — and the reason we never have to
+    bundle licensed text. A customer with a copy of the standard brings their own wording."""
+    _org, h = _new_org(app_client, f"imp{uuid.uuid4().hex[:6]}")
+    made = app_client.post("/api/frameworks", headers=h,
+                           json={"code": "HIPAA", "name": "HIPAA Security Rule"})
+    fid = made.json()["id"]
+
+    cols = app_client.get(f"/api/frameworks/{fid}/import/columns", headers=h)
+    assert cols.status_code == 200
+    assert [c["key"] for c in cols.json()["columns"]] == ["ref", "title", "description"]
+
+    tpl = app_client.get(f"/api/frameworks/{fid}/import/template.xlsx", headers=h)
+    assert tpl.status_code == 200 and tpl.content[:2] == b"PK"
+
+    data = _xlsx([["Reference", "Title", "Description"],
+                  ["164.308(a)(1)", "Security management process", "Risk analysis and management"],
+                  ["164.312(a)(1)", "Access control", None],
+                  ["164.312(e)(1)", "Transmission security", ""]])
+    r = app_client.post(f"/api/frameworks/{fid}/import", headers=h,
+                        files={"file": ("hipaa.xlsx", data, XLSX_MIME)})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"created": 3, "failed": 0, "errors": []}
+
+    clauses = app_client.get(f"/api/frameworks/{fid}/clauses", headers=h).json()
+    assert [c["ref"] for c in clauses] == ["164.308(a)(1)", "164.312(a)(1)", "164.312(e)(1)"]
+    assert clauses[0]["description"] == "Risk analysis and management"
+    assert clauses[1]["description"] is None
+
+    # imported clauses behave like seeded ones — mappable, and they count toward coverage
+    control = app_client.get("/api/library/controls", headers=h).json()[0]
+    assert app_client.post(f"/api/library/controls/{control['id']}/clauses", headers=h,
+                           json={"clause_id": clauses[0]["id"]}).status_code == 201
+    assert _fw(app_client, h)["HIPAA"]["covered_count"] == 1
+
+
+def test_one_bad_clause_row_does_not_cost_the_others(app_client):
+    """Per-row savepoints, as everywhere else. A 400-clause standard with one typo must not
+    be an all-or-nothing failure."""
+    _org, h = _new_org(app_client, f"bad{uuid.uuid4().hex[:6]}")
+    fid = app_client.post("/api/frameworks", headers=h,
+                          json={"code": "PARTIAL", "name": "Partly bad"}).json()["id"]
+
+    data = _xlsx([["Reference", "Title"],
+                  ["X.1", "Fine"],
+                  ["", "No reference at all"],          # required field missing
+                  ["X.1", "Duplicate reference"],       # violates UNIQUE(framework_id, ref)
+                  ["X.2", "Also fine"]])
+    r = app_client.post(f"/api/frameworks/{fid}/import", headers=h,
+                        files={"file": ("p.xlsx", data, XLSX_MIME)}).json()
+    assert r["created"] == 2 and r["failed"] == 2
+    # Excel-accurate row numbers, or the message points at the wrong line
+    assert [e["row"] for e in r["errors"]] == [3, 4]
+    assert "Reference is required" in r["errors"][0]["error"]
+    assert "already has a clause with that reference" in r["errors"][1]["error"]
+    assert [c["ref"] for c in
+            app_client.get(f"/api/frameworks/{fid}/clauses", headers=h).json()] == ["X.1", "X.2"]
+
+
+def test_a_clause_import_will_not_guess_a_column(app_client):
+    """Exact header matches only. Deciding that "Clause No." means `ref` is how an import
+    quietly fills the wrong column and still reports success."""
+    _org, h = _new_org(app_client, f"guess{uuid.uuid4().hex[:6]}")
+    fid = app_client.post("/api/frameworks", headers=h,
+                          json={"code": "GUESS", "name": "Guessy"}).json()["id"]
+    data = _xlsx([["Clause No.", "Heading"], ["1.1", "Something"]])
+    r = app_client.post(f"/api/frameworks/{fid}/import", headers=h,
+                        files={"file": ("g.xlsx", data, XLSX_MIME)})
+    assert r.status_code == 400
+    assert "Reference" in r.text and "Title" in r.text
+
+    # …but an explicit mapping is honoured
+    import json as _json
+    ok = app_client.post(f"/api/frameworks/{fid}/import", headers=h,
+                         files={"file": ("g.xlsx", data, XLSX_MIME)},
+                         data={"mapping": _json.dumps({"ref": "Clause No.", "title": "Heading"})})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["created"] == 1
+
+
+def test_clause_import_is_gated_and_tenant_scoped(app_client):
+    from tests.test_rbac import _member_with_role
+
+    org, h = _new_org(app_client, f"gate{uuid.uuid4().hex[:6]}")
+    fid = _fw(app_client, h)["ISO27001-2022"]["id"]
+    data = _xlsx([["Reference", "Title"], ["Z.1", "Nope"]])
+
+    viewer, _ = _member_with_role(app_client, org["tenant_id"], "Viewer")
+    assert app_client.post(f"/api/frameworks/{fid}/import", headers=viewer,
+                           files={"file": ("z.xlsx", data, XLSX_MIME)}).status_code == 403
+
+    _other, oh = _new_org(app_client, f"other{uuid.uuid4().hex[:6]}")
+    assert app_client.post(f"/api/frameworks/{fid}/import", headers=oh,
+                           files={"file": ("z.xlsx", data, XLSX_MIME)}).status_code == 404

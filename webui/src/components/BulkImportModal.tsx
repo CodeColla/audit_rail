@@ -23,11 +23,18 @@ type Col = { key: string; label: string; help: string; required: boolean };
 type RowError = { row: number; name: string | null; error: string };
 type Result = { created: number; failed: number; errors: RowError[] };
 
-export function BulkImportModal({ register, onClose, onImported }: {
+export function BulkImportModal({ register, basePath, templateName, onClose, onImported }: {
   register: string;
+  /** Where the three import endpoints live. Defaults to the registers' own
+   *  `/import/{register}`; framework clauses pass `/frameworks/{id}/import` (P5-S10). The
+   *  contract is identical either way — `{base}/columns`, `{base}/template.xlsx`, `POST
+   *  {base}` — so one modal serves both rather than a near-copy drifting out of step. */
+  basePath?: string;
+  templateName?: string;
   onClose: () => void;
   onImported?: () => void;
 }) {
+  const base = basePath ?? `/import/${register}`;
   const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -37,8 +44,8 @@ export function BulkImportModal({ register, onClose, onImported }: {
   const [result, setResult] = useState<Result | null>(null);
 
   const spec = useQuery({
-    queryKey: ["import-columns", register],
-    queryFn: () => get<{ noun: string; columns: Col[] }>(`/import/${register}/columns`),
+    queryKey: ["import-columns", base],
+    queryFn: () => get<{ noun: string; columns: Col[] }>(`${base}/columns`),
   });
   const columns = spec.data?.columns ?? [];
 
@@ -92,7 +99,7 @@ export function BulkImportModal({ register, onClose, onImported }: {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("mapping", JSON.stringify(mapping));
-      const r = await api.post(`/import/${register}`, fd);
+      const r = await api.post(base, fd);
       setResult(r.data as Result);
       if ((r.data as Result).created > 0) {
         qc.invalidateQueries();      // the register, its counts and the dashboard all move
@@ -110,8 +117,8 @@ export function BulkImportModal({ register, onClose, onImported }: {
         email address, which is the only way to be unambiguous when two people share a name.
       </p>
 
-      <button onClick={() => downloadFile(`/import/${register}/template.xlsx`,
-                                          `${register}-import-template.xlsx`)}
+      <button onClick={() => downloadFile(`${base}/template.xlsx`,
+                                          templateName ?? `${register}-import-template.xlsx`)}
         className="btn mb-3 py-1.5 text-[12.5px]">⬇ Download the template</button>
 
       <label className="btn w-full cursor-pointer justify-center py-1.5">

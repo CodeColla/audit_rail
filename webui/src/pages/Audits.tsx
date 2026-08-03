@@ -21,7 +21,12 @@ export default function Audits() {
       <PageHead eyebrow="Assessments" title="Audits"
         lead="Every bank audit as a live workspace: import a checklist, pre-fill from your control library, chase evidence, export back."
         action={can("audits", "add")
-          ? <Link to="/audits/import" className="btn btn-primary">Import checklist</Link>
+          ? <div className="flex gap-2">
+              {/* P5-S10: the crosswalk review used to be reachable only in the seconds after
+                  an import finished, which is how 667 proposals went unreviewed. */}
+              <Link to="/mappings" className="btn">Mappings</Link>
+              <Link to="/audits/import" className="btn btn-primary">Import checklist</Link>
+            </div>
           : undefined} />
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">

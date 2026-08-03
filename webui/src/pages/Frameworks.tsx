@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
+import { BulkImportModal } from "../components/BulkImportModal";
 import { Card, cn, inputCls, Loading, PageHead, Pill } from "../lib/ui";
 
 /**
@@ -100,7 +101,10 @@ function NewFrameworkForm({ onDone }: { onDone: () => void }) {
 
 /** One framework, drilled into: every clause and what covers it. */
 function FrameworkDetail({ id }: { id: string }) {
+  const qc = useQueryClient();
+  const can = useCan();
   const [filter, setFilter] = useState<"all" | ReadinessClause["state"]>("all");
+  const [importing, setImporting] = useState(false);
   const frameworks = useQuery({ queryKey: ["frameworks"], queryFn: () => get<Framework[]>("/frameworks") });
   const { data, isLoading } = useQuery({
     queryKey: ["readiness", id], queryFn: () => get<Readiness>(`/frameworks/${id}/readiness`) });
@@ -113,7 +117,27 @@ function FrameworkDetail({ id }: { id: string }) {
     <>
       <PageHead eyebrow="Controls · Certification" title={me?.name ?? "Framework"}
         lead="Every clause, and which of your controls answers it. One control can answer several frameworks — that is why the evidence behind it only has to be collected once."
-        action={<Link to="/frameworks" className="btn">← All frameworks</Link>} />
+        action={
+          <div className="flex gap-2">
+            <Link to="/frameworks" className="btn">← All frameworks</Link>
+            {can("controls", "edit") && (
+              /* Bring your own clause list. This is how any standard we do not ship gets in —
+                 and why we never have to bundle licensed text. */
+              <button onClick={() => setImporting(true)} className="btn">⬆ Import clauses</button>
+            )}
+          </div>} />
+
+      {importing && (
+        <BulkImportModal
+          register="clauses"
+          basePath={`/frameworks/${id}/import`}
+          templateName={`${me?.code ?? "framework"}-clauses-template.xlsx`}
+          onClose={() => setImporting(false)}
+          onImported={() => {
+            qc.invalidateQueries({ queryKey: ["readiness", id] });
+            qc.invalidateQueries({ queryKey: ["frameworks"] });
+          }} />
+      )}
 
       <div className="mb-4 flex flex-wrap gap-2">
         {([["all", `All ${data.total}`], ["covered", `Covered ${data.summary.covered}`],

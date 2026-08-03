@@ -48,9 +48,25 @@ def list_templates(user: Principal = Depends(require("audits", "view")), conn=De
         .join(templates, questions.c.template_id == templates.c.id)
         .where(templates.c.tenant_id == user.tenant_id)
         .group_by(questions.c.template_id)).all())
+    # P5-S10: how much of each template's crosswalk is still unreviewed.
+    #
+    # Proposed mappings are auto-scored at import and are meant to be confirmed by a human —
+    # but the review screen lived *inside the import wizard*, gated on the in-memory result of
+    # an import that had just happened. Navigate away and there was no route back, so the
+    # proposals silently accumulated: 667 of them, at ~0.30 average confidence, on this
+    # install. Surfacing the count is what makes the backlog a visible piece of work rather
+    # than an invisible one.
+    qcm = t("question_control_map")
+    pending = dict(conn.execute(
+        select(questions.c.template_id, func.count())
+        .join(qcm, qcm.c.question_id == questions.c.id)
+        .join(templates, questions.c.template_id == templates.c.id)
+        .where(templates.c.tenant_id == user.tenant_id, qcm.c.status == "suggested")
+        .group_by(questions.c.template_id)).all())
     rows = conn.execute(select(templates).where(templates.c.tenant_id == user.tenant_id)
                         .order_by(templates.c.created_at)).mappings()
-    return [{**dict(r), "question_count": counts.get(r["id"], 0)} for r in rows]
+    return [{**dict(r), "question_count": counts.get(r["id"], 0),
+             "unconfirmed_mappings": pending.get(r["id"], 0)} for r in rows]
 
 
 @router.get("/{template_id}")

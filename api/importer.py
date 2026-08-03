@@ -118,6 +118,8 @@ def import_rows(
     label_key: str,
     friendly: Callable[[Exception], str],
     first_data_row: int = 2,
+    extra: dict | None = None,
+    timestamps: bool = True,
 ) -> dict[str, Any]:
     """Import `rows` into `table`, reporting per-row outcomes.
 
@@ -128,6 +130,11 @@ def import_rows(
 
     `first_data_row` exists purely so the reported row numbers match what the user sees in
     Excel — off-by-one here makes every error message point at the wrong line.
+
+    `extra` are fixed values every row gets that do NOT come from the spreadsheet — the
+    framework a clause belongs to, for instance, which comes from the URL. `timestamps=False`
+    is for tables that simply have no `created_at`/`updated_at` columns (`framework_clauses`
+    is one); passing them anyway is an immediate error on every row.
     """
     resolver = Resolver(conn, tenant_id)
     created, errors = 0, []
@@ -151,7 +158,8 @@ def import_rows(
             with conn.begin_nested():
                 conn.execute(insert(t(table)).values(
                     id=str(uuid.uuid4()), tenant_id=tenant_id,
-                    created_at=now, updated_at=now, **values))
+                    **({"created_at": now, "updated_at": now} if timestamps else {}),
+                    **(extra or {}), **values))
             created += 1
         except Exception as e:                                   # noqa: BLE001
             errors.append({"row": excel_row, "name": label, "error": friendly(e)})
