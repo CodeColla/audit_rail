@@ -54,7 +54,7 @@ export default function Mappings() {
 
       {backlog > 0 && (
         <Card className="mb-4 border-l-[3px] border-l-warn">
-          <div className="text-[13px]">
+          <div className="text-sm">
             <b className="tnum">{backlog}</b> proposed mapping{backlog === 1 ? "" : "s"} across
             all checklists {backlog === 1 ? "has" : "have"} never been reviewed. Each one points
             a bank's question at a control nobody has agreed it belongs to.
@@ -65,10 +65,10 @@ export default function Mappings() {
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {templates.map((t) => (
           <Card key={t.id}>
-            <Link to={`/mappings/${t.id}`} className="text-[15px] font-semibold hover:underline">
+            <Link to={`/mappings/${t.id}`} className="text-body font-semibold hover:underline">
               {t.bank_name}
             </Link>
-            <div className="text-[11.5px] text-txt3">
+            <div className="text-caption text-txt3">
               {t.version_label || "no version label"} · {t.question_count} questions
             </div>
             <div className="mt-3">
@@ -82,8 +82,8 @@ export default function Mappings() {
 
       {templates.length === 0 && (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center">
-          <h3 className="text-[15px] font-semibold">No checklists imported yet</h3>
-          <p className="mx-auto mt-2 max-w-[52ch] text-[13px] text-txt2">
+          <h3 className="text-body font-semibold">No checklists imported yet</h3>
+          <p className="mx-auto mt-2 max-w-[52ch] text-sm text-txt2">
             Import a bank's questionnaire and its questions are mapped onto your controls
             automatically, ready for you to confirm.
           </p>

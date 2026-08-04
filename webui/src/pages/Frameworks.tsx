@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
@@ -48,7 +49,7 @@ function CoverageBar({ f }: { f: Framework }) {
       <div className="h-1.5 overflow-hidden rounded-full bg-canvas">
         <div className="h-full rounded-full bg-accent" style={{ width: `${f.coverage_pct}%` }} />
       </div>
-      <div className="mt-1 text-[11px] text-txt3 tnum">
+      <div className="mt-1 text-caption text-txt3 tnum">
         {f.covered_count} of {f.clause_count} clauses mapped to an applicable control
       </div>
     </div>
@@ -69,24 +70,24 @@ function NewFrameworkForm({ onDone }: { onDone: () => void }) {
     <Card className="mb-4">
       <div className="eyebrow mb-2">Add a framework</div>
       <div className="grid grid-cols-3 gap-3">
-        <label className="text-[13px] font-medium">Code *
+        <label className="text-sm font-medium">Code *
           <input value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })}
             placeholder="HIPAA" className={inputCls + " mt-1"} />
         </label>
-        <label className="text-[13px] font-medium">Name *
+        <label className="text-sm font-medium">Name *
           <input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })}
             placeholder="HIPAA Security Rule" className={inputCls + " mt-1"} />
         </label>
-        <label className="text-[13px] font-medium">Version
+        <label className="text-sm font-medium">Version
           <input value={f.version} onChange={(e) => setF({ ...f, version: e.target.value })}
             className={inputCls + " mt-1"} />
         </label>
       </div>
-      <p className="mt-2 text-[11.5px] text-txt3">
+      <p className="mt-2 text-caption text-txt3">
         Add its clauses afterwards, then map them to the controls you already have — you do not
         rebuild the library for a new certification.
       </p>
-      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-[12px] text-bad">{err}</div>}
+      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
       <div className="mt-3 flex gap-2">
         <button disabled={!f.code.trim() || !f.name.trim() || create.isPending}
           onClick={() => { setErr(""); create.mutate(); }}
@@ -144,7 +145,7 @@ function FrameworkDetail({ id }: { id: string }) {
            ["stale", `No proof ${data.summary.stale}`],
            ["uncovered", `Not mapped ${data.summary.uncovered}`]] as const).map(([k, label]) => (
           <button key={k} onClick={() => setFilter(k as any)}
-            className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
+            className={cn("rounded-full border px-3 py-1.5 text-label font-medium",
               filter === k ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                            : "border-bd bg-paper text-txt2 hover:bg-canvas")}>
             {label}
@@ -154,18 +155,18 @@ function FrameworkDetail({ id }: { id: string }) {
 
       <div className="overflow-hidden rounded-xl border border-bd bg-paper">
         {rows.length === 0 && (
-          <div className="p-8 text-center text-[13px] text-txt3">Nothing in this state.</div>
+          <div className="p-8 text-center text-sm text-txt3">Nothing in this state.</div>
         )}
         {rows.map((c) => (
           <div key={c.id} className="flex items-start gap-3 border-b border-bd px-4 py-3 last:border-b-0">
-            <span className="w-20 shrink-0 font-mono text-[12px] font-medium">{c.ref}</span>
+            <span className="w-20 shrink-0 font-mono text-label font-medium">{c.ref}</span>
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-medium">{c.title}</div>
+              <div className="text-sm font-medium">{c.title}</div>
               {c.controls.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
                   {c.controls.map((ctl) => (
                     <Link key={ctl.id} to={`/controls/view/${ctl.id}`}
-                      className="text-[11.5px] text-txt3 hover:text-accent hover:underline">
+                      className="text-caption text-txt3 hover:text-accent hover:underline">
                       <span className="font-mono">{ctl.code}</span> — {ctl.statement}
                     </Link>
                   ))}
@@ -200,7 +201,7 @@ export default function Frameworks() {
           <div className="flex gap-2">
             <Link to="/controls" className="btn">Controls</Link>
             {can("controls", "add") && (
-              <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add framework</button>
+              <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> Add framework</button>
             )}
           </div>} />
 
@@ -210,12 +211,12 @@ export default function Frameworks() {
         {rows.map((f) => (
           <Card key={f.id}>
             <div className="flex items-baseline justify-between gap-2">
-              <Link to={`/frameworks/${f.id}`} className="text-[15px] font-semibold hover:underline">
+              <Link to={`/frameworks/${f.id}`} className="text-body font-semibold hover:underline">
                 {f.name}
               </Link>
-              <span className="shrink-0 text-[17px] font-semibold tnum">{f.coverage_pct}%</span>
+              <span className="shrink-0 text-subtitle font-semibold tnum">{f.coverage_pct}%</span>
             </div>
-            <div className="text-[11.5px] text-txt3">
+            <div className="text-caption text-txt3">
               <span className="font-mono">{f.code}</span>{f.version && ` · ${f.version}`}
             </div>
             <CoverageBar f={f} />
@@ -227,7 +228,7 @@ export default function Frameworks() {
                     `is only a lens over them.`)) {
                   api.delete(`/frameworks/${f.id}`)
                     .then(() => qc.invalidateQueries({ queryKey: ["frameworks"] })); } }}
-                className="mt-3 text-[11.5px] text-txt3 hover:text-bad">Remove</button>
+                className="mt-3 text-caption text-txt3 hover:text-bad">Remove</button>
             )}
           </Card>
         ))}
@@ -235,8 +236,8 @@ export default function Frameworks() {
 
       {rows.length === 0 && (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center">
-          <h3 className="text-[15px] font-semibold">No frameworks yet</h3>
-          <p className="mx-auto mt-2 max-w-[52ch] text-[13px] text-txt2">
+          <h3 className="text-body font-semibold">No frameworks yet</h3>
+          <p className="mx-auto mt-2 max-w-[52ch] text-sm text-txt2">
             Add the standards you are audited against, then map their clauses to the controls
             you already have.
           </p>

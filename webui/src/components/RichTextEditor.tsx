@@ -57,7 +57,7 @@ export function RichTextEditor({ value, onChange }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, editor]);
 
-  if (!editor) return <div className="rounded-xl border border-bd bg-paper p-5 text-[13px] text-txt3">Loading editor…</div>;
+  if (!editor) return <div className="rounded-xl border border-bd bg-paper p-5 text-sm text-txt3">Loading editor…</div>;
 
   return (
     <div className="overflow-hidden rounded-xl border border-bd bg-paper">

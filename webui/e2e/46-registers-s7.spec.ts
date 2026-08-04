@@ -100,7 +100,7 @@ test.describe("assets are type-aware", () => {
 
     await page.locator("tbody tr", { hasText: name }).click();
     const drawer = page.getByRole("dialog");
-    await expect(drawer.getByText("＋ Add a photo of this unit")).toBeVisible();
+    await expect(drawer.getByText("Add a photo of this unit")).toBeVisible();
 
     // a 1×1 PNG is enough to prove the round trip
     await drawer.locator('input[type="file"]').setInputFiles({
@@ -113,7 +113,7 @@ test.describe("assets are type-aware", () => {
     await expect(drawer.locator("img[alt='rack.png']")).toBeVisible();
 
     await drawer.getByRole("button", { name: "Remove" }).click();
-    await expect(drawer.getByText("＋ Add a photo of this unit")).toBeVisible();
+    await expect(drawer.getByText("Add a photo of this unit")).toBeVisible();
   });
 
   test("a virtual asset has no photo card at all", async ({ page }) => {
@@ -199,8 +199,8 @@ test.describe("third parties", () => {
     await drawer.getByRole("button", { name: "Add agreement" }).click();
     await expect(drawer.getByText("MSA-2026-01")).toBeVisible();
 
-    // "＋ contract" is a hidden <input type=file> behind a label
-    await drawer.getByText("＋ contract").click({ trial: true });
+    // the "contract" control is a hidden <input type=file> behind a label
+    await drawer.getByText("contract", { exact: true }).click({ trial: true });
     await drawer.locator('input[type="file"]').setInputFiles({
       name: "dpa-signed.pdf", mimeType: "application/pdf",
       buffer: Buffer.from("%PDF-1.4\n% e2e contract\n"),
@@ -229,7 +229,7 @@ test.describe("third parties", () => {
     await drawer.getByRole("button", { name: "Add assessment" }).click();
     await expect(drawer.getByText(/expires/).first()).toBeVisible();
 
-    await drawer.getByRole("button", { name: /＋ evidence/ }).click();
+    await drawer.getByRole("button", { name: /evidence/i }).click();
     await combo(drawer, "Pick evidence").selectOption(vault[0].id);
     await expect(drawer.getByRole("link", { name: re(vault[0].title) })).toBeVisible();
   });

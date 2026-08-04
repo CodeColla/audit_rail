@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
 import { useAuth, useCan } from "../lib/auth";
 import { LookupSelect } from "./Registers";
@@ -107,14 +107,14 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
     <Modal open onClose={onClose} title={editing ? "Edit person" : "Add person"}>
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Full name *
+          <label className="text-sm font-medium">Full name *
             <input required value={f.full_name} onChange={set("full_name")} className={inputCls + " mt-1"} />
           </label>
-          <label className="text-[13px] font-medium">Email *
+          <label className="text-sm font-medium">Email *
             <input required type="email" value={f.email} onChange={set("email")}
               disabled={!!editing} className={cn(inputCls, "mt-1", editing && "opacity-60")} />
           </label>
-          <label className="text-[13px] font-medium">Employee number
+          <label className="text-sm font-medium">Employee number
             <input value={f.employee_number} onChange={set("employee_number")} className={inputCls + " mt-1"} />
           </label>
           {/* P5-S6: these were an <input list="dept-list"> whose datalist was built from
@@ -122,25 +122,25 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
               reported as "Department can't be extended" — it looked like a fixed dropdown
               that refused new values, when in fact typing anything always worked. A real
               vocabulary, editable in Masters, makes the affordance match the behaviour. */}
-          <label className="text-[13px] font-medium">Department
+          <label className="text-sm font-medium">Department
             <LookupSelect kind="department" value={f.department}
               onChange={(v) => set("department")({ target: { value: v } } as any)} />
           </label>
-          <label className="text-[13px] font-medium">Position
+          <label className="text-sm font-medium">Position
             <LookupSelect kind="position" value={f.position}
               onChange={(v) => set("position")({ target: { value: v } } as any)} />
           </label>
-          <label className="text-[13px] font-medium">Manager
+          <label className="text-sm font-medium">Manager
             <select value={f.manager_id} onChange={set("manager_id")} className={inputCls + " mt-1"}>
               <option value="">— none —</option>
               {(people.data ?? []).filter((p) => p.id !== editing?.id)
                 .map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Contract start
+          <label className="text-sm font-medium">Contract start
             <input type="date" value={f.contract_start_date} onChange={set("contract_start_date")} className={inputCls + " mt-1"} />
           </label>
-          <label className="text-[13px] font-medium">Contract end
+          <label className="text-sm font-medium">Contract end
             <input type="date" value={f.contract_end_date} onChange={set("contract_end_date")} className={inputCls + " mt-1"} />
           </label>
         </div>
@@ -149,9 +149,9 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
             <label className="flex cursor-pointer items-start gap-2.5 px-3 py-2.5">
               <input type="checkbox" checked={withLogin} className="mt-0.5"
                 onChange={(e) => setWithLogin(e.target.checked)} />
-              <span className="text-[12.5px]">
+              <span className="text-label">
                 <span className="font-medium">Give them a login</span>
-                <span className="block text-[11.5px] text-txt3">
+                <span className="block text-caption text-txt3">
                   Most people never need one — they sign policies by emailed link. Tick this
                   only for someone who has to sign in.
                 </span>
@@ -159,18 +159,18 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
             </label>
             {withLogin && (
               <div className="grid grid-cols-2 gap-3 border-t border-bd px-3 py-3">
-                <label className="text-[13px] font-medium">Role
+                <label className="text-sm font-medium">Role
                   <select value={roleId} onChange={(e) => setLogin({ ...login, role_id: e.target.value })}
                     className={inputCls + " mt-1"}>
                     {roleList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                   </select>
                 </label>
-                <label className="text-[13px] font-medium">Temporary password
+                <label className="text-sm font-medium">Temporary password
                   <input value={login.password} required minLength={8} autoComplete="new-password"
                     onChange={(e) => setLogin({ ...login, password: e.target.value })}
                     className={inputCls + " mt-1"} />
                 </label>
-                <p className="col-span-2 text-[11.5px] text-txt3">
+                <p className="col-span-2 text-caption text-txt3">
                   They sign in with <b>{f.email || "their email address"}</b> and this password,
                   and must choose their own before they can use anything — so a password you
                   know can never be the one behind their signatures.
@@ -179,9 +179,9 @@ function PersonForm({ onClose, editing }: { onClose: () => void; editing?: Detai
             )}
           </div>
         )}
-        {err && <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         {!withLogin && (
-          <p className="rounded-md bg-canvas px-3 py-2 text-[11.5px] text-txt2">
+          <p className="rounded-md bg-canvas px-3 py-2 text-caption text-txt2">
             Adding a person does <b>not</b> create a login. They'll sign policies by emailed
             link — tick <b>Give them a login</b> above, or grant one later from their profile.
           </p>
@@ -222,7 +222,7 @@ function DeletePersonButton({ id, name }: { id: string; name: string }) {
         <Trash2 size={14} />
       </button>
       {err && (
-        <div role="alert" className="mt-1 max-w-[22rem] rounded-md bg-bad-bg px-2 py-1 text-[11.5px] text-bad">
+        <div role="alert" className="mt-1 max-w-[22rem] rounded-md bg-bad-bg px-2 py-1 text-caption text-bad">
           {err}
         </div>)}
     </>
@@ -247,18 +247,18 @@ function ImportModal({ onClose }: { onClose: () => void }) {
     <Modal open onClose={onClose} title="Import people">
       {!result ? (
         <>
-          <p className="mb-3 text-[12.5px] text-txt2">
+          <p className="mb-3 text-label text-txt2">
             Header row required. Recognised columns:{" "}
-            <span className="font-mono text-[11.5px]">full_name, email, employee_number,
+            <span className="font-mono text-caption">full_name, email, employee_number,
             department, position, contract_start_date, contract_end_date</span>.
             Rows that fail are reported back — never silently skipped.
           </p>
           <label className="flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed border-hair bg-canvas px-4 py-8 text-center">
-            <span className="text-[13px] font-medium">{file ? file.name : "Choose a CSV file"}</span>
+            <span className="text-sm font-medium">{file ? file.name : "Choose a CSV file"}</span>
             <input type="file" accept=".csv" className="hidden"
               onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
           </label>
-          {err && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+          {err && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
           <button disabled={!file || imp.isPending} onClick={() => imp.mutate()}
             className="btn btn-primary mt-3 w-full justify-center disabled:opacity-50">
             {imp.isPending ? "Importing…" : "Import"}
@@ -273,7 +273,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
           {result.errors?.length > 0 && (
             <div className="max-h-56 overflow-y-auto rounded-md border border-bd">
               {result.errors.map((e: any, i: number) => (
-                <div key={i} className="border-b border-bd px-3 py-2 text-[12px] last:border-0">
+                <div key={i} className="border-b border-bd px-3 py-2 text-label last:border-0">
                   <span className="font-mono text-txt3">row {e.row}</span>{" "}
                   <b>{e.name || "(no name)"}</b> — <span className="text-bad">{e.error}</span>
                 </div>
@@ -339,7 +339,7 @@ function LoginCard({ person }: { person: Detail }) {
     return (
       <Card className="border-l-[3px] border-l-na">
         <div className="eyebrow mb-1">No login — this is normal</div>
-        <p className="text-[12.5px] text-txt2">
+        <p className="text-label text-txt2">
           {person.full_name.split(" ")[0]} doesn't need an account. When a policy needs signing,
           they get a one-time link at <span className="font-mono">{person.email}</span>; the
           signature still records consent, IP and a hash of the exact version signed.
@@ -350,21 +350,21 @@ function LoginCard({ person }: { person: Detail }) {
         {granting && (
           <form className="mt-3 flex flex-col gap-2"
             onSubmit={(e) => { e.preventDefault(); setErr(""); grant.mutate(); }}>
-            <label className="text-[12.5px] font-medium">Role
+            <label className="text-label font-medium">Role
               <select value={role || roleList.find((r) => r.name === "Viewer")?.id || ""}
                 onChange={(e) => setRole(e.target.value)} className={inputCls + " mt-1"}>
                 {roleList.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
               </select>
             </label>
-            <label className="text-[12.5px] font-medium">Temporary password
+            <label className="text-label font-medium">Temporary password
               <input value={password} required minLength={8} autoComplete="new-password"
                 onChange={(e) => setPassword(e.target.value)} className={inputCls + " mt-1"} />
             </label>
-            <p className="text-[11.5px] text-txt3">
+            <p className="text-caption text-txt3">
               They sign in with <span className="font-mono">{person.email}</span> and must
               choose their own password before they can use anything.
             </p>
-            {err && <div role="alert" className="rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+            {err && <div role="alert" className="rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
             <div className="flex gap-2">
               <button disabled={grant.isPending} className="btn btn-primary disabled:opacity-50">
                 {grant.isPending ? "Creating…" : "Create login"}
@@ -381,12 +381,12 @@ function LoginCard({ person }: { person: Detail }) {
   return (
     <Card className="border-l-[3px] border-l-info">
       <div className="eyebrow mb-1">Has a login</div>
-      <p className="text-[12.5px] text-txt2">
+      <p className="text-label text-txt2">
         Signs in as <span className="font-mono">{person.email}</span>
         {person.role_name && <> holding the <b>{person.role_name}</b> role</>}.
       </p>
       {can("users", "edit") && (
-        <label className="mt-3 block text-[12.5px] font-medium">Role
+        <label className="mt-3 block text-label font-medium">Role
           <select value={person.role_id ?? ""} disabled={changeRole.isPending}
             onChange={(e) => changeRole.mutate(e.target.value)}
             className={inputCls + " mt-1"}>
@@ -394,7 +394,7 @@ function LoginCard({ person }: { person: Detail }) {
           </select>
         </label>
       )}
-      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
       {can("users", "delete") && !isMe && (
         <button
           onClick={() => { if (confirm(
@@ -407,7 +407,7 @@ function LoginCard({ person }: { person: Detail }) {
         </button>
       )}
       {isMe && (
-        <p className="mt-3 text-[11.5px] text-txt3">
+        <p className="mt-3 text-caption text-txt3">
           This is your own account — another administrator has to change or remove it.
         </p>
       )}
@@ -431,7 +431,7 @@ function PersonDrawer({ id, onClose, onEdit }:
         {[["Email", data.email], ["Department", data.department], ["Position", data.position],
           ["Manager", data.manager?.full_name], ["Contract start", data.contract_start_date?.slice(0, 10)],
           ["Contract end", data.contract_end_date?.slice(0, 10)]].map(([k, v]) => (
-          <div key={k as string} className="flex gap-3 py-1 text-[13px]">
+          <div key={k as string} className="flex gap-3 py-1 text-sm">
             <span className="w-32 shrink-0 text-txt3">{k}</span>
             <span className="font-medium">{(v as string) || "—"}</span>
           </div>
@@ -441,12 +441,12 @@ function PersonDrawer({ id, onClose, onEdit }:
       <Card>
         <div className="eyebrow mb-2">Direct reports ({data.reports.length})</div>
         {data.reports.length === 0
-          ? <div className="text-[12.5px] text-txt3">None.</div>
+          ? <div className="text-label text-txt3">None.</div>
           : data.reports.map((r) => (
             <div key={r.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
-              <span className="grid h-7 w-7 place-items-center rounded-full bg-ink text-[10px] font-bold text-white">{initials(r.full_name)}</span>
-              <span className="text-[12.5px] font-medium">{r.full_name}</span>
-              <span className="text-[11.5px] text-txt3">{r.position}</span>
+              <span className="grid h-7 w-7 place-items-center rounded-full bg-ink text-micro font-bold text-white">{initials(r.full_name)}</span>
+              <span className="text-label font-medium">{r.full_name}</span>
+              <span className="text-caption text-txt3">{r.position}</span>
             </div>))}
       </Card>
       <button onClick={() => onEdit(data)} className="btn btn-primary self-start">Edit person</button>
@@ -530,21 +530,21 @@ export default function People() {
           <div className="flex gap-2">
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
             {can("people", "add") && (
-              <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add person</button>
+              <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> Add person</button>
             )}
           </div>} />
 
       {(all.data ?? []).length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center">
-          <h3 className="text-[15px] font-semibold">Start here — this is the floor of the platform</h3>
-          <p className="mx-auto mt-2 max-w-[52ch] text-[13px] text-txt2">
+          <h3 className="text-body font-semibold">Start here — this is the floor of the platform</h3>
+          <p className="mx-auto mt-2 max-w-[52ch] text-sm text-txt2">
             Every policy owner, task assignee and policy signature points at a person. Add your
             team first and everything downstream has somewhere to hang. Most of them will never
             need a login.
           </p>
           <div className="mt-4 flex justify-center gap-2">
             <button onClick={() => setImporting(true)} className="btn">Import a roster</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ Add your first person</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> Add your first person</button>
           </div>
         </div>
       ) : (
@@ -552,14 +552,14 @@ export default function People() {
           <div className="mb-4 flex flex-wrap items-center gap-2">
             {CHIPS.map((c) => (
               <button key={c} onClick={() => setChip(c)}
-                className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
+                className={cn("rounded-full border px-3 py-1.5 text-label font-medium",
                   chip === c ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                              : "border-bd bg-paper text-txt2 hover:bg-canvas")}>
                 {c} <span className="ml-1 text-txt3 tnum">{count(c)}</span>
               </button>
             ))}
             <select value={dept} onChange={(e) => setDept(e.target.value)}
-              className="ml-auto rounded-md border border-bd bg-paper px-2.5 py-1.5 text-[12.5px]">
+              className="ml-auto rounded-md border border-bd bg-paper px-2.5 py-1.5 text-label">
               <option value="">All departments</option>
               {(depts.data ?? []).map((d) => (
                 <option key={d.department} value={d.department}>{d.department} ({d.count})</option>))}
@@ -591,10 +591,10 @@ export default function People() {
               { key: "name", label: "Name", sortValue: (p) => p.full_name.toLowerCase(),
                 render: (p) => (
                   <div className="flex items-center gap-2.5">
-                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-ink text-[10px] font-bold text-white">{initials(p.full_name)}</span>
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-ink text-micro font-bold text-white">{initials(p.full_name)}</span>
                     <div>
                       <div className="font-medium">{p.full_name}</div>
-                      {p.employee_number && <div className="font-mono text-[11px] text-txt3">{p.employee_number}</div>}
+                      {p.employee_number && <div className="font-mono text-caption text-txt3">{p.employee_number}</div>}
                     </div>
                   </div>) },
               { key: "department", label: "Department", className: "text-txt2",

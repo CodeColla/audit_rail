@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useMemo, useState } from "react";
-import { cn, inputCls, Td } from "../lib/ui";
+import { cn, inputCls, Td, TH } from "../lib/ui";
 import { useDebounced } from "../lib/useDebounced";
 
 export type Column<T> = {
@@ -147,7 +147,7 @@ export function DataTable<T>({
       )}
 
       {selected.size > 0 && (
-        <div className="flex items-center gap-3 rounded-md border border-bd bg-canvas px-3 py-2 text-[12.5px]">
+        <div className="flex items-center gap-3 rounded-md border border-bd bg-canvas px-3 py-2 text-label">
           <span className="font-medium">{selected.size} selected</span>
           {canDelete && onDeleteOne && (
             <button onClick={bulkDelete} disabled={bulkBusy}
@@ -163,7 +163,7 @@ export function DataTable<T>({
         // failures were rare, but on People a blocked delete is the normal outcome (25 FK
         // columns cite `people`), and ten near-identical "still referenced by…" messages with
         // no names is a wall of text nobody can act on. Everything not listed here succeeded.
-        <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">
+        <div role="alert" className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">
           <div className="font-medium">
             {bulkErrors.length} {copy.errorPrefix} — everything else was done.
           </div>
@@ -181,22 +181,23 @@ export function DataTable<T>({
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-bd bg-paper">
-          <table className="w-full text-[13px]">
+          <table className="w-full text-sm">
             <thead>
               <tr>
                 {onDeleteOne && canDelete && (
-                  <th className="w-8 border-b border-bd bg-canvas px-3">
+                  <th className={cn(TH, "w-8 px-3")}>
                     <input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all" />
                   </th>
                 )}
                 {columns.map((col) => (
-                  <th key={col.key}
-                    className="border-b border-bd bg-canvas px-3.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-[0.09em] text-txt3">
+                  <th key={col.key} className={TH}>
                     {col.sortValue ? (
                       <button onClick={() => toggleSort(col.key)}
                         className="flex items-center gap-1 hover:text-ink">
                         {col.label}
-                        <span className="text-[9px]">
+                        {/* The glyph slot is always occupied (inactive = a faint marker), so a
+                            header does not jump sideways the moment you sort by it. */}
+                        <span className="text-micro">
                           {sortKey === col.key ? (sortDir === "asc" ? "▲" : "▼") : "⇅"}
                         </span>
                       </button>

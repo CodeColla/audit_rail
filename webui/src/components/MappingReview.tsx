@@ -2,7 +2,7 @@ import { Fragment, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText } from "../lib/api";
 import { ControlPicker } from "./ControlPicker";
-import { Bar, cn, Loading, Pill } from "../lib/ui";
+import { Bar, Loading, Pill, TH, cn } from "../lib/ui";
 
 /**
  * Review the proposed crosswalk between a bank's checklist questions and our controls.
@@ -80,7 +80,7 @@ export function MappingReview({ templateId, onChanged }:
         <Pill tone="ok">{confirmed} confirmed</Pill>
         <Pill tone={pending ? "warn" : "na"}>{pending} to review</Pill>
         <button onClick={() => setOnlyPending((s) => !s)}
-          className="text-[12px] font-medium text-accent hover:underline">
+          className="text-label font-medium text-accent hover:underline">
           {onlyPending ? "Show all" : "Show only unreviewed"}
         </button>
         <div className="ml-auto flex gap-2">
@@ -92,14 +92,14 @@ export function MappingReview({ templateId, onChanged }:
           <button onClick={() => confirmAll(0.3)} className="btn">≥ 30%</button>
         </div>
       </div>
-      {err && <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      {err && <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
 
       <div className="max-h-[65vh] overflow-y-auto rounded-xl border border-bd bg-paper">
-        <table className="w-full text-[13px]">
+        <table className="w-full text-sm">
           <thead className="sticky top-0">
             <tr>
               {["#", "Bank question", "Proposed standard control", "Confidence", ""].map((h, i) => (
-                <th key={i} className="border-b border-bd bg-canvas px-3.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-txt3">{h}</th>
+                <th key={i} className={TH}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -116,7 +116,7 @@ export function MappingReview({ templateId, onChanged }:
                       <span className="ml-2 text-txt3">{p.statement}</span></> : <span className="text-txt3">no match</span>}
                   </td>
                   <td className="w-32 px-3.5 py-2.5">
-                    <Bar pct={c} muted={c < 30} /><div className="mt-1 text-[11px] text-txt3 tnum">{c}%</div>
+                    <Bar pct={c} muted={c < 30} /><div className="mt-1 text-caption text-txt3 tnum">{c}%</div>
                   </td>
                   <td className="whitespace-nowrap px-3.5 py-2.5">
                     <div className="flex items-center gap-1.5">
@@ -134,7 +134,7 @@ export function MappingReview({ templateId, onChanged }:
                           still be pointed at the wrong control and needs fixing too, not
                           just a suggested one. */}
                       <button onClick={() => setRemapping(remapping === p.question_id ? null : p.question_id)}
-                        className="rounded-md border border-bd px-2 py-1 text-[11px] text-txt2 hover:bg-canvas">
+                        className="rounded-md border border-bd px-2 py-1 text-caption text-txt2 hover:bg-canvas">
                         Re-map
                       </button>
                     </div>
@@ -153,7 +153,7 @@ export function MappingReview({ templateId, onChanged }:
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={5} className="px-3.5 py-6 text-center text-[12.5px] text-txt3">
+              <tr><td colSpan={5} className="px-3.5 py-6 text-center text-label text-txt3">
                 Every mapping on this checklist has been reviewed.
               </td></tr>
             )}

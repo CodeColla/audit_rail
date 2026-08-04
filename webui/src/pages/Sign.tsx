@@ -20,8 +20,8 @@ function Frame({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-canvas">
       <header className="border-b border-bd bg-paper px-4 py-3">
-        <div className="mx-auto flex max-w-2xl items-center gap-2 text-[14px] font-semibold text-ink">
-          <span className="grid h-6 w-6 place-items-center rounded bg-accent text-[12px] text-[#231205]">✓</span>
+        <div className="mx-auto flex max-w-2xl items-center gap-2 text-body font-semibold text-ink">
+          <span className="grid h-6 w-6 place-items-center rounded bg-accent text-label text-[#231205]">✓</span>
           audit_rail · Policy attestation
         </div>
       </header>
@@ -70,16 +70,16 @@ export default function Sign() {
   };
 
   if (view === "loading")
-    return <Frame><div className="p-8 text-center text-[13px] text-txt3">Loading…</div></Frame>;
+    return <Frame><div className="p-8 text-center text-sm text-txt3">Loading…</div></Frame>;
 
   if (view === "gone")
     return (
       <Frame>
         <div className="card p-8 text-center">
           <div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-full bg-na-bg text-na">!</div>
-          <h1 className="text-[16px] font-semibold">This link can’t be used</h1>
-          <p className="mx-auto mt-2 max-w-[40ch] text-[13px] text-txt2">{msg}</p>
-          <p className="mt-3 text-[12px] text-txt3">If you still need to sign, ask your compliance team to send a fresh link.</p>
+          <h1 className="text-subtitle font-semibold">This link can’t be used</h1>
+          <p className="mx-auto mt-2 max-w-[40ch] text-sm text-txt2">{msg}</p>
+          <p className="mt-3 text-label text-txt3">If you still need to sign, ask your compliance team to send a fresh link.</p>
         </div>
       </Frame>
     );
@@ -88,9 +88,9 @@ export default function Sign() {
     return (
       <Frame>
         <div className="card p-8 text-center">
-          <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-ok-bg text-[20px] text-ok">✓</div>
-          <h1 className="text-[17px] font-semibold">Signed — thank you</h1>
-          <p className="mx-auto mt-2 max-w-[46ch] text-[13px] text-txt2">
+          <div className="mx-auto mb-3 grid h-11 w-11 place-items-center rounded-full bg-ok-bg text-title text-ok">✓</div>
+          <h1 className="text-subtitle font-semibold">Signed — thank you</h1>
+          <p className="mx-auto mt-2 max-w-[46ch] text-sm text-txt2">
             Your attestation for <b>{page?.document_title}</b> (v{page?.version_label}) has been recorded
             {signedAt && <> on {signedAt.slice(0, 10)}</>}. You can close this page.
           </p>
@@ -102,28 +102,28 @@ export default function Sign() {
   return (
     <Frame>
       <div className="mb-3">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-txt3">{page?.classification}</div>
-        <h1 className="mt-0.5 text-[21px] font-semibold tracking-[-0.01em]">{page?.document_title}</h1>
-        <div className="text-[12.5px] text-txt2">Version {page?.version_label} · to be signed by {page?.signer_email}</div>
+        <div className="text-caption font-semibold uppercase tracking-[0.12em] text-txt3">{page?.classification}</div>
+        <h1 className="mt-0.5 text-title font-semibold tracking-[-0.01em]">{page?.document_title}</h1>
+        <div className="text-label text-txt2">Version {page?.version_label} · to be signed by {page?.signer_email}</div>
       </div>
 
       <DocBody content={page?.content ?? ""} format={page?.content_format}
         className="card max-h-[52vh] overflow-y-auto p-5" />
 
       <div className="card mt-4 p-5">
-        <p className="text-[13px] leading-relaxed text-ink">{page?.consent_text}</p>
-        <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-[13px]">
+        <p className="text-sm leading-relaxed text-ink">{page?.consent_text}</p>
+        <label className="mt-3 flex cursor-pointer items-start gap-2.5 text-sm">
           <input type="checkbox" className="mt-0.5" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
           <span>I confirm I have read and understood this document and agree to comply with it.</span>
         </label>
         <input value={name} onChange={(e) => setName(e.target.value)}
           placeholder="Type your full name to sign" className={inputCls + " mt-3"} />
-        {msg && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{msg}</div>}
+        {msg && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{msg}</div>}
         <button disabled={!agree || !name.trim() || busy} onClick={sign}
           className="btn btn-primary mt-4 w-full justify-center disabled:opacity-50">
           {busy ? "Signing…" : "Sign"}
         </button>
-        <p className="mt-2 text-center text-[11px] text-txt3">
+        <p className="mt-2 text-center text-caption text-txt3">
           Your name, the time, and your device details are recorded as your electronic signature.
         </p>
       </div>

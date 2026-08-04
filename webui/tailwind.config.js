@@ -21,9 +21,36 @@ export default {
         na: "#5B6573", "na-bg": "#ECEEF1",
         info: "#2F5D8C", "info-bg": "#E8F0F8",
       },
+      // P6-S1. Space Grotesk is a geometric DISPLAY face; it was set on body and inherited by
+      // every table, form and figure in the app, which is why the portal read as a template.
+      //
+      // `-apple-system` first is deliberate: it resolves to genuine SF Pro on Mac/iPhone/iPad
+      // (Apple's own site does exactly this) and SF Pro cannot be licensed for the web by any
+      // other means. Everyone else gets self-hosted Inter — designed close to SF, SIL OFL —
+      // rather than falling through to Segoe UI, so the product looks the same everywhere.
       fontFamily: {
-        sans: ["Space Grotesk", "ui-sans-serif", "system-ui", "Segoe UI", "sans-serif"],
-        mono: ["Space Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+        sans: ['-apple-system', 'BlinkMacSystemFont', '"Inter Variable"', 'Inter',
+               '"Segoe UI"', 'Roboto', 'sans-serif'],
+        mono: ['ui-monospace', 'SFMono-Regular', '"SF Mono"', 'Menlo', 'Consolas', 'monospace'],
+      },
+
+      // A real type scale. The app carried 20 hardcoded sizes across 645 usages, several a
+      // HALF PIXEL apart (12/12.5/13/13.5, 9/9.5/10/10.5) — no single screen looked wrong, but
+      // collectively it read as unresolved. Each token carries its own line-height AND
+      // letter-spacing: tightening at display sizes and opening up at caption sizes is most of
+      // what separates type that looks designed from type that looks assembled.
+      //
+      // Near-duplicates COLLAPSE rather than everything being resized — 13px is still 13px —
+      // so the jitter goes without reflowing every table in the product.
+      fontSize: {
+        display:  ["28px", { lineHeight: "1.15", letterSpacing: "-0.021em" }],
+        title:    ["20px", { lineHeight: "1.25", letterSpacing: "-0.017em" }],
+        subtitle: ["16px", { lineHeight: "1.35", letterSpacing: "-0.011em" }],
+        body:     ["14px", { lineHeight: "1.5",  letterSpacing: "-0.006em" }],
+        sm:       ["13px", { lineHeight: "1.45", letterSpacing: "-0.003em" }],
+        label:    ["12px", { lineHeight: "1.4",  letterSpacing: "0em" }],
+        caption:  ["11px", { lineHeight: "1.35", letterSpacing: "0.005em" }],
+        micro:    ["10px", { lineHeight: "1.3",  letterSpacing: "0.06em" }],
       },
       boxShadow: {
         card: "0 1px 2px rgba(14,26,43,.04)",

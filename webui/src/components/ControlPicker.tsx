@@ -31,20 +31,20 @@ export function ControlPicker({ onPick, onClose }: {
   return (
     <div className="w-full max-w-[520px] rounded-md border border-bd bg-canvas">
       <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search controls…"
-        className="w-full border-b border-bd bg-paper px-3 py-2 text-[12.5px] outline-none" />
+        className="w-full border-b border-bd bg-paper px-3 py-2 text-label outline-none" />
       <div className="max-h-56 overflow-y-auto">
         {filtered.map((c) => (
           <button key={c.id} onClick={() => onPick(c)}
-            className="flex w-full flex-col items-start px-3 py-2 text-left text-[12.5px] hover:bg-paper">
+            className="flex w-full flex-col items-start px-3 py-2 text-left text-label hover:bg-paper">
             <span className="font-mono font-semibold text-accent">{c.code}</span>
             <span className="text-txt3">{c.statement}</span>
           </button>
         ))}
         {filtered.length === 0 && (
-          <div className="px-3 py-2 text-[12px] text-txt3">
+          <div className="px-3 py-2 text-label text-txt3">
             {controls.isFetching ? "Searching…" : "No match."}</div>)}
       </div>
-      <button onClick={onClose} className="w-full border-t border-bd px-3 py-1.5 text-[11.5px] text-txt3 hover:bg-paper">Cancel</button>
+      <button onClick={onClose} className="w-full border-t border-bd px-3 py-1.5 text-caption text-txt3 hover:bg-paper">Cancel</button>
     </div>
   );
 }

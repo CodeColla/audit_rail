@@ -120,13 +120,13 @@ export function FilePreview({ url, name, className }:
   );
 
   if (state === "loading")
-    return <div className={className}><div className="p-6 text-[13px] text-txt3">Loading preview…</div></div>;
+    return <div className={className}><div className="p-6 text-sm text-txt3">Loading preview…</div></div>;
 
   if (state === "error")
     return (
       <div className={className}>
         <div className="rounded-md border border-dashed border-bd p-6 text-center">
-          <p className="text-[13px] text-txt2">{message}</p>
+          <p className="text-sm text-txt2">{message}</p>
           <div className="mt-3"><Download /></div>
         </div>
       </div>
@@ -135,7 +135,7 @@ export function FilePreview({ url, name, className }:
   return (
     <div className={className}>
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="truncate text-[12.5px] font-medium">{filename}</span>
+        <span className="truncate text-label font-medium">{filename}</span>
         <Download />
       </div>
 
@@ -152,25 +152,25 @@ export function FilePreview({ url, name, className }:
           className="file-preview max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4" />
       )}
       {kind === "text" && (
-        <pre className="max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4 font-mono text-[12px] leading-relaxed">
+        <pre className="max-h-[70vh] overflow-auto rounded-md border border-bd bg-paper p-4 font-mono text-label leading-relaxed">
           {text}
         </pre>
       )}
       {kind === "legacy-doc" && (
-        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-sm text-txt2">
           This is a legacy Word document (.doc) — the file uploaded correctly, but this
           older format can't be previewed in the browser. Download it to view.
         </div>
       )}
       {kind === "heic" && (
-        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-sm text-txt2">
           This photo uploaded correctly, but its format (HEIC — the default on recent
           iPhones) can't be displayed in a browser. Download it to view, or set your phone
           to save photos as JPEG for one that will preview here.
         </div>
       )}
       {kind === "unsupported" && (
-        <div className="rounded-md border border-dashed border-bd p-6 text-center text-[13px] text-txt2">
+        <div className="rounded-md border border-dashed border-bd p-6 text-center text-sm text-txt2">
           There's no in-page preview for this file type — download it to view.
         </div>
       )}

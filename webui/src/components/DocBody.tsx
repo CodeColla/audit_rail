@@ -81,7 +81,7 @@ function SheetGrid({ sheet }: { sheet: Worksheet }) {
     }
   }
   return (
-    <table className="w-full border-collapse text-[13px]">
+    <table className="w-full border-collapse text-sm">
       <tbody>
         {sheet.data.map((row, r) => (
           <tr key={r}>
@@ -128,14 +128,14 @@ function SheetTable({ content }: { content: string }) {
   const sheets = readSheets(content);
   const empty = sheets.every((s) => s.data.length === 0);
   if (sheets.length === 0 || empty) {
-    return <p className="text-[13px] text-txt3">(empty sheet)</p>;
+    return <p className="text-sm text-txt3">(empty sheet)</p>;
   }
   if (sheets.length === 1) return <SheetGrid sheet={sheets[0]} />;
   return (
     <>
       {sheets.map((s, i) => (
         <section key={i} className={i ? "mt-6" : undefined}>
-          <h2 className="mb-2 text-[15px] font-semibold">{s.name}</h2>
+          <h2 className="mb-2 text-body font-semibold">{s.name}</h2>
           <SheetGrid sheet={s} />
         </section>
       ))}

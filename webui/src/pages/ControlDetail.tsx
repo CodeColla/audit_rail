@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
@@ -99,60 +100,60 @@ function EditForm({ doc, domains, onDone }: { doc: Detail; domains: Domain[]; on
       <div className="eyebrow mb-3">Edit control</div>
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Domain
+          <label className="text-sm font-medium">Domain
             <select value={f.domain_id} onChange={set("domain_id")} className={inputCls + " mt-1"}>
               {domains.map((d) => <option key={d.id} value={d.id}>{d.code} — {d.name}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Reference code
+          <label className="text-sm font-medium">Reference code
             <input value={f.code} onChange={set("code")} className={inputCls + " mt-1"} />
           </label>
         </div>
-        <label className="text-[13px] font-medium">Statement
+        <label className="text-sm font-medium">Statement
           <textarea value={f.statement} onChange={set("statement")}
             className={cn(inputCls, "mt-1 min-h-[64px]")} />
         </label>
-        <label className="text-[13px] font-medium">Guidance <span className="text-txt3">(optional)</span>
+        <label className="text-sm font-medium">Guidance <span className="text-txt3">(optional)</span>
           <textarea value={f.guidance} onChange={set("guidance")}
             className={cn(inputCls, "mt-1 min-h-[48px]")} />
         </label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Lifecycle
+          <label className="text-sm font-medium">Lifecycle
             <select value={f.lifecycle} onChange={set("lifecycle")} className={inputCls + " mt-1"}>
               {LIFECYCLE.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}
             </select>
           </label>
           {f.lifecycle === "recurring" && (
-            <label className="text-[13px] font-medium">Recurrence (months)
+            <label className="text-sm font-medium">Recurrence (months)
               <input type="number" min={1} value={f.recurrence_months}
                 onChange={set("recurrence_months")} className={inputCls + " mt-1"} />
             </label>
           )}
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Applicability
+          <label className="text-sm font-medium">Applicability
             <select value={f.applicability} onChange={set("applicability")} className={inputCls + " mt-1"}>
               <option value="applicable">Applicable</option>
               <option value="not_applicable">Not applicable</option>
             </select>
           </label>
-          <label className="text-[13px] font-medium">Owner
+          <label className="text-sm font-medium">Owner
             <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} />
           </label>
         </div>
         {f.applicability === "not_applicable" && (
           <div className="grid grid-cols-2 gap-3 rounded-md border border-bd bg-canvas p-2.5">
-            <label className="text-[13px] font-medium">Why not applicable?
+            <label className="text-sm font-medium">Why not applicable?
               <textarea value={f.na_justification} onChange={set("na_justification")}
                 className={cn(inputCls, "mt-1 min-h-[44px]")} />
             </label>
-            <label className="text-[13px] font-medium">Reactivation trigger
+            <label className="text-sm font-medium">Reactivation trigger
               <input value={f.reactivation_trigger} onChange={set("reactivation_trigger")}
                 className={inputCls + " mt-1"} placeholder="e.g. Cloud adoption" />
             </label>
           </div>
         )}
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <div className="flex items-center gap-2">
           <button disabled={save.isPending
               || !f.statement.trim() || !f.code.trim()
@@ -194,7 +195,7 @@ function StockAnswer({ doc, canEdit }: { doc: Detail; canEdit: boolean }) {
       <div className="mb-2.5 flex items-center justify-between">
         <div className="eyebrow">Stock answer — answer once, reuse everywhere</div>
         {canEdit && !editing && (
-          <button onClick={() => setEditing(true)} className="text-[12px] font-medium text-accent">Edit stock answer</button>
+          <button onClick={() => setEditing(true)} className="text-label font-medium text-accent">Edit stock answer</button>
         )}
       </div>
       {editing ? (
@@ -202,7 +203,7 @@ function StockAnswer({ doc, canEdit }: { doc: Detail; canEdit: boolean }) {
           <div className="flex gap-1.5">
             {STOCK.map((s) => (
               <button key={s} onClick={() => setVal(s)}
-                className={cn("rounded-md border px-3 py-1.5 text-[12.5px] font-semibold capitalize",
+                className={cn("rounded-md border px-3 py-1.5 text-label font-semibold capitalize",
                   val === s ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink" : "border-bd text-txt2")}>
                 {s}</button>
             ))}
@@ -219,12 +220,12 @@ function StockAnswer({ doc, canEdit }: { doc: Detail; canEdit: boolean }) {
       ) : doc.stock_response ? (
         <div className="flex items-start gap-3">
           <Pill tone={stockTone(doc.stock_response)}>{doc.stock_response.toUpperCase()}</Pill>
-          {doc.stock_comment && <p className="text-[13px] text-txt2">{doc.stock_comment}</p>}
+          {doc.stock_comment && <p className="text-sm text-txt2">{doc.stock_comment}</p>}
         </div>
       ) : (
-        <div className="text-[12.5px] text-txt3">No stock answer set yet — every mapped bank point needs answering by hand until one is.</div>
+        <div className="text-label text-txt3">No stock answer set yet — every mapped bank point needs answering by hand until one is.</div>
       )}
-      {err && <div className="mt-2 rounded-md bg-warn-bg px-3 py-2 text-[12.5px] text-warn">{err}</div>}
+      {err && <div className="mt-2 rounded-md bg-warn-bg px-3 py-2 text-label text-warn">{err}</div>}
     </Card>
   );
 }
@@ -263,15 +264,15 @@ function AttachEvidence({ controlId, linked, canEdit }:
     <Card>
       <div className="mb-2.5 flex items-center justify-between">
         <div className="eyebrow">Evidence</div>
-        {canEdit && <button onClick={() => setPicking((s) => !s)} className="text-[12px] font-medium text-accent">＋ Attach</button>}
+        {canEdit && <button onClick={() => setPicking((s) => !s)} className="text-label font-medium text-accent"><Plus size={15} strokeWidth={2.4} /> Attach</button>}
       </div>
-      {linked.length === 0 && <div className="text-[12.5px] text-txt3">No evidence attached yet.</div>}
+      {linked.length === 0 && <div className="text-label text-txt3">No evidence attached yet.</div>}
       {linked.map((e) => (
-        <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+        <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0">
           <Link to={`/evidence/view/${e.id}`} className="min-w-0 flex-1 truncate font-medium text-ink hover:underline">{e.title}</Link>
           <span className="text-txt3">{e.evidence_type}</span>
           <Pill tone={e.status === "expired" ? "bad" : e.status === "expiring" ? "warn" : "ok"}>{e.status}</Pill>
-          {canEdit && <button onClick={() => unlink.mutate(e.id)} className="text-[11.5px] text-bad hover:underline">remove</button>}
+          {canEdit && <button onClick={() => unlink.mutate(e.id)} className="text-caption text-bad hover:underline">remove</button>}
         </div>
       ))}
       {picking && (() => {
@@ -284,15 +285,15 @@ function AttachEvidence({ controlId, linked, canEdit }:
               {/* three states, not one: an in-flight search must not read as "your vault
                   is empty", and "everything is already attached" is not "no match" */}
               {list.isPending ? (
-                <div className="px-3 py-2 text-[12px] text-txt3">Searching…</div>
+                <div className="px-3 py-2 text-label text-txt3">Searching…</div>
               ) : pickable.length === 0 ? (
-                <div className="px-3 py-2 text-[12px] text-txt3">
+                <div className="px-3 py-2 text-label text-txt3">
                   {dq ? "Nothing in the vault matches that."
                       : list.data?.length ? "Everything in the vault is already attached."
                       : "No evidence in the vault yet."}</div>
               ) : pickable.map((e) => (
                 <button key={e.id} onClick={() => link.mutate(e.id)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-[12.5px] hover:bg-canvas">
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-label hover:bg-canvas">
                   <span>{e.title}</span><span className="text-txt3">attach →</span>
                 </button>))}
             </div>
@@ -321,28 +322,28 @@ function AttachDocument({ controlId, linked, canEdit }:
     <Card>
       <div className="mb-2.5 flex items-center justify-between">
         <div className="eyebrow">Policies & procedures</div>
-        {canEdit && <button onClick={() => setPicking((s) => !s)} className="text-[12px] font-medium text-accent">＋ Attach</button>}
+        {canEdit && <button onClick={() => setPicking((s) => !s)} className="text-label font-medium text-accent"><Plus size={15} strokeWidth={2.4} /> Attach</button>}
       </div>
-      {linked.length === 0 && <div className="text-[12.5px] text-txt3">No policy documents this yet.</div>}
+      {linked.length === 0 && <div className="text-label text-txt3">No policy documents this yet.</div>}
       {linked.map((d) => (
-        <div key={d.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+        <div key={d.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0">
           <Link to={`/documents/${d.id}`} className="min-w-0 flex-1 truncate font-medium text-ink hover:underline">{d.title}</Link>
           <span className="text-txt3 capitalize">{d.document_type.toLowerCase()}</span>
           <Pill tone={d.status === "ARCHIVED" ? "na" : d.published_version ? "ok" : "warn"}>
             {d.status === "ARCHIVED" ? "Archived" : d.published_version ? `v${d.published_version}` : "unpublished"}
           </Pill>
-          {canEdit && <button onClick={() => unlink.mutate(d.id)} className="text-[11.5px] text-bad hover:underline">remove</button>}
+          {canEdit && <button onClick={() => unlink.mutate(d.id)} className="text-caption text-bad hover:underline">remove</button>}
         </div>
       ))}
       {picking && (
         <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-bd">
           {(list.data ?? []).filter((d) => !linkedIds.has(d.id)).map((d) => (
             <button key={d.id} onClick={() => link.mutate(d.id)}
-              className="flex w-full items-center justify-between px-3 py-2 text-left text-[12.5px] hover:bg-canvas">
+              className="flex w-full items-center justify-between px-3 py-2 text-left text-label hover:bg-canvas">
               <span>{d.title}</span><span className="text-txt3">attach →</span>
             </button>
           ))}
-          {list.data?.length === 0 && <div className="px-3 py-2 text-[12px] text-txt3">No documents yet.</div>}
+          {list.data?.length === 0 && <div className="px-3 py-2 text-label text-txt3">No documents yet.</div>}
         </div>
       )}
     </Card>
@@ -398,27 +399,27 @@ function SatisfiesClauses({ controlId, linked, canEdit }:
         <div className="eyebrow">Satisfies</div>
         {canEdit && (
           <button onClick={() => setPicking((s) => !s)}
-            className="text-[12px] font-medium text-accent">＋ Map a clause</button>
+            className="text-label font-medium text-accent"><Plus size={15} strokeWidth={2.4} /> Map a clause</button>
         )}
       </div>
       {linked.length === 0 && (
-        <div className="text-[12.5px] text-txt3">
+        <div className="text-label text-txt3">
           Not mapped to any certification clause yet. Mapping it here is what makes this
           control — and its evidence — count toward ISO, SOC 2 or an RBI requirement.
         </div>
       )}
       {Object.entries(byFramework).map(([code, rows]) => (
         <div key={code} className="border-t border-bd py-2 first:border-t-0">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.09em] text-txt3">
+          <div className="mb-1 text-micro font-semibold uppercase tracking-[0.09em] text-txt3">
             {code}
           </div>
           {rows.map((c) => (
-            <div key={c.id} className="flex items-baseline gap-2.5 py-0.5 text-[12.5px]">
-              <span className="shrink-0 font-mono text-[11.5px] font-medium">{c.ref}</span>
+            <div key={c.id} className="flex items-baseline gap-2.5 py-0.5 text-label">
+              <span className="shrink-0 font-mono text-caption font-medium">{c.ref}</span>
               <span className="min-w-0 flex-1 truncate text-txt2">{c.title}</span>
               {canEdit && (
                 <button onClick={() => unlink.mutate(c.id)}
-                  className="shrink-0 text-[11.5px] text-bad hover:underline">remove</button>
+                  className="shrink-0 text-caption text-bad hover:underline">remove</button>
               )}
             </div>
           ))}
@@ -433,8 +434,8 @@ function SatisfiesClauses({ controlId, linked, canEdit }:
           <div className="max-h-48 overflow-y-auto">
             {(clauses.data ?? []).filter((c) => !linkedIds.has(c.id)).map((c) => (
               <button key={c.id} onClick={() => link.mutate(c.id)}
-                className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[12.5px] hover:bg-canvas">
-                <span className="shrink-0 font-mono text-[11.5px] font-medium">{c.ref}</span>
+                className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-label hover:bg-canvas">
+                <span className="shrink-0 font-mono text-caption font-medium">{c.ref}</span>
                 <span className="min-w-0 flex-1 truncate text-txt2">{c.title}</span>
               </button>
             ))}
@@ -470,13 +471,13 @@ export default function ControlDetail() {
 
   return (
     <>
-      <Link to="/controls" className="text-[13px] text-txt2 hover:text-ink">← All controls</Link>
+      <Link to="/controls" className="text-sm text-txt2 hover:text-ink">← All controls</Link>
       <div className="mb-1 mt-2 flex flex-wrap items-center gap-3">
-        <span className="font-mono text-[13px] font-semibold text-accent">{doc.code}</span>
-        <h1 className="text-[20px] font-semibold tracking-[-0.01em]">{doc.statement}</h1>
+        <span className="font-mono text-sm font-semibold text-accent">{doc.code}</span>
+        <h1 className="text-title font-semibold tracking-[-0.01em]">{doc.statement}</h1>
         {doc.status === "retired" && <Pill tone="na">Retired</Pill>}
       </div>
-      <p className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-2 text-[13.5px] text-txt2">
+      <p className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-2 text-sm text-txt2">
         <span className="font-mono text-txt3">{doc.domain_name}</span> · {lifecycleLabel(doc)} ·{" "}
         <Pill tone={doc.applicability === "applicable" ? "applicable" : "na"}>
           {doc.applicability === "applicable" ? "Applicable" : "Not applicable · dormant"}
@@ -500,14 +501,14 @@ export default function ControlDetail() {
 
       {doc.guidance && !editing && (
         <Card className="mb-4"><div className="eyebrow mb-1">Guidance</div>
-          <p className="text-[13px] text-txt2">{doc.guidance}</p></Card>
+          <p className="text-sm text-txt2">{doc.guidance}</p></Card>
       )}
 
       {doc.applicability !== "applicable" && !editing && (
         <Card className="mb-4 border-l-[3px] border-l-na">
           <div className="eyebrow mb-1">Dormant · reactivation trigger</div>
           <Pill tone="warn">{doc.reactivation_trigger}</Pill>
-          {doc.na_justification && <p className="mt-2 text-[12.5px] text-txt2">{doc.na_justification}</p>}
+          {doc.na_justification && <p className="mt-2 text-label text-txt2">{doc.na_justification}</p>}
         </Card>
       )}
 
@@ -515,7 +516,7 @@ export default function ControlDetail() {
 
       <Card className="mb-4">
         <div className="eyebrow mb-2.5">Mapped bank points</div>
-        {doc.mapped_points.length === 0 && <div className="text-[12.5px] text-txt3">No bank points mapped yet.</div>}
+        {doc.mapped_points.length === 0 && <div className="text-label text-txt3">No bank points mapped yet.</div>}
         {doc.mapped_points.length > 0 && (
           <Table head={["Bank", "Point", "Confidence", "Status"]}>
             {doc.mapped_points.map((m, i) => (
@@ -536,11 +537,11 @@ export default function ControlDetail() {
             <div className="eyebrow mb-2.5">Risks this control treats</div>
             {doc.linked_risks.map((r) => (
               <Link key={r.id} to={`/risks/view/${r.id}`}
-                className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0 hover:bg-canvas">
+                className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0 hover:bg-canvas">
                 {r.reference && <span className="font-mono text-txt3">{r.reference}</span>}
                 <span className="min-w-0 flex-1 truncate font-medium text-ink">{r.title}</span>
                 {r.inherent_score != null && (
-                  <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 font-mono text-[11px] text-txt2">
+                  <span className="shrink-0 rounded bg-canvas px-1.5 py-0.5 font-mono text-caption text-txt2">
                     {r.inherent_score}{r.residual_score != null && ` → ${r.residual_score}`}
                   </span>)}
                 <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{r.status.charAt(0) + r.status.slice(1).toLowerCase()}</Pill>
@@ -552,8 +553,8 @@ export default function ControlDetail() {
           <Card>
             <div className="eyebrow mb-2.5">Obligations this control satisfies</div>
             {doc.linked_obligations.map((o) => (
-              <div key={o.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
-                {o.regulator && <span className="shrink-0 rounded bg-ink px-1.5 py-0.5 text-[10px] font-bold text-white">{o.regulator}</span>}
+              <div key={o.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0">
+                {o.regulator && <span className="shrink-0 rounded bg-ink px-1.5 py-0.5 text-micro font-bold text-white">{o.regulator}</span>}
                 <span className="min-w-0 flex-1 truncate">{o.requirement}</span>
                 <Pill tone={o.status === "COMPLIANT" ? "ok" : o.status === "NON_COMPLIANT" ? "bad" : "warn"}>
                   {o.status.replace(/_/g, " ").toLowerCase()}</Pill>

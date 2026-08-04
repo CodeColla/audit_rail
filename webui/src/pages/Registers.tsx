@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, fetchBlob, get } from "../lib/api";
@@ -115,8 +116,8 @@ function LikelihoodImpact({ l, i, onL, onI }:
   );
   return (
     <div className="grid grid-cols-2 gap-2">
-      <label className="text-[12px] text-txt2">Likelihood {sel(l, onL)}</label>
-      <label className="text-[12px] text-txt2">Impact {sel(i, onI)}</label>
+      <label className="text-label text-txt2">Likelihood {sel(l, onL)}</label>
+      <label className="text-label text-txt2">Impact {sel(i, onI)}</label>
     </div>
   );
 }
@@ -144,22 +145,22 @@ function NewRiskModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New risk">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="Unauthorised access to bank CMS" /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Reference
+          <label className="text-sm font-medium">Reference
             <input value={f.reference} onChange={(e) => set("reference")(e.target.value)}
               className={inputCls + " mt-1"} placeholder="R-001" /></label>
-          <label className="text-[13px] font-medium">Category
+          <label className="text-sm font-medium">Category
             <LookupSelect kind="risk_category" value={f.category} onChange={set("category")} /></label>
         </div>
-        <label className="text-[13px] font-medium">Owner
+        <label className="text-sm font-medium">Owner
           <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Reported by
+          <label className="text-sm font-medium">Reported by
             <OwnerSelect value={f.reported_by_person_id} onChange={set("reported_by_person_id")} /></label>
-          <label className="text-[13px] font-medium">Reviewed by
+          <label className="text-sm font-medium">Reviewed by
             <OwnerSelect value={f.reviewed_by_person_id} onChange={set("reviewed_by_person_id")} /></label>
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -171,12 +172,12 @@ function NewRiskModal({ onClose }: { onClose: () => void }) {
             <LikelihoodImpact l={f.rl} i={f.ri} onL={set("rl")} onI={set("ri")} /></div>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Treatment
+          <label className="text-sm font-medium">Treatment
             <select value={f.treatment} onChange={(e) => set("treatment")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option>{TREATMENTS.map((t) => <option key={t} value={t}>{cap(t)}</option>)}
             </select></label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.title || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create risk"}</button>
       </form>
@@ -257,22 +258,22 @@ function AttachEvidenceCard({ base, invalidateKey, rows }: {
     <Card>
       <div className="mb-2 flex items-center justify-between">
         <div className="eyebrow">Evidence · {rows.length}</div>
-        <button onClick={() => setPicking((v) => !v)} className="text-[12px] font-medium text-accent">
-          ＋ Attach</button>
+        <button onClick={() => setPicking((v) => !v)} className="text-label font-medium text-accent">
+          <Plus size={15} strokeWidth={2.4} /> Attach</button>
       </div>
-      {rows.length === 0 && <p className="text-[12.5px] text-txt3">Nothing attached yet.</p>}
+      {rows.length === 0 && <p className="text-label text-txt3">Nothing attached yet.</p>}
       {/* P5-S4: was a plain unstyled <span> — the worst attachment presentation in the app
           (no link affordance, no icon, no way to actually LOOK at the proof without going
           to the vault and finding it again). `AttachmentLink` is the shared component S1
           built for exactly this. */}
       {rows.map((e) => (
-        <div key={e.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+        <div key={e.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
           <div className="min-w-0 flex-1"><AttachmentLink id={e.id} title={e.title} /></div>
           <span className="shrink-0 text-txt3">{nice(e.evidence_type)}</span>
           <button onClick={() => detach.mutate(e.id)} aria-label={`Detach ${e.title}`}
             className="shrink-0 text-txt3 hover:text-bad">✕</button>
         </div>))}
-      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
       {picking && (() => {
         // Distinct states, because collapsing them lies to the user: while the search is
         // in flight `vault.data` is undefined, and rendering the empty case there says
@@ -284,15 +285,15 @@ function AttachEvidenceCard({ base, invalidateKey, rows }: {
               placeholder="Search the vault…" className={inputCls} />
             <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-bd">
               {vault.isPending ? (
-                <div className="px-3 py-2 text-[12px] text-txt3">Searching…</div>
+                <div className="px-3 py-2 text-label text-txt3">Searching…</div>
               ) : pickable.length === 0 ? (
-                <div className="px-3 py-2 text-[12px] text-txt3">
+                <div className="px-3 py-2 text-label text-txt3">
                   {dq ? "Nothing in the vault matches that."
                       : vault.data?.length ? "Everything in the vault is already attached."
                       : "No evidence in the vault yet."}</div>
               ) : pickable.map((e) => (
                 <button key={e.id} onClick={() => attach.mutate(e.id)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-[12.5px] hover:bg-canvas">
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-label hover:bg-canvas">
                   <span>{e.title}</span><span className="text-txt3">attach →</span>
                 </button>))}
             </div>
@@ -319,28 +320,28 @@ function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       <div className="flex flex-wrap gap-2">
         <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{cap(r.status)}</Pill>
         {r.treatment && <Pill tone="info">{cap(r.treatment)}</Pill>}
-        {r.category && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] text-txt2">{r.category}</span>}
+        {r.category && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{r.category}</span>}
       </div>
-      {r.description && <p className="text-[13px] text-txt2">{r.description}</p>}
+      {r.description && <p className="text-sm text-txt2">{r.description}</p>}
       <div className="grid grid-cols-2 gap-3">
         <Card>
           <div className="eyebrow mb-1.5">Inherent</div>
           <ScoreCell score={r.inherent_score} band={r.inherent_band} />
-          <div className="mt-1 text-[11.5px] text-txt3">L {LI(r.inherent_likelihood)} × I {LI(r.inherent_impact)}</div>
+          <div className="mt-1 text-caption text-txt3">L {LI(r.inherent_likelihood)} × I {LI(r.inherent_impact)}</div>
         </Card>
         <Card>
           <div className="eyebrow mb-1.5">Residual</div>
           <ScoreCell score={r.residual_score} band={r.residual_band} />
-          <div className="mt-1 text-[11.5px] text-txt3">L {LI(r.residual_likelihood)} × I {LI(r.residual_impact)}</div>
+          <div className="mt-1 text-caption text-txt3">L {LI(r.residual_likelihood)} × I {LI(r.residual_impact)}</div>
         </Card>
       </div>
       <Card>
         <div className="eyebrow mb-2">Links · {r.links.length}</div>
-        {r.links.length === 0 && <p className="mb-2 text-[12.5px] text-txt3">Not linked to anything yet. Link a control to answer "what treats this risk?" — it shows on the control too.</p>}
+        {r.links.length === 0 && <p className="mb-2 text-label text-txt3">Not linked to anything yet. Link a control to answer "what treats this risk?" — it shows on the control too.</p>}
         <div className="mb-3 flex flex-col gap-1.5">
           {r.links.map((l) => (
-            <div key={l.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
-              <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-semibold text-txt2">{cap(l.target_kind)}</span>
+            <div key={l.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
+              <span className="rounded bg-canvas px-1.5 py-0.5 text-micro font-semibold text-txt2">{cap(l.target_kind)}</span>
               <span className="min-w-0 flex-1 truncate">{l.label ?? l.target_id}</span>
               <button onClick={() => unlink.mutate(l.id)} className="shrink-0 text-txt3 hover:text-bad">✕</button>
             </div>
@@ -349,13 +350,13 @@ function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         <AddLink riskId={id} />
       </Card>
       <AttachEvidenceCard base={`/risks/${id}`} invalidateKey={["risk", id]} rows={r.evidence ?? []} />
-      <div className="flex flex-col gap-1 text-[12.5px] text-txt2">
+      <div className="flex flex-col gap-1 text-label text-txt2">
         {r.owner_name && <div>Owner · <b>{r.owner_name}</b></div>}
         {r.reported_by_name && <div>Reported by · <b>{r.reported_by_name}</b></div>}
         {r.reviewed_by_name && <div>Reviewed by · <b>{r.reviewed_by_name}</b></div>}
       </div>
-      {r.note && <Card><div className="eyebrow mb-1">Note</div><p className="text-[12.5px] text-txt2">{r.note}</p></Card>}
-      <button onClick={() => del.mutate()} className="mt-2 text-[12px] text-txt3 hover:text-bad">Delete this risk</button>
+      {r.note && <Card><div className="eyebrow mb-1">Note</div><p className="text-label text-txt2">{r.note}</p></Card>}
+      <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this risk</button>
     </Drawer>
   );
 }
@@ -413,12 +414,12 @@ export function RisksTab() {
         {can("risks", "add") && (
           <>
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New risk</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New risk</button>
           </>
         )}
       </div>
       {rows.length === 0 && !q ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No risks yet. This is the register a bank asks for first — add your top risks, score them, and link the controls that treat them.
         </div>
       ) : (
@@ -504,26 +505,26 @@ function NewAssetModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New asset" size="lg">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Name *
+        <label className="text-sm font-medium">Name *
           <input required value={f.name} onChange={(e) => set("name")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="CMS Server" /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Type
+          <label className="text-sm font-medium">Type
             <select value={f.asset_type} onChange={(e) => set("asset_type")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="VIRTUAL">Virtual</option><option value="PHYSICAL">Physical</option></select></label>
-          <label className="text-[13px] font-medium">Sub-type
+          <label className="text-sm font-medium">Sub-type
             <LookupSelect kind="asset_subtype" value={f.subtype} onChange={set("subtype")} /></label>
-          <label className="text-[13px] font-medium">Criticality
+          <label className="text-sm font-medium">Criticality
             <select value={f.criticality} onChange={(e) => set("criticality")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option>{CRITICALITIES.map((c) => <option key={c} value={c}>{cap(c)}</option>)}</select></label>
-          <label className="text-[13px] font-medium">Quantity
+          <label className="text-sm font-medium">Quantity
             <input type="number" min={0} value={f.quantity} onChange={(e) => set("quantity")(e.target.value)}
               className={inputCls + " mt-1"} /></label>
-          <label className="text-[13px] font-medium">Owner
+          <label className="text-sm font-medium">Owner
             <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} /></label>
-          <label className="text-[13px] font-medium">Vendor
+          <label className="text-sm font-medium">Vendor
             <VendorSelect value={f.vendor_third_party_id} onChange={set("vendor_third_party_id")} /></label>
-          <label className="text-[13px] font-medium">Location
+          <label className="text-sm font-medium">Location
             <input value={f.location} onChange={(e) => set("location")(e.target.value)}
               className={inputCls + " mt-1"}
               placeholder={f.asset_type === "PHYSICAL" ? "Server room, HO" : "AWS ap-south-1"} /></label>
@@ -532,25 +533,25 @@ function NewAssetModal({ onClose }: { onClose: () => void }) {
           <div className="eyebrow mb-2">{f.asset_type === "PHYSICAL" ? "Physical detail" : "Virtual detail"}</div>
           <div className="grid grid-cols-2 gap-3">
             {typeFields.map(([key, label, ph]) => (
-              <label key={key} className="text-[13px] font-medium">{label}
+              <label key={key} className="text-sm font-medium">{label}
                 <input value={f[key]} onChange={(e) => set(key)(e.target.value)}
                   className={inputCls + " mt-1"} placeholder={ph} /></label>
             ))}
           </div>
         </div>
         <div>
-          <div className="text-[13px] font-medium">Data it stores</div>
+          <div className="text-sm font-medium">Data it stores</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {(dataItems.data ?? []).map((d) => (
               <button type="button" key={d.id} onClick={() => toggle(d.name)}
-                className={cn("rounded-full border px-2.5 py-1 text-[12px]",
+                className={cn("rounded-full border px-2.5 py-1 text-label",
                   dataTypes.includes(d.name) ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink" : "border-bd text-txt2 hover:bg-canvas")}>
                 {d.name} <span className="text-txt3">· {cap(d.classification)}</span>
               </button>))}
-            {(dataItems.data ?? []).length === 0 && <span className="text-[12px] text-txt3">Add data items in the Data tab first.</span>}
+            {(dataItems.data ?? []).length === 0 && <span className="text-label text-txt3">Add data items in the Data tab first.</span>}
           </div>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.name || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create asset"}</button>
       </form>
@@ -599,21 +600,22 @@ function AssetPhoto({ id, a }: { id: string; a: AssetDetail }) {
       <div className="mb-2 flex items-center justify-between">
         <div className="eyebrow">Photo</div>
         {fileId && (
-          <button onClick={() => rm.mutate()} className="text-[12px] text-txt3 hover:text-bad">Remove</button>)}
+          <button onClick={() => rm.mutate()} className="text-label text-txt3 hover:text-bad">Remove</button>)}
       </div>
       {fileId ? (
         src
           ? <img src={src} alt={a.photo_name ?? a.name}
               className="max-h-52 w-full rounded-md border border-bd object-contain bg-canvas" />
-          : <div className="grid h-24 place-items-center text-[12px] text-txt3">Loading…</div>
+          : <div className="grid h-24 place-items-center text-label text-txt3">Loading…</div>
       ) : (
-        <label className="flex cursor-pointer items-center justify-center rounded-md border border-dashed border-bd py-6 text-[12.5px] text-txt2 hover:border-accent hover:text-accent">
-          {up.isPending ? "Uploading…" : "＋ Add a photo of this unit"}
+        <label className="flex cursor-pointer items-center justify-center rounded-md border border-dashed border-bd py-6 text-label text-txt2 hover:border-accent hover:text-accent">
+          {up.isPending ? "Uploading…"
+            : <><Plus size={15} strokeWidth={2.4} /> Add a photo of this unit</>}
           <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden"
             onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) up.mutate(f); }} />
         </label>
       )}
-      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
     </Card>
   );
 }
@@ -628,10 +630,10 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     <Drawer open onClose={onClose} sub={`ASSET · ${cap(a.asset_type)}`} title={a.name}>
       <div className="flex flex-wrap gap-2">
         {a.criticality && <Pill tone={CRIT_TONE[a.criticality]}>{cap(a.criticality)}</Pill>}
-        {a.location && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] text-txt2">{a.location}</span>}
-        <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] text-txt2">×{a.quantity}</span>
+        {a.location && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{a.location}</span>}
+        <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">×{a.quantity}</span>
       </div>
-      {a.description && <p className="text-[13px] text-txt2">{a.description}</p>}
+      {a.description && <p className="text-sm text-txt2">{a.description}</p>}
       {/* Physical only — a photograph of a cloud service is nothing. */}
       {a.asset_type === "PHYSICAL" && <AssetPhoto id={id} a={a} />}
       {(() => {
@@ -644,16 +646,16 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
             <div className="eyebrow mb-2">{a.asset_type === "PHYSICAL" ? "Physical detail" : "Virtual detail"}</div>
             <div className="flex flex-col gap-1.5">
               {a.subtype && (
-                <div className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+                <div className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                   <span className="w-32 shrink-0 text-txt3">Sub-type</span><span>{a.subtype}</span>
                 </div>)}
               {rows.map(([k, label]) => (
-                <div key={k} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+                <div key={k} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                   <span className="w-32 shrink-0 text-txt3">{label}</span>
                   <span className="font-mono">{(a as any)[k]}</span>
                 </div>))}
               {a.vendor_name && (
-                <div className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+                <div className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                   <span className="w-32 shrink-0 text-txt3">Vendor</span>
                   <Link to={`/third-parties/view/${a.vendor_third_party_id}`}
                     className="font-medium text-ink hover:text-accent hover:underline">{a.vendor_name}</Link>
@@ -664,19 +666,19 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       })()}
       <Card>
         <div className="eyebrow mb-2">Data stored here</div>
-        {a.data.length === 0 ? <p className="text-[12.5px] text-txt3">No data items linked.</p> : (
+        {a.data.length === 0 ? <p className="text-label text-txt3">No data items linked.</p> : (
           <div className="flex flex-col gap-1.5">
             {a.data.map((d) => (
-              <div key={d.name} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+              <div key={d.name} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                 <span className="flex-1">{d.name}</span>
                 {d.classification
                   ? <Pill tone={CLASS_TONE[d.classification]}>{cap(d.classification)}</Pill>
-                  : <span className="text-[11px] text-txt3">not in inventory</span>}
+                  : <span className="text-caption text-txt3">not in inventory</span>}
               </div>))}
           </div>)}
       </Card>
-      {a.owner_name && <div className="text-[12.5px] text-txt2">Owner · <b>{a.owner_name}</b></div>}
-      <button onClick={() => del.mutate()} className="mt-2 text-[12px] text-txt3 hover:text-bad">Delete this asset</button>
+      {a.owner_name && <div className="text-label text-txt2">Owner · <b>{a.owner_name}</b></div>}
+      <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this asset</button>
     </Drawer>
   );
 }
@@ -710,11 +712,11 @@ export function AssetsTab() {
       <div className="mb-3 flex justify-end">{can("assets", "add") && (
           <>
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New asset</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New asset</button>
           </>
         )}</div>
       {rows.length === 0 && !q ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No assets yet. Track your servers, laptops and services — what they are, how critical, and what data they hold.
         </div>
       ) : (
@@ -753,24 +755,24 @@ function NewDataModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New data item">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Name *
+        <label className="text-sm font-medium">Name *
           <input required value={f.name} onChange={(e) => set("name")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="Bank customer data" /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Classification
+          <label className="text-sm font-medium">Classification
             <select value={f.classification} onChange={(e) => set("classification")(e.target.value)} className={inputCls + " mt-1"}>
               {CLASSES.map((c) => <option key={c} value={c}>{cap(c)}</option>)}</select></label>
-          <label className="text-[13px] font-medium">Owner
+          <label className="text-sm font-medium">Owner
             <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} /></label>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Where it lives
+          <label className="text-sm font-medium">Where it lives
             <LookupSelect kind="data_type" value={f.data_type} onChange={set("data_type")} /></label>
-          <label className="text-[13px] font-medium">Retention
+          <label className="text-sm font-medium">Retention
             <input value={f.retention_note} onChange={(e) => set("retention_note")(e.target.value)}
               className={inputCls + " mt-1"} placeholder="7 years, then purge" /></label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.name || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create data item"}</button>
       </form>
@@ -804,11 +806,11 @@ export function DataTab() {
       <div className="mb-3 flex justify-end">{can("data", "add") && (
           <>
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New data item</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New data item</button>
           </>
         )}</div>
       {rows.length === 0 && !q ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No data inventory yet. List the kinds of data you hold and how each is classified — assets link to these.
         </div>
       ) : (
@@ -886,12 +888,12 @@ const nice = (s: string | null) => (s ? s.replace(/_/g, " ").toLowerCase().repla
 function Tree({ node, depth = 0 }: { node: TreeNode; depth?: number }) {
   return (
     <div>
-      <div className="flex items-center gap-2 py-1 text-[13px]" style={{ paddingLeft: depth * 18 }}>
+      <div className="flex items-center gap-2 py-1 text-sm" style={{ paddingLeft: depth * 18 }}>
         {depth > 0 && <span className="text-txt3">└─</span>}
         <span className="font-medium">{node.name}</span>
         {node.criticality && <Pill tone={CRIT_TONE[node.criticality]}>{cap(node.criticality)}</Pill>}
-        {depth === 0 && <span className="text-[11px] text-txt3">(you → this vendor)</span>}
-        {depth === 1 && <span className="text-[11px] text-txt3">4th party</span>}
+        {depth === 0 && <span className="text-caption text-txt3">(you → this vendor)</span>}
+        {depth === 1 && <span className="text-caption text-txt3">4th party</span>}
       </div>
       {node.children.map((c) => <Tree key={c.id} node={c} depth={depth + 1} />)}
     </div>
@@ -918,25 +920,25 @@ function NewThirdPartyModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New third party">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Name *
+        <label className="text-sm font-medium">Name *
           <input required value={f.name} onChange={(e) => set("name")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="Cloud Vendor A" /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Category
+          <label className="text-sm font-medium">Category
             <LookupSelect kind="third_party_category" value={f.category} onChange={set("category")} /></label>
-          <label className="text-[13px] font-medium">Criticality
+          <label className="text-sm font-medium">Criticality
             <select value={f.criticality} onChange={(e) => set("criticality")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option>{CRITICALITIES.map((c) => <option key={c} value={c}>{cap(c)}</option>)}</select></label>
-          <label className="text-[13px] font-medium">Business owner
+          <label className="text-sm font-medium">Business owner
             <OwnerSelect value={f.business_owner_person_id} onChange={set("business_owner_person_id")} /></label>
-          <label className="text-[13px] font-medium">Sub-processor of
+          <label className="text-sm font-medium">Sub-processor of
             <select value={f.parent_third_party_id} onChange={(e) => set("parent_third_party_id")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">— none (direct vendor) —</option>
               {(parents.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         </div>
-        <p className="rounded-md bg-canvas px-3 py-2 text-[11.5px] text-txt2">
+        <p className="rounded-md bg-canvas px-3 py-2 text-caption text-txt2">
           "Sub-processor of" builds the <b>4th-party chain</b> a bank asks you to disclose.</p>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.name || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create vendor"}</button>
       </form>
@@ -983,11 +985,12 @@ function AgreementFile({ tpId, a }: { tpId: string; a: Agreement }) {
   if (a.file_name)
     return (
       <button onClick={() => downloadFile(base, a.file_name!)}
-        title={a.file_name} className="max-w-[9rem] shrink-0 truncate text-[11.5px] text-accent hover:underline">
+        title={a.file_name} className="max-w-[9rem] shrink-0 truncate text-caption text-accent hover:underline">
         📎 {a.file_name}</button>);
   return (
-    <label className="shrink-0 cursor-pointer text-[11.5px] text-txt3 hover:text-accent" title={err || undefined}>
-      {up.isPending ? "uploading…" : err ? "⚠ retry" : "＋ contract"}
+    <label className="shrink-0 cursor-pointer text-caption text-txt3 hover:text-accent" title={err || undefined}>
+      {up.isPending ? "uploading…" : err ? "⚠ retry"
+        : <><Plus size={15} strokeWidth={2.4} /> contract</>}
       <input type="file" className="hidden" onChange={(e) => {
         const f = e.target.files?.[0]; e.target.value = ""; if (f) up.mutate(f); }} />
     </label>
@@ -1008,16 +1011,16 @@ function AssessmentEvidence({ tpId, a }: { tpId: string; a: Assessment }) {
   });
   if (a.evidence_title && !picking)
     return (
-      <span className="flex shrink-0 items-center gap-1 text-[11.5px]">
+      <span className="flex shrink-0 items-center gap-1 text-caption">
         <Link to={`/evidence/view/${a.evidence_id}`} className="max-w-[8rem] truncate text-accent hover:underline"
           title={a.evidence_title}>📄 {a.evidence_title}</Link>
         <button onClick={() => setEv.mutate(null)} className="text-txt3 hover:text-bad">✕</button>
       </span>);
   if (!picking)
-    return <button onClick={() => setPicking(true)} className="shrink-0 text-[11.5px] text-txt3 hover:text-accent">＋ evidence</button>;
+    return <button onClick={() => setPicking(true)} className="shrink-0 text-caption text-txt3 hover:text-accent"><Plus size={15} strokeWidth={2.4} /> evidence</button>;
   return (
     <select autoFocus aria-label="Pick evidence" defaultValue=""
-      className={cn(inputCls, "w-40 shrink-0 py-1 text-[11.5px]")}
+      className={cn(inputCls, "w-40 shrink-0 py-1 text-caption")}
       onBlur={() => setPicking(false)}
       onChange={(e) => e.target.value && setEv.mutate(e.target.value)}>
       <option value="">— pick evidence —</option>
@@ -1038,7 +1041,7 @@ function AddAssessment({ tpId }: { tpId: string }) {
     <div className="flex flex-wrap items-center gap-2">
       <select value={outcome} onChange={(e) => setOutcome(e.target.value)} className={cn(inputCls, "w-auto")}>
         {OUTCOMES.map((o) => <option key={o} value={o}>{nice(o)}</option>)}</select>
-      <span className="text-[12px] text-txt3">expires</span>
+      <span className="text-label text-txt3">expires</span>
       <input type="date" value={expires} onChange={(e) => setExpires(e.target.value)} className={cn(inputCls, "w-auto")} />
       <button disabled={add.isPending} onClick={() => add.mutate()} className="btn shrink-0">Add assessment</button>
     </div>
@@ -1059,7 +1062,7 @@ function ThirdPartyDrawer({ id, onClose }: { id: string; onClose: () => void }) 
       <div className="flex flex-wrap gap-2">
         <Pill tone={tp.status === "ACTIVE" ? "ok" : tp.status === "TERMINATED" ? "bad" : "warn"}>{nice(tp.status)}</Pill>
         {tp.criticality && <Pill tone={CRIT_TONE[tp.criticality]}>{cap(tp.criticality)}</Pill>}
-        {tp.category && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] text-txt2">{tp.category}</span>}
+        {tp.category && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{tp.category}</span>}
       </div>
       {(tree.data && (tree.data.children.length > 0)) && (
         <Card>
@@ -1069,13 +1072,13 @@ function ThirdPartyDrawer({ id, onClose }: { id: string; onClose: () => void }) 
       <Card>
         <div className="mb-2 flex items-center justify-between">
           <div className="eyebrow">Agreements</div></div>
-        {tp.agreements.length === 0 && <p className="mb-2 text-[12.5px] text-txt3">No DPA/BAA/NDA on file.</p>}
+        {tp.agreements.length === 0 && <p className="mb-2 text-label text-txt3">No DPA/BAA/NDA on file.</p>}
         <div className="mb-3 flex flex-col gap-1.5">
           {tp.agreements.map((a) => (
-            <div key={a.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
-              <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-semibold text-txt2">{a.kind}</span>
+            <div key={a.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
+              <span className="rounded bg-canvas px-1.5 py-0.5 text-micro font-semibold text-txt2">{a.kind}</span>
               <span className="min-w-0 flex-1 truncate text-txt2">
-                {a.reference && <span className="font-mono text-[11.5px] text-ink">{a.reference} · </span>}
+                {a.reference && <span className="font-mono text-caption text-ink">{a.reference} · </span>}
                 {a.valid_until ? `until ${a.valid_until.slice(0, 10)}` : "no expiry"}</span>
               <AgreementFile tpId={id} a={a} />
               {a.valid_until && <Pill tone={EXP_TONE[a.expiry_status] ?? "na"}>{a.expiry_status}</Pill>}
@@ -1086,10 +1089,10 @@ function ThirdPartyDrawer({ id, onClose }: { id: string; onClose: () => void }) 
       </Card>
       <Card>
         <div className="eyebrow mb-2">Security assessments</div>
-        {tp.assessments.length === 0 && <p className="mb-2 text-[12.5px] text-txt3">No assessment recorded — a bank will ask when this vendor was last reviewed.</p>}
+        {tp.assessments.length === 0 && <p className="mb-2 text-label text-txt3">No assessment recorded — a bank will ask when this vendor was last reviewed.</p>}
         <div className="mb-3 flex flex-col gap-1.5">
           {tp.assessments.map((a) => (
-            <div key={a.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+            <div key={a.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
               <span className="min-w-0 flex-1 truncate">{a.outcome ? nice(a.outcome) : "—"} · expires {a.expires_at ? a.expires_at.slice(0, 10) : "—"}</span>
               <AssessmentEvidence tpId={id} a={a} />
               {a.expires_at && <Pill tone={EXP_TONE[a.expiry_status] ?? "na"}>{a.expiry_status}</Pill>}
@@ -1097,8 +1100,8 @@ function ThirdPartyDrawer({ id, onClose }: { id: string; onClose: () => void }) 
         </div>
         <AddAssessment tpId={id} />
       </Card>
-      {tp.business_owner_name && <div className="text-[12.5px] text-txt2">Business owner · <b>{tp.business_owner_name}</b></div>}
-      <button onClick={() => del.mutate()} className="mt-2 text-[12px] text-txt3 hover:text-bad">Delete this vendor</button>
+      {tp.business_owner_name && <div className="text-label text-txt2">Business owner · <b>{tp.business_owner_name}</b></div>}
+      <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this vendor</button>
     </Drawer>
   );
 }
@@ -1132,11 +1135,11 @@ export function ThirdPartiesTab() {
       <div className="mb-3 flex justify-end">{can("third_parties", "add") && (
           <>
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New third party</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New third party</button>
           </>
         )}</div>
       {rows.length === 0 && !q ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No vendors yet. Track who you rely on, their sub-processors (the bank's 4th parties), and when each was last assessed.
         </div>
       ) : (
@@ -1175,21 +1178,21 @@ function NewObligationModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New obligation">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Requirement *
+        <label className="text-sm font-medium">Requirement *
           <textarea required value={f.requirement} onChange={(e) => set("requirement")(e.target.value)}
             className={inputCls + " mt-1 min-h-[70px]"} placeholder="Outsourcing risk management per RBI IT outsourcing directions" /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Area
+          <label className="text-sm font-medium">Area
             <LookupSelect kind="obligation_area" value={f.area} onChange={set("area")} /></label>
-          <label className="text-[13px] font-medium">Regulator
+          <label className="text-sm font-medium">Regulator
             <LookupSelect kind="regulator" value={f.regulator} onChange={set("regulator")} /></label>
-          <label className="text-[13px] font-medium">Type
+          <label className="text-sm font-medium">Type
             <select value={f.type} onChange={(e) => set("type")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option><option value="LEGAL">Legal</option><option value="CONTRACTUAL">Contractual</option></select></label>
-          <label className="text-[13px] font-medium">Owner
+          <label className="text-sm font-medium">Owner
             <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} /></label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.requirement || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create obligation"}</button>
       </form>
@@ -1233,14 +1236,14 @@ function ObligationDrawer({ id, onClose }: { id: string; onClose: () => void }) 
           className={cn(inputCls, "w-auto")}>
           {OBS_STATUS.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
         {o.type && <Pill tone="info">{cap(o.type)}</Pill>}
-        {o.area && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] text-txt2">{o.area}</span>}
+        {o.area && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{o.area}</span>}
       </div>
       <Card>
         <div className="eyebrow mb-2">Controls that satisfy this · {o.controls.length}</div>
-        {o.controls.length === 0 && <p className="mb-2 text-[12.5px] text-txt3">Link the controls that demonstrate compliance — they'll drive the SoA later.</p>}
+        {o.controls.length === 0 && <p className="mb-2 text-label text-txt3">Link the controls that demonstrate compliance — they'll drive the SoA later.</p>}
         <div className="mb-3 flex flex-col gap-1.5">
           {o.controls.map((c) => (
-            <div key={c.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+            <div key={c.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
               <span className="font-mono text-txt3">{c.code}</span>
               <span className="min-w-0 flex-1 truncate">{c.statement}</span>
               <button onClick={() => unlink.mutate(c.id)} className="text-txt3 hover:text-bad">✕</button>
@@ -1248,8 +1251,8 @@ function ObligationDrawer({ id, onClose }: { id: string; onClose: () => void }) 
         </div>
         <LinkControl obligationId={id} />
       </Card>
-      {o.owner_name && <div className="text-[12.5px] text-txt2">Owner · <b>{o.owner_name}</b></div>}
-      <button onClick={() => del.mutate()} className="mt-2 text-[12px] text-txt3 hover:text-bad">Delete this obligation</button>
+      {o.owner_name && <div className="text-label text-txt2">Owner · <b>{o.owner_name}</b></div>}
+      <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this obligation</button>
     </Drawer>
   );
 }
@@ -1266,10 +1269,10 @@ export function ObligationsTab() {
   return (
     <>
       <div className="mb-3 flex justify-end">{can("obligations", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New obligation</button>
+          <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New obligation</button>
         )}</div>
       {rows.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No obligations yet. This is where <b>RBI</b> (and contractual) requirements live — each linked to the controls that satisfy it.
         </div>
       ) : (
@@ -1311,24 +1314,24 @@ function NewIncidentModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New incident">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="CMS brief outage" /></label>
         <div className="grid grid-cols-3 gap-3">
-          <label className="text-[13px] font-medium">Reference
+          <label className="text-sm font-medium">Reference
             <input value={f.reference} onChange={(e) => set("reference")(e.target.value)} className={inputCls + " mt-1"} placeholder="INC-001" /></label>
-          <label className="text-[13px] font-medium">Severity
+          <label className="text-sm font-medium">Severity
             <select value={f.severity} onChange={(e) => set("severity")(e.target.value)} className={inputCls + " mt-1"}>
               <option value="">—</option>{CRITICALITIES.map((c) => <option key={c} value={c}>{cap(c)}</option>)}</select></label>
-          <label className="text-[13px] font-medium">Detected
+          <label className="text-sm font-medium">Detected
             <input type="date" value={f.detected_at} onChange={(e) => set("detected_at")(e.target.value)} className={inputCls + " mt-1"} /></label>
           {/* P5-S4: the `incident_category` vocabulary was seeded in P4-S3 and had no column
               to write to until now. Lookup-backed like risk category and asset subtype, so
               Masters (S6) can extend it without a migration. */}
-          <label className="text-[13px] font-medium">Category
+          <label className="text-sm font-medium">Category
             <LookupSelect kind="incident_category" value={f.category} onChange={set("category")} /></label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.title || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create incident"}</button>
       </form>
@@ -1356,7 +1359,7 @@ function IncidentTimeline({ id, events }: { id: string; events: IncidentEvent[] 
     <Card>
       <div className="eyebrow mb-2">Timeline · {events.length}</div>
       {events.length === 0 && (
-        <p className="mb-3 text-[12.5px] text-txt3">
+        <p className="mb-3 text-label text-txt3">
           Nothing logged yet. Record when it was detected, what you did to contain it, and when it was resolved.</p>)}
       <div className="mb-3 flex flex-col">
         {events.map((e) => (
@@ -1365,12 +1368,12 @@ function IncidentTimeline({ id, events }: { id: string; events: IncidentEvent[] 
               EVENT_DOT[e.event_type] ?? "bg-txt3")} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-x-2">
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-txt2">{nice(e.event_type)}</span>
-                <span className="text-[11px] text-txt3">
+                <span className="text-caption font-semibold uppercase tracking-wide text-txt2">{nice(e.event_type)}</span>
+                <span className="text-caption text-txt3">
                   {e.occurred_at.slice(0, 16).replace("T", " ")}
                   {e.author_name ? ` · ${e.author_name}` : e.author_kind === "system" ? " · system" : ""}</span>
               </div>
-              <p className="whitespace-pre-wrap text-[12.5px] text-ink">{e.body}</p>
+              <p className="whitespace-pre-wrap text-label text-ink">{e.body}</p>
             </div>
           </div>))}
       </div>
@@ -1380,11 +1383,11 @@ function IncidentTimeline({ id, events }: { id: string; events: IncidentEvent[] 
           {EVENT_TYPES.map((t2) => <option key={t2} value={t2}>{nice(t2)}</option>)}</select>
         <textarea value={body} onChange={(e) => setBody(e.target.value)}
           className={inputCls + " min-h-[52px]"} placeholder="What happened, and when?" />
-        {err && <div className="rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
         <button disabled={!body.trim() || add.isPending} onClick={() => add.mutate()}
           className="btn self-start disabled:opacity-50">
           {add.isPending ? "Adding…" : "Add to timeline"}</button>
-        <p className="text-[11px] text-txt3">Entries can't be edited or deleted — add a correction instead.</p>
+        <p className="text-caption text-txt3">Entries can't be edited or deleted — add a correction instead.</p>
       </div>
     </Card>
   );
@@ -1416,34 +1419,34 @@ function IncidentDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         <select value={inc.status} onChange={(e) => patch.mutate({ status: e.target.value })} className={cn(inputCls, "w-auto")}>
           {INC_STATUS.map((s) => <option key={s} value={s}>{nice(s)}</option>)}</select>
         {inc.severity && <Pill tone={CRIT_TONE[inc.severity]}>{cap(inc.severity)}</Pill>}
-        {inc.detected_at && <span className="text-[12px] text-txt3">detected {inc.detected_at.slice(0, 10)}</span>}
+        {inc.detected_at && <span className="text-label text-txt3">detected {inc.detected_at.slice(0, 10)}</span>}
       </div>
-      {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
-      {inc.description && <p className="text-[13px] text-txt2">{inc.description}</p>}
+      {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+      {inc.description && <p className="text-sm text-txt2">{inc.description}</p>}
       <Card>
         <div className="eyebrow mb-2">Root cause analysis — the part a bank actually reads</div>
-        <label className="text-[12px] text-txt2">Root cause
+        <label className="text-label text-txt2">Root cause
           <textarea value={rcaVal} onChange={(e) => setRca(e.target.value)}
             className={inputCls + " mt-1 min-h-[64px]"} placeholder="Why did it happen?" /></label>
-        <label className="mt-3 block text-[12px] text-txt2">Corrective action
+        <label className="mt-3 block text-label text-txt2">Corrective action
           <textarea value={correctiveVal} onChange={(e) => setCorrective(e.target.value)}
             className={inputCls + " mt-1 min-h-[64px]"} placeholder="What was fixed, by whom, by when?" /></label>
-        <label className="mt-3 block text-[12px] text-txt2">Resolution
+        <label className="mt-3 block text-label text-txt2">Resolution
           <textarea value={resolutionVal} onChange={(e) => setResolution(e.target.value)}
             className={inputCls + " mt-1 min-h-[64px]"} placeholder="How was it finally put right?" /></label>
-        <label className="mt-3 block text-[12px] text-txt2">Lessons learnt
+        <label className="mt-3 block text-label text-txt2">Lessons learnt
           <textarea value={lessonsVal} onChange={(e) => setLessons(e.target.value)}
             className={inputCls + " mt-1 min-h-[64px]"} placeholder="What changes so it doesn't recur?" /></label>
         <button onClick={() => patch.mutate({
           root_cause: rcaVal || null, lessons_learnt: lessonsVal || null,
           corrective_action: correctiveVal || null, resolution: resolutionVal || null })}
           className="btn btn-primary mt-3">Save RCA</button>
-        <p className="mt-2 text-[11px] text-txt3">An incident can't be marked <b>Closed</b> until it has a root cause.</p>
+        <p className="mt-2 text-caption text-txt3">An incident can't be marked <b>Closed</b> until it has a root cause.</p>
       </Card>
       <IncidentTimeline id={id} events={inc.events ?? []} />
       <AttachEvidenceCard base={`/incidents/${id}`} invalidateKey={["incident", id]} rows={inc.evidence ?? []} />
-      {inc.owner_name && <div className="text-[12.5px] text-txt2">Owner · <b>{inc.owner_name}</b></div>}
-      <button onClick={() => del.mutate()} className="mt-2 text-[12px] text-txt3 hover:text-bad">Delete this incident</button>
+      {inc.owner_name && <div className="text-label text-txt2">Owner · <b>{inc.owner_name}</b></div>}
+      <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this incident</button>
     </Drawer>
   );
 }
@@ -1480,11 +1483,11 @@ export function IncidentsTab() {
       <div className="mb-3 flex justify-end">{can("incidents", "add") && (
           <>
             <button onClick={() => setImporting(true)} className="btn">⬆ Import</button>
-            <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New incident</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New incident</button>
           </>
         )}</div>
       {rows.length === 0 && !q ? (
-        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+        <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
           No incidents logged. Banks ask for the <b>RCA</b>, not the ticket — record what happened, the root cause, and the lessons learnt.
         </div>
       ) : (

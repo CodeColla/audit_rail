@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../lib/api";
@@ -121,14 +122,14 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
           <div className="eyebrow">Mapped control{data.mapped_control && (
             <span className="ml-2 font-mono normal-case tracking-normal text-accent">↳ {data.mapped_control.code}</span>)}</div>
           {canEdit && (
-            <button onClick={() => setRemapping((s) => !s)} className="text-[12px] font-medium text-accent">Re-map</button>
+            <button onClick={() => setRemapping((s) => !s)} className="text-label font-medium text-accent">Re-map</button>
           )}
         </div>
         {data.mapped_control
-          ? <p className="text-[12.5px] text-txt2">{data.mapped_control.statement}</p>
-          : <p className="text-[12.5px] text-txt3">No control mapped to this question yet.</p>}
+          ? <p className="text-label text-txt2">{data.mapped_control.statement}</p>
+          : <p className="text-label text-txt3">No control mapped to this question yet.</p>}
         {remapNotice && (
-          <div className="mt-2 rounded-md bg-warn-bg px-2.5 py-1.5 text-[11.5px] text-warn">{remapNotice}</div>
+          <div className="mt-2 rounded-md bg-warn-bg px-2.5 py-1.5 text-caption text-warn">{remapNotice}</div>
         )}
         {remapping && (
           <div className="mt-2">
@@ -154,7 +155,7 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
               <button disabled={!val || naNoJust || saveAnswer.isPending} onClick={() => saveAnswer.mutate()}
                 className="btn btn-primary disabled:opacity-50">{saveAnswer.isPending ? "Saving…" : "Save answer"}</button>
               {data.response && <Pill tone={data.response.workflow_status}>{data.response.workflow_status.replace(/_/g, " ")}</Pill>}
-              {naNoJust && <span className="text-[11.5px] text-bad">N/A needs a justification</span>}
+              {naNoJust && <span className="text-caption text-bad">N/A needs a justification</span>}
             </div>
           </>
         ) : (
@@ -163,9 +164,9 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
               <Pill tone={val || "na"}>{(val || "unanswered").toUpperCase()}</Pill>
               {data.response && <Pill tone={data.response.workflow_status}>{data.response.workflow_status.replace(/_/g, " ")}</Pill>}
             </div>
-            {comment && <p className="text-[13px] text-txt2">{comment}</p>}
-            {just && <p className="border-l-[3px] border-l-warn pl-2 text-[12.5px] text-txt2">{just}</p>}
-            <span className="text-[11.5px] text-txt3">Read-only — you don't have permission to answer audit points.</span>
+            {comment && <p className="text-sm text-txt2">{comment}</p>}
+            {just && <p className="border-l-[3px] border-l-warn pl-2 text-label text-txt2">{just}</p>}
+            <span className="text-caption text-txt3">Read-only — you don't have permission to answer audit points.</span>
           </div>
         )}
       </Card>
@@ -177,23 +178,23 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         <div className="mb-2 flex items-center justify-between">
           <div className="eyebrow">Linked evidence</div>
           {canEdit && (
-            <button onClick={() => setPickEv((s) => !s)} className="text-[12px] font-medium text-accent"
-              disabled={!data.response}>＋ Link evidence</button>
+            <button onClick={() => setPickEv((s) => !s)} className="text-label font-medium text-accent"
+              disabled={!data.response}><Plus size={15} strokeWidth={2.4} /> Link evidence</button>
           )}
         </div>
-        {!data.response && <div className="text-[12px] text-txt3">Answer the question first, then link evidence.</div>}
+        {!data.response && <div className="text-label text-txt3">Answer the question first, then link evidence.</div>}
         {data.evidence.map((e) => (
           <div key={e.id} className="border-t border-bd py-2 first:border-t-0">
             <AttachmentLink id={e.id} title={e.title} />
-            <div className="pl-8 text-[11px] text-txt3">{e.evidence_type}</div>
+            <div className="pl-8 text-caption text-txt3">{e.evidence_type}</div>
           </div>
         ))}
         {data.evidence.length === 0 && data.response && (
-          <div className="border-t border-bd py-2 text-[12px] text-txt3 first:border-t-0">Nothing attached directly to this question.</div>
+          <div className="border-t border-bd py-2 text-label text-txt3 first:border-t-0">Nothing attached directly to this question.</div>
         )}
         {canEdit && data.response && (
           <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-bd pt-2">
-            <label className="btn cursor-pointer py-1 text-[12px]">
+            <label className="btn cursor-pointer py-1 text-label">
               {upBusy ? "Uploading…" : "⬆ Upload a file"}
               <input type="file" className="hidden" disabled={upBusy}
                 onChange={(e) => {
@@ -203,21 +204,21 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
                   if (f) void uploadAndLink(f);
                 }} />
             </label>
-            <span className="text-[11.5px] text-txt3">goes straight to the vault and attaches here</span>
+            <span className="text-caption text-txt3">goes straight to the vault and attaches here</span>
           </div>
         )}
         {upErr && (
-          <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-[12px] text-bad">{upErr}</div>
+          <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{upErr}</div>
         )}
         {pickEv && (
           <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-bd">
             {(evList.data ?? []).map((e) => (
               <button key={e.id} onClick={() => linkEv.mutate(e.id)}
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-[12.5px] hover:bg-canvas">
+                className="flex w-full items-center justify-between px-3 py-2 text-left text-label hover:bg-canvas">
                 <span>{e.title}</span><span className="text-txt3">link →</span>
               </button>
             ))}
-            {evList.data?.length === 0 && <div className="px-3 py-2 text-[12px] text-txt3">No evidence in the vault yet.</div>}
+            {evList.data?.length === 0 && <div className="px-3 py-2 text-label text-txt3">No evidence in the vault yet.</div>}
           </div>
         )}
       </Card>
@@ -226,14 +227,14 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         <Card>
           <div className="mb-2 flex items-center gap-2">
             <div className="eyebrow">Inherited from {data.mapped_control?.code}</div>
-            <span className="rounded bg-canvas px-1.5 py-0.5 text-[10px] font-medium text-txt3">via control</span>
+            <span className="rounded bg-canvas px-1.5 py-0.5 text-micro font-medium text-txt3">via control</span>
           </div>
           {data.inherited_evidence.map((e) => (
             <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
               <span className="grid h-7 w-7 place-items-center rounded-md bg-canvas text-txt3">▣</span>
               <div>
                 <AttachmentLink id={e.id} title={e.title} />
-                <div className="pl-8 text-[11px] text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
+                <div className="pl-8 text-caption text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
               </div>
             </div>
           ))}
@@ -245,11 +246,11 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         <Card>
           <div className="eyebrow mb-2">Answer history · {data.revisions.length} revisions</div>
           {data.revisions.map((r) => (
-            <div key={r.rev_no} className="flex items-baseline gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
-              <span className="font-mono text-[11px] text-txt3">v{r.rev_no}</span>
+            <div key={r.rev_no} className="flex items-baseline gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
+              <span className="font-mono text-caption text-txt3">v{r.rev_no}</span>
               <Pill tone={r.response_value ?? "na"}>{(r.response_value ?? "—").toUpperCase()}</Pill>
               <span className="min-w-0 flex-1 truncate text-txt2">{r.comment}</span>
-              <span className="shrink-0 text-[11px] text-txt3">{(r.created_at ?? "").slice(0, 10)}</span>
+              <span className="shrink-0 text-caption text-txt3">{(r.created_at ?? "").slice(0, 10)}</span>
             </div>
           ))}
         </Card>
@@ -258,22 +259,22 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
       {/* review thread */}
       <Card>
         <div className="eyebrow mb-3">Review thread</div>
-        {data.thread.length === 0 ? <div className="text-[12.5px] text-txt3">No messages yet.</div>
+        {data.thread.length === 0 ? <div className="text-label text-txt3">No messages yet.</div>
           : <div className="mb-3 flex flex-col gap-3">
             {data.thread.map((m, i) => (
               <div key={i} className="flex gap-2.5">
-                <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-full text-[10px] font-bold text-white",
+                <span className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-full text-micro font-bold text-white",
                   m.author_kind === "auditor" ? "bg-info" : "bg-ink")}>{m.author_kind === "auditor" ? "AU" : "ME"}</span>
                 <div className="flex-1">
-                  <div className="mb-0.5 text-[9.5px] font-bold uppercase tracking-wider text-txt2">{m.kind} · {m.author_kind}</div>
-                  <div className={cn("rounded-lg border border-bd px-3 py-2 text-[13px]", m.author_kind === "auditor" && "border-transparent bg-info-bg")}>{m.body}</div>
+                  <div className="mb-0.5 text-micro font-bold uppercase tracking-wider text-txt2">{m.kind} · {m.author_kind}</div>
+                  <div className={cn("rounded-lg border border-bd px-3 py-2 text-sm", m.author_kind === "auditor" && "border-transparent bg-info-bg")}>{m.body}</div>
                 </div>
               </div>
             ))}
           </div>}
         {canEdit && (
           <div className="flex items-center gap-2">
-            <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-bd px-2 py-2 text-[12.5px]">
+            <select value={kind} onChange={(e) => setKind(e.target.value)} className="rounded-md border border-bd px-2 py-2 text-label">
               {["action", "validation", "remark", "ask"].map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
             <input value={msg} onChange={(e) => setMsg(e.target.value)} placeholder="Reply on the thread…" className={inputCls} />
@@ -285,8 +286,8 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
       {/* findings */}
       {data.findings.map((f, i) => (
         <div key={i} className="rounded-lg border border-bd border-l-[3px] border-l-warn bg-paper p-3.5">
-          <div className="mb-1 flex items-center gap-2 text-[13.5px] font-semibold"><Pill tone={f.risk_rating ?? "na"}>{f.risk_rating ?? "—"}</Pill>{f.title}</div>
-          {f.likelihood && f.impact && <div className="font-mono text-[12px] text-txt2">L {f.likelihood} × I {f.impact} = {f.likelihood * f.impact}</div>}
+          <div className="mb-1 flex items-center gap-2 text-sm font-semibold"><Pill tone={f.risk_rating ?? "na"}>{f.risk_rating ?? "—"}</Pill>{f.title}</div>
+          {f.likelihood && f.impact && <div className="font-mono text-label text-txt2">L {f.likelihood} × I {f.impact} = {f.likelihood * f.impact}</div>}
         </div>
       ))}
       {!canEdit ? null : showFinding ? (
@@ -294,14 +295,14 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
           <div className="eyebrow mb-2">Raise a finding</div>
           <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Finding title…" className={inputCls} />
           <div className="mt-2 flex items-center gap-3">
-            <label className="text-[12px]">Likelihood <select value={fL} onChange={(e) => setFL(+e.target.value)} className="ml-1 rounded border border-bd px-2 py-1">{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
-            <label className="text-[12px]">Impact <select value={fI} onChange={(e) => setFI(+e.target.value)} className="ml-1 rounded border border-bd px-2 py-1">{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
-            <span className="font-mono text-[12px] text-txt2">= {fL * fI} ({fL * fI >= 6 ? "High" : fL * fI >= 2 ? "Medium" : "Low"})</span>
+            <label className="text-label">Likelihood <select value={fL} onChange={(e) => setFL(+e.target.value)} className="ml-1 rounded border border-bd px-2 py-1">{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
+            <label className="text-label">Impact <select value={fI} onChange={(e) => setFI(+e.target.value)} className="ml-1 rounded border border-bd px-2 py-1">{[1, 2, 3].map((n) => <option key={n}>{n}</option>)}</select></label>
+            <span className="font-mono text-label text-txt2">= {fL * fI} ({fL * fI >= 6 ? "High" : fL * fI >= 2 ? "Medium" : "Low"})</span>
           </div>
           <button disabled={!fTitle.trim() || raiseFinding.isPending} onClick={() => raiseFinding.mutate()} className="btn btn-primary mt-3 disabled:opacity-50">Raise finding</button>
         </Card>
       ) : (
-        <button onClick={() => setShowFinding(true)} className="btn self-start">＋ Raise a finding</button>
+        <button onClick={() => setShowFinding(true)} className="btn self-start"><Plus size={15} strokeWidth={2.4} /> Raise a finding</button>
       )}
     </Drawer>
   );
@@ -343,20 +344,20 @@ function InviteModal({ aid, onClose }: { aid: string; onClose: () => void }) {
         <div className="mt-3 rounded-md border border-bd bg-canvas p-2.5">
           <div className="eyebrow mb-1">Share this link with the auditor</div>
           <div className="flex gap-2">
-            <input readOnly value={link} className={inputCls + " font-mono text-[11px]"} onFocus={(e) => e.target.select()} />
+            <input readOnly value={link} className={inputCls + " font-mono text-caption"} onFocus={(e) => e.target.select()} />
             <button onClick={() => navigator.clipboard?.writeText(link)} className="btn shrink-0">Copy</button>
           </div>
         </div>
       )}
       <div className="mt-4">
         <div className="eyebrow mb-1.5">Invited auditors</div>
-        {(guests.data ?? []).length === 0 && <div className="text-[12.5px] text-txt3">None yet.</div>}
+        {(guests.data ?? []).length === 0 && <div className="text-label text-txt3">None yet.</div>}
         {(guests.data ?? []).map((g) => (
-          <div key={g.id} className="flex items-center gap-2 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+          <div key={g.id} className="flex items-center gap-2 border-t border-bd py-2 text-label first:border-t-0">
             <div><span className="font-medium">{g.full_name}</span> <span className="text-txt3">{g.email}</span></div>
             <div className="ml-auto flex items-center gap-2">
               <Pill tone={g.revoked_at ? "na" : "info"}>{g.revoked_at ? "revoked" : "active"}</Pill>
-              {!g.revoked_at && <button onClick={() => revoke.mutate(g.id)} className="text-[12px] text-bad hover:underline">revoke</button>}
+              {!g.revoked_at && <button onClick={() => revoke.mutate(g.id)} className="text-label text-bad hover:underline">revoke</button>}
             </div>
           </div>
         ))}
@@ -392,23 +393,23 @@ export default function Workspace() {
 
   return (
     <>
-      <Link to="/audits" className="text-[13px] text-txt2 hover:text-ink">← All audits</Link>
+      <Link to="/audits" className="text-sm text-txt2 hover:text-ink">← All audits</Link>
       <div className="mb-1 mt-2 flex items-end gap-3">
-        <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{d.bank_name} — {d.title}</h1>
+        <h1 className="text-title font-semibold tracking-[-0.01em]">{d.bank_name} — {d.title}</h1>
         <Pill tone={d.status}>{d.status.replace(/_/g, " ")}</Pill>
         {/* The audit lifecycle was unreachable: PATCH /assessments/{id} existed but nothing
             called it, so every audit stayed "draft" forever. */}
         {canEdit && (
           <select value={d.status} aria-label="Audit status"
             onChange={(e) => setStatus.mutate(e.target.value)}
-            className="rounded-md border border-bd bg-paper px-2 py-1 text-[12.5px] text-txt2 outline-none focus:border-accent">
+            className="rounded-md border border-bd bg-paper px-2 py-1 text-label text-txt2 outline-none focus:border-accent">
             {STATUSES.map((s) => (
               <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
             ))}
           </select>
         )}
       </div>
-      <p className="mb-4 flex flex-wrap items-center gap-x-1 gap-y-2 text-[13.5px] text-txt2">
+      <p className="mb-4 flex flex-wrap items-center gap-x-1 gap-y-2 text-sm text-txt2">
         {d.total_questions} controls · {d.answered} answered · score <b className="tnum">{d.score_pct}%</b> · verdict{" "}
         <b className={d.predicted_verdict === "Satisfactory" ? "text-ok" : "text-warn"}>{d.predicted_verdict}</b>
         {d.open_high_findings > 0 && <> · {d.open_high_findings} open High</>}
@@ -425,7 +426,7 @@ export default function Workspace() {
       <div className="mb-4 flex flex-wrap gap-2">
         {FILTERS.map((f) => (
           <button key={f} onClick={() => setFilter(f)}
-            className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium capitalize",
+            className={cn("rounded-full border px-3 py-1.5 text-label font-medium capitalize",
               filter === f ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink" : "border-bd bg-paper text-txt2")}>
             {f.replace(/_/g, " ")} <span className="ml-1 text-txt3 tnum">{counts[f] ?? 0}</span>
           </button>
@@ -438,13 +439,13 @@ export default function Workspace() {
             <Td className="font-mono text-txt3">#{r.number}</Td>
             <Td><div className="font-medium">{r.text}</div>
               {r.mapped_control && (
-                <div className="font-mono text-[11.5px] text-txt3" title={r.mapped_control_statement ?? undefined}>
+                <div className="font-mono text-caption text-txt3" title={r.mapped_control_statement ?? undefined}>
                   ↳ {r.mapped_control}
                 </div>
               )}</Td>
             <Td>{r.response_value ? <Pill tone={r.response_value}>{r.response_value.toUpperCase()}</Pill> : <span className="text-txt3">—</span>}</Td>
             <Td><Pill tone={r.workflow_status}>{r.workflow_status.replace(/_/g, " ")}</Pill></Td>
-            <Td>{r.evidence_count > 0 ? <span className="rounded bg-canvas px-2 py-0.5 text-[11px]">{r.evidence_count} linked</span> : <span className="text-txt3">none</span>}</Td>
+            <Td>{r.evidence_count > 0 ? <span className="rounded bg-canvas px-2 py-0.5 text-caption">{r.evidence_count} linked</span> : <span className="text-txt3">none</span>}</Td>
           </tr>
         ))}
       </Table>

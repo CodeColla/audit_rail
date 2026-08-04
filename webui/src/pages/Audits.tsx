@@ -39,9 +39,9 @@ export default function Audits() {
             return (
               <tr key={a.id} className="cursor-pointer hover:bg-canvas" onClick={() => nav(`/audits/${a.id}`)}>
                 <Td><div className="font-medium">{a.bank_name}</div>
-                  <div className="text-[11.5px] text-txt3">{a.title}</div></Td>
+                  <div className="text-caption text-txt3">{a.title}</div></Td>
                 <Td className="min-w-[150px]"><Bar pct={pct} muted={a.status === "submitted"} />
-                  <div className="mt-1 text-[11.5px] text-txt3 tnum">{a.answered} / {a.total_questions} answered</div></Td>
+                  <div className="mt-1 text-caption text-txt3 tnum">{a.answered} / {a.total_questions} answered</div></Td>
                 <Td><Pill tone={a.status}>{a.status.replace(/_/g, " ")}</Pill></Td>
                 <Td>{a.predicted_verdict ? <Pill tone={a.predicted_verdict}>{a.predicted_verdict}</Pill> : "—"}</Td>
                 <Td>{a.bank_spoc_name ?? "—"}</Td>

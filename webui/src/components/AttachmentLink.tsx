@@ -33,7 +33,7 @@ export function AttachmentLink({ id, title, mimeType, fileUrl }: {
   return (
     <>
       <button onClick={() => setOpen(true)}
-        className="flex min-w-0 items-center gap-2 text-left text-[12.5px] font-medium text-ink hover:text-accent">
+        className="flex min-w-0 items-center gap-2 text-left text-label font-medium text-ink hover:text-accent">
         <Thumb url={url} isImage={isImage} mimeType={mimeType} />
         <span className="min-w-0 truncate underline decoration-txt3/40 underline-offset-2 hover:decoration-accent">
           {title}
@@ -86,7 +86,7 @@ export function Thumb({ url, isImage, mimeType }: { url: string; isImage: boolea
   if (isImage && src)
     return <img src={src} alt="" className="h-6 w-6 shrink-0 rounded border border-bd object-cover" />;
   return (
-    <span className="grid h-6 w-6 shrink-0 place-items-center rounded border border-bd bg-canvas text-[12px] text-txt3">
+    <span className="grid h-6 w-6 shrink-0 place-items-center rounded border border-bd bg-canvas text-label text-txt3">
       {iconFor(mimeType)}
     </span>
   );

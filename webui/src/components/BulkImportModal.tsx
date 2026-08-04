@@ -112,14 +112,14 @@ export function BulkImportModal({ register, basePath, templateName, onClose, onI
 
   return (
     <Modal open onClose={onClose} title={`Import ${spec.data?.noun ?? register}`} size="lg">
-      <p className="mb-3 text-[12.5px] text-txt2">
+      <p className="mb-3 text-label text-txt2">
         Upload a <b>.xlsx</b> or <b>.csv</b>. Owners and vendors are matched by name — or by
         email address, which is the only way to be unambiguous when two people share a name.
       </p>
 
       <button onClick={() => downloadFile(`${base}/template.xlsx`,
                                           templateName ?? `${register}-import-template.xlsx`)}
-        className="btn mb-3 py-1.5 text-[12.5px]">⬇ Download the template</button>
+        className="btn mb-3 py-1.5 text-label">⬇ Download the template</button>
 
       <label className="btn w-full cursor-pointer justify-center py-1.5">
         {file ? `Selected: ${file.name}` : "Choose a file"}
@@ -139,10 +139,10 @@ export function BulkImportModal({ register, basePath, templateName, onClose, onI
             {columns.map((c) => (
               <div key={c.key} className="flex items-center gap-3 px-3 py-2">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12.5px] font-medium">
+                  <div className="text-label font-medium">
                     {c.label}{c.required && <span className="text-bad"> *</span>}
                   </div>
-                  {c.help && <div className="text-[11px] text-txt3">{c.help}</div>}
+                  {c.help && <div className="text-caption text-txt3">{c.help}</div>}
                 </div>
                 <select
                   value={mapping[c.key] ?? ""}
@@ -159,18 +159,18 @@ export function BulkImportModal({ register, basePath, templateName, onClose, onI
             ))}
           </div>
           {missingRequired.length > 0 && (
-            <p className="mt-2 text-[12px] text-warn">
+            <p className="mt-2 text-label text-warn">
               Still need a column for {missingRequired.map((c) => c.label).join(", ")}.
             </p>
           )}
         </div>
       )}
 
-      {err && <div role="alert" className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      {err && <div role="alert" className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
 
       {result && (
         <div className="mt-4">
-          <div className={`rounded-md px-3 py-2 text-[12.5px] ${
+          <div className={`rounded-md px-3 py-2 text-label ${
             result.failed === 0 ? "bg-ok-bg text-ok" : "bg-warn-bg text-warn"}`}>
             Imported <b>{result.created}</b>
             {result.failed > 0 && <> · <b>{result.failed}</b> row{result.failed === 1 ? "" : "s"} could not be imported</>}
@@ -180,7 +180,7 @@ export function BulkImportModal({ register, basePath, templateName, onClose, onI
             // the file. Rows that DID import are already saved; only these need another go.
             <div className="mt-2 max-h-48 divide-y divide-bd overflow-y-auto rounded-md border border-bd">
               {result.errors.map((e, i) => (
-                <div key={i} className="px-3 py-1.5 text-[12px]">
+                <div key={i} className="px-3 py-1.5 text-label">
                   <span className="font-mono text-txt3">row {e.row}</span>
                   {e.name && <span className="ml-2 font-medium">{e.name}</span>}
                   <div className="text-bad">{e.error}</div>

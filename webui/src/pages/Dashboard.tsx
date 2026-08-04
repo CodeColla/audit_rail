@@ -22,9 +22,9 @@ function Ring({ pct }: { pct: number }) {
       <circle cx="60" cy="60" r={r} fill="none" stroke="#F97316" strokeWidth="10"
         strokeDasharray={c} strokeDashoffset={off} strokeLinecap="round" />
       <text x="60" y="58" transform="rotate(90 60 60)" textAnchor="middle"
-        className="fill-ink text-[22px] font-semibold tnum">{pct}%</text>
+        className="fill-ink text-title font-semibold tnum">{pct}%</text>
       <text x="60" y="74" transform="rotate(90 60 60)" textAnchor="middle"
-        className="fill-txt3 text-[9px] uppercase tracking-widest">ready</text>
+        className="fill-txt3 text-micro uppercase tracking-widest">ready</text>
     </svg>
   );
 }
@@ -33,8 +33,8 @@ function Kpi({ label, value, sub, accent }: { label: string; value: string; sub?
   return (
     <Card>
       <div className="eyebrow mb-2">{label}</div>
-      <div className={"text-[29px] font-semibold leading-none tnum " + (accent ? "text-accent" : "")}>{value}</div>
-      {sub && <div className="mt-2 text-[12px] text-txt2">{sub}</div>}
+      <div className={"text-display font-semibold leading-none tnum " + (accent ? "text-accent" : "")}>{value}</div>
+      {sub && <div className="mt-2 text-label text-txt2">{sub}</div>}
     </Card>
   );
 }
@@ -43,17 +43,17 @@ function Queue({ title, count, tone, items }:
   { title: string; count: number; tone: string; items: { key: string; main: string; meta?: string; right?: React.ReactNode }[] }) {
   return (
     <Card>
-      <h3 className="mb-1 flex items-center gap-2 text-[13.5px] font-semibold">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-semibold">
         {title}
-        <span className={"rounded-full px-2 py-[1px] text-[11px] font-semibold " +
+        <span className={"rounded-full px-2 py-[1px] text-caption font-semibold " +
           (tone === "bad" ? "bg-bad text-white" : tone === "warn" ? "bg-warn text-white" : "bg-info text-white")}>{count}</span>
       </h3>
-      {items.length === 0 && <div className="py-3 text-[12.5px] text-txt3">Nothing right now.</div>}
+      {items.length === 0 && <div className="py-3 text-label text-txt3">Nothing right now.</div>}
       {items.slice(0, 5).map((it) => (
         <div key={it.key} className="flex items-center gap-3 border-t border-bd py-2.5 first:border-t-0">
           <div className="min-w-0">
-            <div className="truncate text-[13px] font-medium">{it.main}</div>
-            {it.meta && <div className="text-[11.5px] text-txt3">{it.meta}</div>}
+            <div className="truncate text-sm font-medium">{it.main}</div>
+            {it.meta && <div className="text-caption text-txt3">{it.meta}</div>}
           </div>
           <div className="ml-auto shrink-0">{it.right}</div>
         </div>
@@ -80,25 +80,25 @@ export default function Dashboard() {
       </div>
 
       <div className="mb-3 mt-7 flex items-center gap-2">
-        <h2 className="text-[15px] font-semibold">Readiness by bank assessment</h2>
+        <h2 className="text-body font-semibold">Readiness by bank assessment</h2>
       </div>
       <Card className="grid gap-5 md:grid-cols-[150px_1fr] md:items-center">
         <div className="grid place-items-center"><Ring pct={k.overall_readiness_pct} /></div>
         <div className="flex flex-col justify-center gap-3.5">
-          {data.readiness_by_bank.length === 0 && <div className="text-[13px] text-txt3">No assessments yet.</div>}
+          {data.readiness_by_bank.length === 0 && <div className="text-sm text-txt3">No assessments yet.</div>}
           {data.readiness_by_bank.map((b) => (
             <div key={b.assessment_id} className="grid grid-cols-[160px_1fr_44px] items-center gap-3">
-              <div className="text-[13px] font-medium">{b.bank_name}
-                <span className="block text-[11px] font-normal capitalize text-txt3">{b.status.replace(/_/g, " ")}</span>
+              <div className="text-sm font-medium">{b.bank_name}
+                <span className="block text-caption font-normal capitalize text-txt3">{b.status.replace(/_/g, " ")}</span>
               </div>
               <Bar pct={b.pct} muted={b.status === "submitted"} />
-              <div className="text-right text-[13px] font-semibold tnum">{b.pct}%</div>
+              <div className="text-right text-sm font-semibold tnum">{b.pct}%</div>
             </div>
           ))}
         </div>
       </Card>
 
-      <div className="mb-3 mt-7"><h2 className="text-[15px] font-semibold">Needs attention</h2></div>
+      <div className="mb-3 mt-7"><h2 className="text-body font-semibold">Needs attention</h2></div>
       <div className="grid gap-4 md:grid-cols-2">
         <Queue title="Overdue recurring tasks" count={q.overdue_tasks.length} tone="bad"
           items={q.overdue_tasks.map((t) => ({ key: t.run_id, main: t.title, meta: `due ${t.due_at}`, right: <Pill tone="overdue">overdue</Pill> }))} />

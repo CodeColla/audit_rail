@@ -18,6 +18,12 @@ import { test, expect, Page } from "@playwright/test";
  * DataTable's search is one-directional (DataTable owns the debounce, the caller only ever
  * receives the settled value) rather than the doubly-debounced controlled-prop shape an
  * earlier draft had.
+ *
+ * NOTE (P6): the modal's submit button is matched with `/^Upload$/`, anchored at BOTH ends.
+ * It used to be `/^Upload/`, which worked only because the page button's accessible name was
+ * "＋ Upload evidence" — the decorative fullwidth plus kept it from matching. P6 replaced that
+ * glyph with a real icon (it is missing from Inter and rendered as a tofu box), so the name is
+ * now correctly just "Upload evidence" and the loose pattern became ambiguous.
  */
 
 const uniq = () => Math.random().toString(36).slice(2, 7);
@@ -136,7 +142,7 @@ test.describe("oversize files", () => {
 
     let posted = false;
     page.on("request", (r) => { if (r.method() === "POST" && r.url().includes("/api/evidence")) posted = true; });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await page.waitForTimeout(300);
     expect(posted, "an oversize file must never be POSTed").toBeFalsy();
     await expect(queue(page)).toContainText("exceeds the 25 MB limit");
@@ -148,7 +154,7 @@ test.describe("the list toolkit (DataTable)", () => {
     const tag = uniq();
     await openUpload(page);
     await fileInput(page).setInputFiles({ name: `${tag}-findme.pdf`, mimeType: "application/pdf", buffer: buf("%PDF-1.4\nx\n") });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     await page.getByPlaceholder("Search titles and notes…").fill(`${tag}-findme`);
@@ -210,7 +216,7 @@ test.describe("preview from the list", () => {
     const tag = uniq();
     await openUpload(page);
     await fileInput(page).setInputFiles({ name: `${tag}.pdf`, mimeType: "application/pdf", buffer: buf("%PDF-1.4\nx\n") });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByPlaceholder("Search titles and notes…").fill(tag);
 
@@ -224,7 +230,7 @@ test.describe("preview from the list", () => {
     const tag = uniq();
     await openUpload(page);
     await fileInput(page).setInputFiles({ name: `${tag}.pdf`, mimeType: "application/pdf", buffer: buf("%PDF-1.4\nx\n") });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByPlaceholder("Search titles and notes…").fill(tag);
 
@@ -238,7 +244,7 @@ test.describe("honest preview messages (FilePreview.classify)", () => {
     const tag = uniq();
     await openUpload(page);
     await fileInput(page).setInputFiles({ name: `${tag}.doc`, mimeType: "application/msword", buffer: buf("legacy") });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByPlaceholder("Search titles and notes…").fill(tag);
 
@@ -250,7 +256,7 @@ test.describe("honest preview messages (FilePreview.classify)", () => {
     const tag = uniq();
     await openUpload(page);
     await fileInput(page).setInputFiles({ name: `${tag}.heic`, mimeType: "image/heic", buffer: buf("heic") });
-    await page.getByRole("button", { name: /^Upload/ }).click();
+    await page.getByRole("button", { name: /^Upload$/ }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await page.getByPlaceholder("Search titles and notes…").fill(tag);
 

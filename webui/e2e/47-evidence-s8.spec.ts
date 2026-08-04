@@ -195,11 +195,14 @@ test.describe("search", () => {
 
     const control = (await apiGet(page, "/library/controls"))[0];
     await page.goto(`/controls/view/${control.id}`);
-    // the control page has two "＋ Attach" buttons, evidence and documents; the first is
+    // the control page has two "Attach" buttons, evidence and documents; the first is
     // the evidence one (same ordering 44-controls.spec.ts relies on)
     await page.getByRole("button", { name: /Attach/ }).first().click();
     await page.getByPlaceholder("Search the vault…").fill(`Picker ${tag}`);
-    await expect(page.getByRole("button", { name: /Picker/ })).toBeVisible();
+    // Scoped to THIS run's tag: a bare /Picker/ matches every leftover row from previous
+    // runs, so the spec passed once against a fresh seed and then reported a strict-mode
+    // violation for the rest of the day.
+    await expect(page.getByRole("button", { name: new RegExp(`Picker ${tag}`) })).toBeVisible();
 
     await page.goto("/evidence");
     expect(await page.locator("tbody tr").count()).toBe(before);

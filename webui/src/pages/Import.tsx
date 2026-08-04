@@ -72,7 +72,7 @@ export default function Import() {
     return (
       <>
         <PageHead eyebrow="Audits · Import" title="Import a bank checklist" />
-        <Card className="max-w-xl text-[13px] text-txt2">
+        <Card className="max-w-xl text-sm text-txt2">
           You do not have permission to import checklists. Ask an administrator for the
           <span className="font-medium"> Audits · add</span> permission.
         </Card>
@@ -88,27 +88,27 @@ export default function Import() {
         <Card className="max-w-xl">
           <form onSubmit={submit} className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
-              <label className="text-[13px] font-medium">Bank name
+              <label className="text-sm font-medium">Bank name
                 <input value={bank} onChange={(e) => setBank(e.target.value)} required placeholder="ICICI"
-                  className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-[14px] outline-none focus:border-accent" />
+                  className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-body outline-none focus:border-accent" />
               </label>
-              <label className="text-[13px] font-medium">Version <span className="text-txt3">(optional)</span>
+              <label className="text-sm font-medium">Version <span className="text-txt3">(optional)</span>
                 <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder="v1.2"
-                  className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-[14px] outline-none focus:border-accent" />
+                  className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-body outline-none focus:border-accent" />
               </label>
             </div>
-            <label className="text-[13px] font-medium">Sheet name <span className="text-txt3">(optional — first sheet by default)</span>
+            <label className="text-sm font-medium">Sheet name <span className="text-txt3">(optional — first sheet by default)</span>
               <input value={sheet} onChange={(e) => setSheet(e.target.value)} placeholder="Sheet1"
-                className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-[14px] outline-none focus:border-accent" />
+                className="mt-1 w-full rounded-md border border-bd px-3 py-2 text-body outline-none focus:border-accent" />
             </label>
             <label className="mt-1 flex cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border-2 border-dashed border-hair bg-canvas px-4 py-8 text-center">
-              <span className="text-[13px] font-medium">{file ? file.name : "Choose an XLSX / CSV checklist"}</span>
-              <span className="text-[11.5px] text-txt3">columns are auto-detected; you confirm the mappings next</span>
+              <span className="text-sm font-medium">{file ? file.name : "Choose an XLSX / CSV checklist"}</span>
+              <span className="text-caption text-txt3">columns are auto-detected; you confirm the mappings next</span>
               <input type="file" accept=".xlsx,.csv" className="hidden"
                 onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
             </label>
             <button type="button" onClick={() => setAdvanced((a) => !a)}
-              className="self-start text-[12px] font-medium text-txt2 hover:text-ink">
+              className="self-start text-label font-medium text-txt2 hover:text-ink">
               {advanced ? "▾" : "▸"} Column overrides (for messy sheets)
             </button>
             {advanced && (
@@ -116,15 +116,15 @@ export default function Import() {
                 {[["Question col", qcol, setQcol, "G"], ["Number col", ncol, setNcol, "B"],
                   ["Section col", scol, setScol, "D"], ["Header row", hrow, setHrow, "5"]].map(
                   ([label, val, set, ph]: any) => (
-                    <label key={label} className="text-[11.5px] font-medium text-txt2">{label}
+                    <label key={label} className="text-caption font-medium text-txt2">{label}
                       <input value={val} onChange={(e) => set(e.target.value)} placeholder={ph}
-                        className="mt-1 w-full rounded border border-bd px-2 py-1.5 text-[13px] outline-none focus:border-accent" />
+                        className="mt-1 w-full rounded border border-bd px-2 py-1.5 text-sm outline-none focus:border-accent" />
                     </label>
                   ))}
-                <p className="col-span-4 text-[11px] text-txt3">Use column letters (A, B, G…). Leave blank to auto-detect.</p>
+                <p className="col-span-4 text-caption text-txt3">Use column letters (A, B, G…). Leave blank to auto-detect.</p>
               </div>
             )}
-            {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+            {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
             <button disabled={busy || !file || !bank} className="btn btn-primary justify-center disabled:opacity-50">
               {busy ? "Importing…" : "Import & propose mappings"}
             </button>
@@ -150,7 +150,7 @@ export default function Import() {
         <Pill tone="ok">{result?.questions} questions</Pill>
         <Pill tone="info">{result?.sections} sections</Pill>
       </div>
-      {err && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      {err && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
       {/* P5-S10: the same component the standalone review screen uses. It used to be written
           inline here, which is precisely why the review was unreachable once you left the
           wizard — see MappingReview's own note. */}

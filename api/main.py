@@ -8,8 +8,8 @@ from sqlalchemy import text
 from api.config import settings
 from api.database import engine, reflect_schema
 from api.routers import (assessments, auth, dashboard, documents, evidence, frameworks,
-                         library, lookups, notifications, people, policies, registers, roles,
-                         signing, tasks, templates)
+                         library, lookups, notifications, org, people, policies, registers,
+                         roles, signing, tasks, templates)
 
 
 def _preflight() -> None:
@@ -79,6 +79,7 @@ app.include_router(auth.router, prefix="/api")
 # is protected at the router level. All are default-deny either way.
 app.include_router(library.router, prefix="/api")
 app.include_router(frameworks.router, prefix="/api")
+app.include_router(org.router, prefix="/api")
 app.include_router(evidence.router, prefix="/api")
 app.include_router(policies.router, prefix="/api")
 app.include_router(assessments.router, prefix="/api")

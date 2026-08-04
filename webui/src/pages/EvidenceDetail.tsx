@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FilePreview } from "../components/FilePreview";
@@ -51,23 +52,23 @@ function EditForm({ ev, onDone }: { ev: EvidenceDetailRow; onDone: () => void })
   return (
     <Card>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
             className={inputCls + " mt-1"} /></label>
         <div className="grid grid-cols-3 gap-3">
-          <label className="text-[13px] font-medium">Type
+          <label className="text-sm font-medium">Type
             {/* LookupSelect keeps an off-list value selectable, which matters here: live
                 data holds both `report` and `REPORT` from the free-text era. */}
             <LookupSelect kind="evidence_type" value={f.evidence_type}
               onChange={set("evidence_type")} /></label>
-          <label className="text-[13px] font-medium">Issued
+          <label className="text-sm font-medium">Issued
             <input type="date" value={f.issued_at} onChange={(e) => set("issued_at")(e.target.value)}
               className={inputCls + " mt-1"} /></label>
-          <label className="text-[13px] font-medium">Valid until
+          <label className="text-sm font-medium">Valid until
             <input type="date" value={f.valid_until} onChange={(e) => set("valid_until")(e.target.value)}
               className={inputCls + " mt-1"} /></label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <div className="flex gap-2">
           <button disabled={!f.title.trim() || save.isPending} className="btn btn-primary disabled:opacity-50">
             {save.isPending ? "Saving…" : "Save"}</button>
@@ -116,32 +117,32 @@ function LinkControls({ ev, canEdit }: { ev: EvidenceDetailRow; canEdit: boolean
       <div className="mb-2.5 flex items-center justify-between">
         <div className="eyebrow">Controls this proves · {ev.linked_controls.length}</div>
         {canEdit && <button onClick={() => setPicking((s) => !s)}
-          className="text-[12px] font-medium text-accent">＋ Link a control</button>}
+          className="text-label font-medium text-accent"><Plus size={15} strokeWidth={2.4} /> Link a control</button>}
       </div>
       {ev.linked_controls.length === 0 && (
-        <p className="text-[12.5px] text-txt3">
+        <p className="text-label text-txt3">
           Not linked to any control yet — linking is what makes this artifact answer a bank's question.</p>)}
       {ev.linked_controls.map((c) => (
-        <div key={c.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-[12.5px] first:border-t-0">
+        <div key={c.id} className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0">
           <Link to={`/controls/view/${c.id}`} className="shrink-0 font-mono font-semibold text-accent hover:underline">{c.code}</Link>
           <span className="min-w-0 flex-1 truncate text-txt2">{c.statement}</span>
           {canEdit && <button onClick={() => unlink.mutate(c.id)}
-            className="shrink-0 text-[11.5px] text-bad hover:underline">remove</button>}
+            className="shrink-0 text-caption text-bad hover:underline">remove</button>}
         </div>))}
-      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-[11.5px] text-bad">{err}</div>}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
       {picking && (
         <div className="mt-2">
           <input autoFocus value={term} onChange={(e) => setTerm(e.target.value)}
             placeholder="Search by reference or statement…" className={inputCls} />
           <div className="mt-2 max-h-56 overflow-y-auto rounded-md border border-bd">
             {list.isPending ? (
-              <div className="px-3 py-2 text-[12px] text-txt3">Searching…</div>
+              <div className="px-3 py-2 text-label text-txt3">Searching…</div>
             ) : pickable.length === 0 ? (
-              <div className="px-3 py-2 text-[12px] text-txt3">
+              <div className="px-3 py-2 text-label text-txt3">
                 {dq ? "No control matches that." : "Every control is already linked."}</div>
             ) : pickable.map((c) => (
               <button key={c.id} onClick={() => link.mutate(c.id)}
-                className="flex w-full items-start gap-2 px-3 py-2 text-left text-[12.5px] hover:bg-canvas">
+                className="flex w-full items-start gap-2 px-3 py-2 text-left text-label hover:bg-canvas">
                 <span className="shrink-0 font-mono font-semibold text-accent">{c.code}</span>
                 <span className="min-w-0 flex-1 truncate text-txt2">{c.statement}</span>
               </button>))}
@@ -170,8 +171,8 @@ export default function EvidenceDetail() {
   if (isLoading) return <Loading />;
   if (isError || !ev) return (
     <>
-      <Link to="/evidence" className="text-[13px] text-txt2 hover:text-ink">← Evidence vault</Link>
-      <div className="mt-6 rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-[13px] text-txt2">
+      <Link to="/evidence" className="text-sm text-txt2 hover:text-ink">← Evidence vault</Link>
+      <div className="mt-6 rounded-xl border border-dashed border-bd bg-paper p-10 text-center text-sm text-txt2">
         That artifact no longer exists, or you do not have access to it.
       </div>
     </>
@@ -182,13 +183,13 @@ export default function EvidenceDetail() {
 
   return (
     <>
-      <Link to="/evidence" className="text-[13px] text-txt2 hover:text-ink">← Evidence vault</Link>
+      <Link to="/evidence" className="text-sm text-txt2 hover:text-ink">← Evidence vault</Link>
       <div className="mb-1 mt-2 flex flex-wrap items-center gap-3">
-        <h1 className="text-[20px] font-semibold tracking-[-0.01em]">{ev.title}</h1>
+        <h1 className="text-title font-semibold tracking-[-0.01em]">{ev.title}</h1>
         <Pill tone={ev.status}>{ev.status}</Pill>
         {isLink && <Pill tone="info">External link</Pill>}
       </div>
-      <p className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-2 text-[13.5px] text-txt2">
+      <p className="mb-4 flex flex-wrap items-center gap-x-1.5 gap-y-2 text-sm text-txt2">
         <span className="capitalize">{ev.evidence_type.replace(/_/g, " ")}</span>
         {ev.issued_at && <> · issued <span className="font-mono">{ev.issued_at}</span></>}
         {ev.valid_until && <> · valid until <span className="font-mono">{ev.valid_until}</span></>}
@@ -205,7 +206,7 @@ export default function EvidenceDetail() {
             disabled={del.isPending}
             className="btn py-1.5 text-bad hover:border-bad disabled:opacity-50">Delete</button>)}
       </p>
-      {delErr && <div className="mb-4 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{delErr}</div>}
+      {delErr && <div className="mb-4 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{delErr}</div>}
 
       {editing && <div className="mb-4"><EditForm ev={ev} onDone={() => setEditing(false)} /></div>}
 
@@ -219,11 +220,11 @@ export default function EvidenceDetail() {
               displayed nowhere in the product. */}
           {isLink ? (
             <>
-              <p className="mb-2 text-[12.5px] text-txt2">
+              <p className="mb-2 text-label text-txt2">
                 Held outside the vault. audit_rail records that it exists and when it expires;
                 the bytes live at:</p>
               <a href={ev.external_url ?? "#"} target="_blank" rel="noopener noreferrer"
-                className="break-all text-[12.5px] font-medium text-accent hover:underline">
+                className="break-all text-label font-medium text-accent hover:underline">
                 {ev.external_url}</a>
             </>
           ) : (
@@ -232,13 +233,13 @@ export default function EvidenceDetail() {
                  ["Type", ev.mime_type ?? "—"],
                  ["Size", humanSize(ev.size_bytes)]] as const).map(([label, value]) => (
                 <div key={label}
-                  className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+                  className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                   <span className="w-24 shrink-0 text-txt3">{label}</span>
                   <span className="min-w-0 flex-1 truncate font-mono">{value}</span>
                 </div>))}
             </div>
           )}
-          {ev.notes && <p className="mt-3 border-t border-bd pt-3 text-[12.5px] text-txt2">{ev.notes}</p>}
+          {ev.notes && <p className="mt-3 border-t border-bd pt-3 text-label text-txt2">{ev.notes}</p>}
         </Card>
         <LinkControls ev={ev} canEdit={canEdit} />
       </div>

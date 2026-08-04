@@ -106,19 +106,19 @@ export function GlobalSearch() {
           onKeyDown={(e) => { if (e.key === "Escape") { setOpen(false); (e.target as HTMLInputElement).blur(); } }}
           placeholder="Search…"
           aria-label="Search everything"
-          className="w-40 bg-transparent text-[13px] text-ink outline-none placeholder:text-txt3 focus:w-64" />
+          className="w-40 bg-transparent text-sm text-ink outline-none placeholder:text-txt3 focus:w-64" />
       </div>
 
       {showPanel && (
         <div className="absolute right-0 top-full z-40 mt-1 max-h-[70vh] w-[26rem] overflow-y-auto rounded-md border border-bd bg-paper shadow-drawer">
           {results.isPending ? (
-            <div className="px-3 py-2.5 text-[12.5px] text-txt3">Searching…</div>
+            <div className="px-3 py-2.5 text-label text-txt3">Searching…</div>
           ) : total === 0 ? (
-            <div className="px-3 py-2.5 text-[12.5px] text-txt3">Nothing matches “{dq}”.</div>
+            <div className="px-3 py-2.5 text-label text-txt3">Nothing matches “{dq}”.</div>
           ) : (
             groups.map((g) => (
               <div key={g.key} className="border-b border-bd last:border-b-0">
-                <div className="bg-canvas px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.09em] text-txt3">
+                <div className="bg-canvas px-3 py-1 text-micro font-semibold uppercase tracking-[0.09em] text-txt3">
                   {g.label}
                 </div>
                 {g.hits.map((h) => {
@@ -126,15 +126,15 @@ export function GlobalSearch() {
                   return (
                     <button key={h.id} onClick={() => go(src.to(h.id))}
                       className="flex w-full items-baseline gap-2 px-3 py-1.5 text-left hover:bg-canvas">
-                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{h.label}</span>
-                      {h.sub && <span className="shrink-0 text-[11px] capitalize text-txt3">{h.sub}</span>}
+                      <span className="min-w-0 flex-1 truncate text-label font-medium">{h.label}</span>
+                      {h.sub && <span className="shrink-0 text-caption capitalize text-txt3">{h.sub}</span>}
                     </button>
                   );
                 })}
                 {/* Each source is capped, so say so and offer the full filtered list rather
                     than quietly implying these are all the matches. */}
                 <button onClick={() => go(`${g.path}`)}
-                  className={cn("w-full px-3 py-1 text-left text-[11px] text-txt3 hover:text-accent",
+                  className={cn("w-full px-3 py-1 text-left text-caption text-txt3 hover:text-accent",
                     g.hits.length < PER_SOURCE && "hidden")}>
                   See all {g.label.toLowerCase()} →
                 </button>

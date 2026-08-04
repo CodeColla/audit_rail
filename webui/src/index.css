@@ -15,8 +15,23 @@ body {
   margin: 0;
   background: #f4f5f6;
   color: #0e1a2b;
-  font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  /* Mirrors tailwind.config.js fontFamily.sans — see the note there on why -apple-system
+     leads. Kept in sync by hand because `body` is styled before any utility class applies. */
+  font-family: -apple-system, BlinkMacSystemFont, "Inter Variable", Inter, "Segoe UI", Roboto,
+    sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Inter Variable and SF both carry an optical-size axis: glyphs are subtly redrawn for small
+     text rather than just scaled down. Off by default in most browsers. */
+  font-optical-sizing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+/* Figures in a column must line up. This was previously opt-in via `.tnum`, so it applied
+   wherever somebody remembered — which is worse than not at all, because the inconsistency is
+   what the eye catches. Proportional digits stay available for prose. */
+table {
+  font-variant-numeric: tabular-nums;
 }
 
 /* thin brand scrollbars */
@@ -32,13 +47,13 @@ body {
 
 @layer components {
   .eyebrow {
-    @apply text-[10.5px] font-semibold uppercase tracking-[0.18em] text-txt3;
+    @apply text-micro font-semibold uppercase tracking-[0.16em] text-txt3;
   }
   .card {
     @apply rounded-xl border border-bd bg-paper shadow-card;
   }
   .h1 {
-    @apply text-[26px] font-semibold tracking-[-0.02em];
+    @apply text-display font-semibold;
   }
   .btn {
     @apply inline-flex items-center gap-2 rounded-md border border-bd bg-paper px-3.5 py-2 text-[13px] font-medium text-ink hover:bg-canvas;
@@ -92,8 +107,10 @@ body {
    `tableWidth` (enables the horizontal branch at all) + `minDimensions` (makes the grid wide
    enough to fill the page). Scoped under `.sheet-editor` — bare `.jss_*` would be global. */
 
-/* The grid is data, not prose — Space Grotesk is inherited from body and is the wrong tool
-   for columns of figures. Tabular numerals keep digits in vertical alignment. */
+/* The grid is data, not prose. `table { font-variant-numeric: tabular-nums }` above does not
+   reach it — jspreadsheet renders its own table inside a shadow-free widget with its own
+   font stack — so the rule is repeated here deliberately. (Before P6-S1 this existed because
+   the body font was Space Grotesk, a display face; the reason has changed, the need has not.) */
 .sheet-editor .jss_worksheet { font-variant-numeric: tabular-nums; }
 /* Rounded corners on the wrapper only work if the widget's own square corners are clipped;
    the wrapper itself can't use overflow-hidden (it would clip the grid's own scrollbars). */

@@ -13,11 +13,11 @@ export default function Reports() {
     <>
       <PageHead eyebrow="Reports" title="Reports" lead="Verdict history and coverage — the story you tell leadership between audits." />
       <div className="mb-7 grid grid-cols-1 gap-4 md:grid-cols-3">
-        <Card><div className="eyebrow mb-2">Assessments</div><div className="text-[29px] font-semibold tnum">{rows.length}</div></Card>
-        <Card><div className="eyebrow mb-2">Submitted / closed</div><div className="text-[29px] font-semibold tnum">{closed.length}</div></Card>
-        <Card><div className="eyebrow mb-2">In progress</div><div className="text-[29px] font-semibold tnum text-accent">{rows.length - closed.length}</div></Card>
+        <Card><div className="eyebrow mb-2">Assessments</div><div className="text-display font-semibold tnum">{rows.length}</div></Card>
+        <Card><div className="eyebrow mb-2">Submitted / closed</div><div className="text-display font-semibold tnum">{closed.length}</div></Card>
+        <Card><div className="eyebrow mb-2">In progress</div><div className="text-display font-semibold tnum text-accent">{rows.length - closed.length}</div></Card>
       </div>
-      <div className="mb-3"><h2 className="text-[15px] font-semibold">Verdict history</h2></div>
+      <div className="mb-3"><h2 className="text-body font-semibold">Verdict history</h2></div>
       {rows.length === 0 ? <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">No assessments yet.</div> : (
         <Table head={["Bank", "Assessment", "Status", "Predicted verdict"]}>
           {rows.map((r) => (

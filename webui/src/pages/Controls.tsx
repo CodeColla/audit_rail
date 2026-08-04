@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
+import { Plus } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { OwnerSelect } from "./Registers";
-import { cn, inputCls, Loading, Modal, PageHead, Pill, Table, Td } from "../lib/ui";
+import { Loading, Modal, PageHead, Pill, TH, Table, Td, cn, inputCls } from "../lib/ui";
 
 type Domain = { id: string; code: string; name: string; control_count: number };
 type Control = {
@@ -54,55 +55,55 @@ function AddControlModal({ domains, onClose }: { domains: Domain[]; onClose: () 
     <Modal open onClose={onClose} title="New control" size="lg">
       <div className="flex flex-col gap-3">
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Domain
+          <label className="text-sm font-medium">Domain
             <select value={f.domain_id} onChange={set("domain_id")} className={inputCls + " mt-1"}>
               {domains.length === 0 && <option value="">Loading…</option>}
               {domains.map((d) => <option key={d.id} value={d.id}>{d.code} — {d.name}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Reference code *
+          <label className="text-sm font-medium">Reference code *
             <input value={f.code} onChange={set("code")} className={inputCls + " mt-1"}
               placeholder="AM 4.a" /></label>
         </div>
-        <label className="text-[13px] font-medium">Statement *
+        <label className="text-sm font-medium">Statement *
           <textarea value={f.statement} onChange={set("statement")}
             className={cn(inputCls, "mt-1 min-h-[64px]")}
             placeholder="Strong password policy is enforced for all systems." /></label>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Lifecycle
+          <label className="text-sm font-medium">Lifecycle
             <select value={f.lifecycle} onChange={set("lifecycle")} className={inputCls + " mt-1"}>
               {LIFECYCLE.map((l) => <option key={l} value={l}>{l.replace("_", " ")}</option>)}
             </select>
           </label>
           {f.lifecycle === "recurring" && (
-            <label className="text-[13px] font-medium">Recurrence (months) *
+            <label className="text-sm font-medium">Recurrence (months) *
               <input type="number" min={1} value={f.recurrence_months}
                 onChange={set("recurrence_months")} className={inputCls + " mt-1"} />
             </label>
           )}
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Applicability
+          <label className="text-sm font-medium">Applicability
             <select value={f.applicability} onChange={set("applicability")} className={inputCls + " mt-1"}>
               <option value="applicable">Applicable</option>
               <option value="not_applicable">Not applicable</option>
             </select>
           </label>
-          <label className="text-[13px] font-medium">Owner
+          <label className="text-sm font-medium">Owner
             <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} />
           </label>
         </div>
         {f.applicability === "not_applicable" && (
           <div className="grid grid-cols-2 gap-3 rounded-md border border-bd bg-canvas p-2.5">
-            <label className="text-[13px] font-medium">Why not applicable? *
+            <label className="text-sm font-medium">Why not applicable? *
               <textarea value={f.na_justification} onChange={set("na_justification")}
                 className={cn(inputCls, "mt-1 min-h-[44px]")} /></label>
-            <label className="text-[13px] font-medium">Reactivation trigger
+            <label className="text-sm font-medium">Reactivation trigger
               <input value={f.reactivation_trigger} onChange={set("reactivation_trigger")}
                 className={inputCls + " mt-1"} placeholder="e.g. Cloud adoption" /></label>
           </div>
         )}
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={disabled} onClick={() => create.mutate()}
           className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create control"}</button>
@@ -134,14 +135,14 @@ export default function Controls() {
                 sidebar — a framework is a lens over this library, not a separate module. */}
             <Link to="/frameworks" className="btn">Certifications</Link>
             {can("controls", "add") && (
-              <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New control</button>
+              <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New control</button>
             )}
           </div>} />
 
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["framework", "crosswalk"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
-            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-[13px] font-medium capitalize",
+            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium capitalize",
               tab === t ? "border-accent text-ink" : "border-transparent text-txt2")}>
             {t === "crosswalk" ? "Bank crosswalk" : "Framework"}
           </button>
@@ -152,17 +153,17 @@ export default function Controls() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-[250px_1fr] md:items-start">
           <div className="card p-2">
             <button onClick={() => setDomain("")}
-              className={cn("flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[12.5px] font-medium",
+              className={cn("flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-label font-medium",
                 domain === "" ? "bg-[rgba(249,115,22,0.09)] font-semibold text-ink" : "text-txt2 hover:bg-canvas")}>
-              All domains <span className="ml-auto text-[11px] text-txt3 tnum">{total}</span>
+              All domains <span className="ml-auto text-caption text-txt3 tnum">{total}</span>
             </button>
             {(domains.data ?? []).map((d) => (
               <button key={d.id} onClick={() => setDomain(d.code)}
-                className={cn("flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[12.5px] font-medium",
+                className={cn("flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-label font-medium",
                   domain === d.code ? "bg-[rgba(249,115,22,0.09)] font-semibold text-ink" : "text-txt2 hover:bg-canvas")}>
-                <span className="font-mono text-[11px] text-accent">{d.code}</span>
+                <span className="font-mono text-caption text-accent">{d.code}</span>
                 <span className="truncate">{d.name}</span>
-                <span className="ml-auto text-[11px] text-txt3 tnum">{d.control_count}</span>
+                <span className="ml-auto text-caption text-txt3 tnum">{d.control_count}</span>
               </button>
             ))}
           </div>
@@ -173,12 +174,12 @@ export default function Controls() {
                 <tr key={c.id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(c.id)}>
                   <Td className="font-mono font-semibold">{c.code}</Td>
                   <Td className="font-medium">{c.statement}
-                    {c.applicability !== "applicable" && <span className="ml-2 rounded bg-na-bg px-1.5 py-0.5 text-[10px] text-na">dormant</span>}
+                    {c.applicability !== "applicable" && <span className="ml-2 rounded bg-na-bg px-1.5 py-0.5 text-micro text-na">dormant</span>}
                   </Td>
                   <Td><Pill tone={c.lifecycle === "per_audit" ? "na" : "warn"}>{lifecycleLabel(c)}</Pill></Td>
                   <Td><Pill tone={c.applicability === "applicable" ? "applicable" : "na"}>
                     {c.applicability === "applicable" ? "Applicable" : "Dormant"}</Pill></Td>
-                  <Td><span className="rounded bg-canvas px-2 py-0.5 text-[11px] text-txt2">{c.mapped_count} pts</span></Td>
+                  <Td><span className="rounded bg-canvas px-2 py-0.5 text-caption text-txt2">{c.mapped_count} pts</span></Td>
                 </tr>
               ))}
             </Table>
@@ -186,17 +187,17 @@ export default function Controls() {
         </div>
       ) : (
         <>
-          <p className="mb-3 max-w-[70ch] text-[13.5px] text-txt2">
+          <p className="mb-3 max-w-[70ch] text-sm text-txt2">
             Read one row across: answer the standard control once and it satisfies every bank point in that row.
           </p>
           {xwalk.isLoading || !xwalk.data ? <Loading /> : (
             <div className="overflow-x-auto rounded-xl border border-bd bg-paper">
-              <table className="w-full text-[13px]">
+              <table className="w-full text-sm">
                 <thead>
                   <tr>
-                    <th className="sticky left-0 z-10 min-w-[240px] border-b border-bd bg-canvas px-3.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-txt3">Standard control</th>
+                    <th className={cn(TH, "sticky left-0 z-10 min-w-[240px]")}>Standard control</th>
                     {xwalk.data.columns.map((c) => (
-                      <th key={c.id} className="border-b border-bd bg-canvas px-3.5 py-2.5 text-left text-[10px] font-semibold uppercase tracking-wider text-txt3">
+                      <th key={c.id} className={TH}>
                         {c.bank_name}<span className="block font-normal normal-case text-txt3">{c.version_label}</span>
                       </th>
                     ))}
@@ -206,8 +207,8 @@ export default function Controls() {
                   {xwalk.data.rows.map((r) => (
                     <tr key={r.control_id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(r.control_id)}>
                       <Td className="sticky left-0 bg-paper">
-                        <div className="font-mono text-[12px] font-semibold text-accent">{r.code}</div>
-                        <div className="text-[11.5px] text-txt3">{r.statement}</div>
+                        <div className="font-mono text-label font-semibold text-accent">{r.code}</div>
+                        <div className="text-caption text-txt3">{r.statement}</div>
                       </Td>
                       {xwalk.data!.columns.map((c) => {
                         const pts = r.cells[c.id] ?? [];
@@ -216,7 +217,7 @@ export default function Controls() {
                             {pts.length === 0
                               ? <span className="font-mono text-txt3">—</span>
                               : pts.map((p, i) => (
-                                <span key={i} className="mr-1 inline-block rounded bg-ok-bg px-1.5 py-[1px] font-mono text-[11px] font-semibold text-ok">{p}</span>
+                                <span key={i} className="mr-1 inline-block rounded bg-ok-bg px-1.5 py-[1px] font-mono text-caption font-semibold text-ok">{p}</span>
                               ))}
                           </Td>
                         );

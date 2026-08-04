@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { Plus } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../lib/api";
 import { uploadEvidence, UploadTooLarge } from "../lib/evidence";
@@ -48,21 +49,21 @@ function RecurrenceFields({ f, set }: {
   return (
     <>
       <div className="grid grid-cols-2 gap-3">
-        <label className="text-[13px] font-medium">Recurrence
+        <label className="text-sm font-medium">Recurrence
           <select value={f.frequency} onChange={(e) => set("frequency")(e.target.value)}
             className={inputCls + " mt-1"}>
             <option value="">One-off</option>
             {FREQUENCIES.map((fr) => <option key={fr} value={fr}>{nice(fr)}</option>)}
           </select></label>
         {f.frequency && (
-          <label className="text-[13px] font-medium">Every
+          <label className="text-sm font-medium">Every
             <input type="number" min={1} value={f.interval_count}
               onChange={(e) => set("interval_count")(e.target.value)}
               className={inputCls + " mt-1"} placeholder="1" /></label>)}
-        <label className="text-[13px] font-medium">Assignee
+        <label className="text-sm font-medium">Assignee
           <OwnerSelect value={f.assignee_person_id} onChange={set("assignee_person_id")} /></label>
       </div>
-      <label className="text-[13px] font-medium">Related risk <span className="text-txt3">(optional)</span>
+      <label className="text-sm font-medium">Related risk <span className="text-txt3">(optional)</span>
         <select value={f.risk_id} onChange={(e) => set("risk_id")(e.target.value)} className={inputCls + " mt-1"}>
           <option value="">— none —</option>
           {(risks.data ?? []).map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
@@ -90,17 +91,17 @@ function NewTaskModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New task" size="lg">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
             className={inputCls + " mt-1"} placeholder="Quarterly access review" /></label>
-        <label className="text-[13px] font-medium">Description
+        <label className="text-sm font-medium">Description
           <textarea value={f.description} onChange={(e) => set("description")(e.target.value)}
             className={inputCls + " mt-1 min-h-[56px]"} /></label>
         <RecurrenceFields f={f} set={set} />
-        <label className="text-[13px] font-medium">{f.frequency ? "First due" : "Due"}
+        <label className="text-sm font-medium">{f.frequency ? "First due" : "Due"}
           <input type="date" value={f.next_due_at} onChange={(e) => set("next_due_at")(e.target.value)}
             className={inputCls + " mt-1"} /></label>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.title.trim() || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create task"}</button>
       </form>
@@ -131,16 +132,16 @@ function EditTaskModal({ task, onClose }: { task: TaskDetail; onClose: () => voi
   return (
     <Modal open onClose={onClose} title="Edit task" size="lg">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
             className={inputCls + " mt-1"} /></label>
-        <label className="text-[13px] font-medium">Description
+        <label className="text-sm font-medium">Description
           <textarea value={f.description} onChange={(e) => set("description")(e.target.value)}
             className={inputCls + " mt-1 min-h-[56px]"} /></label>
         <RecurrenceFields f={f} set={set} />
-        <p className="text-[11px] text-txt3">
+        <p className="text-caption text-txt3">
           The next run's due date isn't editable here — complete the current run to roll it forward, or pause the task instead.</p>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.title.trim() || save.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {save.isPending ? "Saving…" : "Save"}</button>
       </form>
@@ -186,10 +187,10 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
 
   return (
     <Modal open onClose={onClose} title="Complete task">
-      <p className="mb-3 text-[13px] font-medium">{task.title}</p>
+      <p className="mb-3 text-sm font-medium">{task.title}</p>
 
-      <div className="text-[13px] font-medium">Attach produced evidence <span className="text-txt3">(optional)</span></div>
-      <label className="btn mt-1 w-full cursor-pointer justify-center py-1.5 text-[12.5px]">
+      <div className="text-sm font-medium">Attach produced evidence <span className="text-txt3">(optional)</span></div>
+      <label className="btn mt-1 w-full cursor-pointer justify-center py-1.5 text-label">
         {file ? `Selected: ${file.name}` : "⬆ Upload a new file"}
         <input type="file" className="hidden" disabled={busy}
           onChange={(e) => {
@@ -202,12 +203,12 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
           }} />
       </label>
       {file && (
-        <button onClick={() => setFile(null)} className="mt-1 text-[11.5px] text-txt3 underline">
+        <button onClick={() => setFile(null)} className="mt-1 text-caption text-txt3 underline">
           Remove file
         </button>
       )}
 
-      <div className="mt-2 text-[11.5px] text-txt3">…or pick something already in the vault</div>
+      <div className="mt-2 text-caption text-txt3">…or pick something already in the vault</div>
       <select value={evId} disabled={!!file}
         onChange={(e) => setEvId(e.target.value)} className={inputCls + " mt-1 disabled:opacity-50"}>
         <option value="">— none —</option>
@@ -215,7 +216,7 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
       </select>
 
       <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notes…" className={inputCls + " mt-3 min-h-[60px]"} />
-      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
       <button disabled={busy} onClick={submit} className="btn btn-primary mt-3 w-full justify-center disabled:opacity-50">
         {busy ? (file ? "Uploading…" : "Completing…") : "Mark complete & roll forward"}
       </button>
@@ -266,17 +267,17 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         <Pill tone={task.status}>{nice(task.status)}</Pill>
         {task.next_run && <Pill tone={task.run_status}>{nice(task.run_status)}</Pill>}
         {can("tasks", "edit") && !editing && (
-          <button onClick={() => setEditing(true)} className="text-[12px] font-medium text-accent">Edit</button>)}
+          <button onClick={() => setEditing(true)} className="text-label font-medium text-accent">Edit</button>)}
       </div>
-      {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
-      {task.description && <p className="text-[13px] text-txt2">{task.description}</p>}
+      {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+      {task.description && <p className="text-sm text-txt2">{task.description}</p>}
 
       <Card>
         <div className="eyebrow mb-2">Run history</div>
-        {task.runs.length === 0 ? <p className="text-[12.5px] text-txt3">No runs yet.</p> : (
+        {task.runs.length === 0 ? <p className="text-label text-txt3">No runs yet.</p> : (
           <div className="flex flex-col gap-1.5">
             {task.runs.map((r) => (
-              <div key={r.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+              <div key={r.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                 <span className="font-mono text-txt2">{r.due_at.slice(0, 10)}</span>
                 <Pill tone={r.status}>{nice(r.status)}</Pill>
                 {r.notes && <span className="min-w-0 flex-1 truncate text-txt3">{r.notes}</span>}
@@ -317,12 +318,12 @@ function TaskList() {
         <div className="flex gap-1">
           {STATUS_TABS.map((s) => (
             <button key={s} onClick={() => setStatus(s)}
-              className={cn("rounded-full px-3 py-1 text-[12px] font-medium capitalize",
+              className={cn("rounded-full px-3 py-1 text-label font-medium capitalize",
                 status === s ? "bg-ink text-paper" : "bg-canvas text-txt2 hover:bg-hair")}>
               {s}</button>))}
         </div>
         {can("tasks", "add") && (
-          <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New task</button>)}
+          <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New task</button>)}
       </div>
       {isLoading ? <Loading /> : rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">
@@ -373,7 +374,7 @@ function CalendarView() {
     <>
       <div className="mb-4 flex items-center gap-3">
         <button onClick={() => shift(-1)} className="btn py-1.5 px-2.5">←</button>
-        <div className="text-[14px] font-semibold">{monthLabel}</div>
+        <div className="text-body font-semibold">{monthLabel}</div>
         <button onClick={() => shift(1)} className="btn py-1.5 px-2.5">→</button>
       </div>
       {isLoading ? <Loading /> : days.length === 0 ? (
@@ -388,7 +389,7 @@ function CalendarView() {
                 { weekday: "long", day: "numeric", month: "long" })}</div>
               <div className="flex flex-col gap-1.5">
                 {(byDay.get(day) ?? []).map((r) => (
-                  <div key={r.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-[12.5px] first:border-t-0">
+                  <div key={r.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
                     <span className="min-w-0 flex-1 truncate font-medium">{r.title}</span>
                     <Pill tone={r.status}>{nice(r.status)}</Pill>
                   </div>))}
@@ -409,7 +410,7 @@ export default function Tasks() {
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["list", "calendar"] as const).map((tt) => (
           <button key={tt} onClick={() => setTab(tt)}
-            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-[13px] font-medium capitalize",
+            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium capitalize",
               tab === tt ? "border-accent text-ink" : "border-transparent text-txt2")}>
             {tt}</button>))}
       </div>

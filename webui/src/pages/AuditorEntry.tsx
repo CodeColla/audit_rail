@@ -25,11 +25,11 @@ export default function AuditorEntry() {
     <div className="grid min-h-screen place-items-center bg-canvas text-center">
       {err ? (
         <div className="max-w-sm">
-          <div className="text-[15px] font-semibold text-bad">This auditor link is invalid or expired.</div>
-          <p className="mt-2 text-[13px] text-txt3">Ask your contact at the vendor to send a fresh invitation.</p>
+          <div className="text-body font-semibold text-bad">This auditor link is invalid or expired.</div>
+          <p className="mt-2 text-sm text-txt3">Ask your contact at the vendor to send a fresh invitation.</p>
         </div>
       ) : (
-        <div className="text-[14px] text-txt2">Entering auditor review…</div>
+        <div className="text-body text-txt2">Entering auditor review…</div>
       )}
     </div>
   );

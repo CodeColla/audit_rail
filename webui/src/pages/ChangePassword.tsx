@@ -19,7 +19,7 @@ export default function ChangePassword() {
   const [confirm, setConfirm] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const field = "mt-1 w-full rounded-md border border-bd px-3 py-2 text-[14px] outline-none focus:border-accent";
+  const field = "mt-1 w-full rounded-md border border-bd px-3 py-2 text-body outline-none focus:border-accent";
 
   const mismatch = !!confirm && next !== confirm;
 
@@ -43,10 +43,10 @@ export default function ChangePassword() {
       <div className="w-full max-w-sm">
         <div className="card p-6">
           <div className="eyebrow">Account</div>
-          <h1 className="mb-1 mt-1 text-[20px] font-semibold">
+          <h1 className="mb-1 mt-1 text-title font-semibold">
             {forced ? "Your password has expired" : "Change password"}
           </h1>
-          <p className="mb-4 text-[12.5px] text-txt2">
+          <p className="mb-4 text-label text-txt2">
             {forced
               ? "Passwords expire every 30 days. Set a new one to carry on."
               : "Choose something you have not used recently."}
@@ -54,32 +54,32 @@ export default function ChangePassword() {
           <form onSubmit={submit} className="flex flex-col gap-3">
             {/* hint outside the label, linked by aria-describedby — see Signup.tsx */}
             <div>
-              <label htmlFor="cp-cur" className="text-[13px] font-medium">Current password</label>
+              <label htmlFor="cp-cur" className="text-sm font-medium">Current password</label>
               <input id="cp-cur" required type="password" value={cur}
                 onChange={(e) => setCur(e.target.value)} className={field} />
             </div>
             <div>
-              <label htmlFor="cp-new" className="text-[13px] font-medium">New password</label>
+              <label htmlFor="cp-new" className="text-sm font-medium">New password</label>
               <input id="cp-new" required type="password" aria-describedby="cp-new-hint"
                 value={next} onChange={(e) => setNext(e.target.value)} className={field} />
-              <p id="cp-new-hint" className="mt-1 text-[11px] text-txt3">
+              <p id="cp-new-hint" className="mt-1 text-caption text-txt3">
                 At least 8 characters, with letters and numbers. Your last 3 passwords cannot be reused.
               </p>
             </div>
             <div>
-              <label htmlFor="cp-confirm" className="text-[13px] font-medium">Confirm new password</label>
+              <label htmlFor="cp-confirm" className="text-sm font-medium">Confirm new password</label>
               <input id="cp-confirm" required type="password" value={confirm}
                 onChange={(e) => setConfirm(e.target.value)} className={field} />
             </div>
-            {mismatch && <div className="text-[12px] text-bad">Those two do not match.</div>}
-            {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+            {mismatch && <div className="text-label text-bad">Those two do not match.</div>}
+            {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
             <button disabled={busy || !cur || !next || mismatch}
               className="btn btn-primary mt-1 justify-center disabled:opacity-50">
               {busy ? "Saving…" : "Change password"}
             </button>
           </form>
         </div>
-        <button onClick={logout} className="mt-3 w-full text-center text-[12px] text-txt3 hover:text-ink">
+        <button onClick={logout} className="mt-3 w-full text-center text-label text-txt3 hover:text-ink">
           Sign out instead
         </button>
       </div>

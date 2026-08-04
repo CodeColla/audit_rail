@@ -119,7 +119,7 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
       {/* A failed save used to be indistinguishable from a successful one: the button
           simply reverted to "Save draft" and the author walked away thinking it landed. */}
       {save.isError && (
-        <div role="alert" className="mb-2 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">
+        <div role="alert" className="mb-2 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">
           Could not save this draft — {errText(save.error)}. Your text is still here; try again.
         </div>
       )}
@@ -132,7 +132,7 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
         : <RichTextEditor value={content} onChange={setContent} />}
 
       <Modal open={leaving} onClose={() => setLeaving(false)} title="Leave without saving?">
-        <p className="text-[13px] text-txt2">
+        <p className="text-sm text-txt2">
           You have unsaved changes in this draft. Leaving the editor discards them.
         </p>
         <div className="mt-4 flex justify-end gap-2">
@@ -145,12 +145,12 @@ function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
       </Modal>
 
       <Modal open={discarding} onClose={() => setDiscarding(false)} title="Discard this draft?">
-        <p className="text-[13px] text-txt2">
+        <p className="text-sm text-txt2">
           Draft v{version.version_label} will be deleted and the document reverts to its last
           published version. This cannot be undone.
         </p>
         {discard.isError && (
-          <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">
+          <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">
             {errText(discard.error)}
           </div>
         )}
@@ -179,7 +179,7 @@ function DiffModal({ docId, versions, onClose }:
   const vlabel = (id: string) => versions.find((v) => v.id === id)?.version_label ?? "?";
   return (
     <Modal open onClose={onClose} title="Compare versions">
-      <div className="mb-3 flex items-center gap-2 text-[13px]">
+      <div className="mb-3 flex items-center gap-2 text-sm">
         <select value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls}>
           {versions.map((v) => <option key={v.id} value={v.id}>v{v.version_label}</option>)}
         </select>
@@ -188,16 +188,16 @@ function DiffModal({ docId, versions, onClose }:
           {versions.map((v) => <option key={v.id} value={v.id}>v{v.version_label}</option>)}
         </select>
       </div>
-      {from === to ? <div className="text-[13px] text-txt3">Pick two different versions.</div>
-        : diff.isLoading ? <div className="text-[13px] text-txt3">Loading…</div>
+      {from === to ? <div className="text-sm text-txt3">Pick two different versions.</div>
+        : diff.isLoading ? <div className="text-sm text-txt3">Loading…</div>
         : (
           <>
-            <div className="mb-2 flex gap-3 text-[12px]">
+            <div className="mb-2 flex gap-3 text-label">
               <span className="text-ok">+{diff.data?.added ?? 0} added</span>
               <span className="text-bad">−{diff.data?.removed ?? 0} removed</span>
               <span className="text-txt3">v{vlabel(from)} → v{vlabel(to)}</span>
             </div>
-            <pre className="max-h-[55vh] overflow-auto rounded-md border border-bd bg-canvas p-3 font-mono text-[12px] leading-relaxed">
+            <pre className="max-h-[55vh] overflow-auto rounded-md border border-bd bg-canvas p-3 font-mono text-label leading-relaxed">
               {(diff.data?.diff ?? []).map((l, i) => (
                 <div key={i} className={cn(
                   l.startsWith("+") && !l.startsWith("+++") && "bg-ok-bg text-ok",
@@ -232,27 +232,27 @@ function SubmitModal({ docId, versionId, onClose }:
 
   return (
     <Modal open onClose={onClose} title="Request approval">
-      <p className="mb-3 text-[12.5px] text-txt2">
+      <p className="mb-3 text-label text-txt2">
         Pick approvers, then set how many must approve — this is the <b>M of N</b> threshold, frozen
         now and unchangeable mid-flight. Departed staff aren't shown.
       </p>
       <div className="max-h-52 overflow-y-auto rounded-md border border-bd">
         {active.map((p) => (
-          <label key={p.id} className="flex cursor-pointer items-center gap-2.5 border-b border-bd px-3 py-2 text-[13px] last:border-0 hover:bg-canvas">
+          <label key={p.id} className="flex cursor-pointer items-center gap-2.5 border-b border-bd px-3 py-2 text-sm last:border-0 hover:bg-canvas">
             <input type="checkbox" checked={picked.includes(p.id)} onChange={() => toggle(p.id)} />
             {p.full_name}
           </label>
         ))}
-        {active.length === 0 && <div className="px-3 py-2 text-[12.5px] text-txt3">No active people — add some in People first.</div>}
+        {active.length === 0 && <div className="px-3 py-2 text-label text-txt3">No active people — add some in People first.</div>}
       </div>
-      <div className="mt-3 flex items-center gap-2 text-[13px]">
+      <div className="mt-3 flex items-center gap-2 text-sm">
         <span>Threshold</span>
         <button onClick={() => setThreshold((t) => Math.max(1, t - 1))} className="grid h-7 w-7 place-items-center rounded-md border border-bd">−</button>
         <span className="w-8 text-center font-semibold tnum">{threshold}</span>
         <button onClick={() => setThreshold((t) => Math.min(Math.max(1, picked.length), t + 1))} className="grid h-7 w-7 place-items-center rounded-md border border-bd">+</button>
         <span className="text-txt3">of {picked.length} picked</span>
       </div>
-      {err && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+      {err && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
       <button disabled={picked.length === 0 || threshold > picked.length || submit.isPending}
         onClick={() => submit.mutate()} className="btn btn-primary mt-3 w-full justify-center disabled:opacity-50">
         {submit.isPending ? "Submitting…" : `Request ${threshold} of ${picked.length} approval`}
@@ -279,7 +279,7 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["document", doc.id] }),
   });
 
-  if (!open) return <Card><div className="text-[13px] text-txt3">
+  if (!open) return <Card><div className="text-sm text-txt3">
     No version in progress. Use <b>Edit</b> to start a new version, then request approval here.</div></Card>;
 
   if (open.status === "DRAFT")
@@ -287,7 +287,7 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
       <>
         <Card>
           <div className="eyebrow mb-1">Draft v{open.version_label}</div>
-          <p className="text-[13px] text-txt2">This draft hasn't been sent for approval yet.
+          <p className="text-sm text-txt2">This draft hasn't been sent for approval yet.
             An approved quorum is required before it can be published — including minor versions.</p>
           {can("documents", "edit") && (
             <button onClick={() => setSubmitting(true)} className="btn btn-primary mt-3">Request approval</button>
@@ -298,7 +298,7 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
     );
 
   // PENDING_APPROVAL with a round
-  if (!appr) return <Card><div className="text-[13px] text-txt3">No approval round.</div></Card>;
+  if (!appr) return <Card><div className="text-sm text-txt3">No approval round.</div></Card>;
   const pct = Math.round((appr.approved / appr.threshold_required) * 100);
   return (
     <Card>
@@ -311,8 +311,8 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
       </div>
       <div className="flex flex-col gap-1">
         {appr.decisions.map((d) => (
-          <div key={d.approver_person_id} className="flex items-center gap-3 border-t border-bd py-2 text-[13px] first:border-t-0">
-            <span className={cn("grid h-6 w-6 place-items-center rounded-full text-[11px] text-white",
+          <div key={d.approver_person_id} className="flex items-center gap-3 border-t border-bd py-2 text-sm first:border-t-0">
+            <span className={cn("grid h-6 w-6 place-items-center rounded-full text-caption text-white",
               d.state === "APPROVED" ? "bg-ok" : d.state === "REJECTED" ? "bg-bad" : "bg-txt3")}>
               {d.state === "APPROVED" ? "✓" : d.state === "REJECTED" ? "✕" : "○"}</span>
             <span className="font-medium">{d.full_name}</span>
@@ -320,9 +320,9 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
             {d.state === "PENDING" && can("documents", "approve") && (
               <span className="ml-auto flex gap-1.5">
                 <button onClick={() => decide.mutate({ pid: d.approver_person_id, state: "APPROVED" })}
-                  className="rounded-md border border-ok/40 px-2 py-1 text-[12px] text-ok hover:bg-ok-bg">Approve</button>
+                  className="rounded-md border border-ok/40 px-2 py-1 text-label text-ok hover:bg-ok-bg">Approve</button>
                 <button onClick={() => decide.mutate({ pid: d.approver_person_id, state: "REJECTED" })}
-                  className="rounded-md border border-bd px-2 py-1 text-[12px] text-txt2 hover:border-bad hover:text-bad">Reject</button>
+                  className="rounded-md border border-bd px-2 py-1 text-label text-txt2 hover:border-bad hover:text-bad">Reject</button>
               </span>
             )}
           </div>
@@ -335,7 +335,7 @@ function ApprovalsTab({ doc }: { doc: Detail }) {
             {publish.isPending ? "Publishing…" : `Publish v${open.version_label}`}
           </button>
         )}
-        {!appr.can_publish && <span className="text-[12px] text-txt3">{appr.approved} of {appr.threshold_required} approvals — publish unlocks at {appr.threshold_required}.</span>}
+        {!appr.can_publish && <span className="text-label text-txt3">{appr.approved} of {appr.threshold_required} approvals — publish unlocks at {appr.threshold_required}.</span>}
       </div>
     </Card>
   );
@@ -359,11 +359,11 @@ function LinksModal({ issued, onClose }: { issued: IssuedLink[]; onClose: () => 
   return (
     <Modal open onClose={onClose} title={`${issued.length} signing link${issued.length === 1 ? "" : "s"}`}>
       {issued.length === 0 ? (
-        <p className="text-[13px] text-txt2">Everyone in the audience has already signed the current
+        <p className="text-sm text-txt2">Everyone in the audience has already signed the current
           version — nothing to send.</p>
       ) : (
         <>
-          <p className="mb-3 text-[12.5px] text-txt2">
+          <p className="mb-3 text-label text-txt2">
             Each link is <b>single-use</b> and tied to one person. Email delivery comes later — for now,
             copy a link (or the CSV) and share it. Opening it <b>logged out</b> shows the policy and a
             signature box.
@@ -373,11 +373,11 @@ function LinksModal({ issued, onClose }: { issued: IssuedLink[]; onClose: () => 
             {issued.map((i) => (
               <div key={i.person_id} className="flex items-center gap-2 px-3 py-2">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[13px] font-medium">{i.full_name}</div>
-                  <div className="truncate font-mono text-[11px] text-txt3">{link(i.token)}</div>
+                  <div className="text-sm font-medium">{i.full_name}</div>
+                  <div className="truncate font-mono text-caption text-txt3">{link(i.token)}</div>
                 </div>
                 <button onClick={() => copy(i.person_id, link(i.token))}
-                  className="btn shrink-0 py-1 text-[12px]">{copied === i.person_id ? "Copied ✓" : "Copy"}</button>
+                  className="btn shrink-0 py-1 text-label">{copied === i.person_id ? "Copied ✓" : "Copy"}</button>
               </div>
             ))}
           </div>
@@ -451,7 +451,7 @@ function AttestationTab({ doc }: { doc: Detail }) {
     (mode === "DEPARTMENT" && !dept) || (mode === "EXPLICIT" && picked.length === 0);
 
   if (!published)
-    return <Card><div className="text-[13px] text-txt2">
+    return <Card><div className="text-sm text-txt2">
       Attestation is for a <b>published</b> document — publish a version first, then require the
       right people to read and sign it.</div></Card>;
 
@@ -464,19 +464,19 @@ function AttestationTab({ doc }: { doc: Detail }) {
       <Card>
         <div className="mb-2 flex items-end justify-between">
           <div className="eyebrow">Coverage · v{c?.version_label ?? doc.versions.find((v) => v.id === doc.current_published_version_id)?.version_label}</div>
-          <div className="text-[13px] text-txt2">
-            <span className="text-[20px] font-semibold text-ink tnum">{c ? (c.coverage_pct ?? 0) : 0}%</span>
+          <div className="text-sm text-txt2">
+            <span className="text-title font-semibold text-ink tnum">{c ? (c.coverage_pct ?? 0) : 0}%</span>
             {c && <span className="ml-2">{c.signed} of {c.expected} signed</span>}
           </div>
         </div>
         <Bar pct={pct} />
         {c && c.expected === 0 && (
-          <p className="mt-3 text-[12.5px] text-txt3">No one is in the audience yet. Set one below,
+          <p className="mt-3 text-label text-txt3">No one is in the audience yet. Set one below,
             then start a campaign.</p>)}
         {c && c.people.length > 0 && (
           <div className="mt-3 max-h-64 divide-y divide-bd overflow-y-auto">
             {c.people.map((p) => (
-              <div key={p.person_id} className="flex items-center gap-3 py-1.5 text-[13px]">
+              <div key={p.person_id} className="flex items-center gap-3 py-1.5 text-sm">
                 <span className="font-medium">{p.full_name}</span>
                 {p.department && <span className="text-txt3">{p.department}</span>}
                 <span className="ml-auto">
@@ -497,7 +497,7 @@ function AttestationTab({ doc }: { doc: Detail }) {
           {([["ALL_EMPLOYEES", "All employees"], ["DEPARTMENT", "By department"],
              ["EXPLICIT", "Specific people"]] as const).map(([m, label]) => (
             <button key={m} onClick={() => setMode(m)}
-              className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
+              className={cn("rounded-full border px-3 py-1.5 text-label font-medium",
                 mode === m ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                   : "border-bd bg-paper text-txt2 hover:bg-canvas")}>{label}</button>
           ))}
@@ -513,14 +513,14 @@ function AttestationTab({ doc }: { doc: Detail }) {
         {mode === "EXPLICIT" && (
           <div className="mb-3 max-h-52 overflow-y-auto rounded-md border border-bd">
             {activePeople.map((p) => (
-              <label key={p.id} className="flex cursor-pointer items-center gap-2.5 border-b border-bd px-3 py-2 text-[13px] last:border-0 hover:bg-canvas">
+              <label key={p.id} className="flex cursor-pointer items-center gap-2.5 border-b border-bd px-3 py-2 text-sm last:border-0 hover:bg-canvas">
                 <input type="checkbox" checked={picked.includes(p.id)} onChange={() => toggle(p.id)} />
                 {p.full_name}{p.department && <span className="text-txt3">· {p.department}</span>}
               </label>))}
-            {activePeople.length === 0 && <div className="px-3 py-2 text-[12.5px] text-txt3">No active people.</div>}
+            {activePeople.length === 0 && <div className="px-3 py-2 text-label text-txt3">No active people.</div>}
           </div>)}
 
-        {err && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
+        {err && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
 
         <div className="flex flex-wrap items-center gap-3">
           <button disabled={saveDisabled} onClick={() => save.mutate()}
@@ -533,7 +533,7 @@ function AttestationTab({ doc }: { doc: Detail }) {
               onClick={() => campaign.mutate()} className="btn btn-primary disabled:opacity-50">
               {campaign.isPending ? "Starting…" : "Start / resend campaign"}</button>
           )}
-          <span className="text-[12.5px] text-txt3">
+          <span className="text-label text-txt3">
             Currently targeting <b className="text-txt2">{aud.data?.targeted ?? 0}</b> active {(aud.data?.targeted ?? 0) === 1 ? "person" : "people"}.
           </span>
         </div>
@@ -607,17 +607,17 @@ export default function DocumentDetail() {
     <>
       {editing && editorDirty ? (
         <button onClick={() => guardLeaveEditor(() => nav("/documents"))}
-          className="text-[13px] text-txt2 hover:text-ink">← All documents</button>
+          className="text-sm text-txt2 hover:text-ink">← All documents</button>
       ) : (
-        <Link to="/documents" className="text-[13px] text-txt2 hover:text-ink">← All documents</Link>
+        <Link to="/documents" className="text-sm text-txt2 hover:text-ink">← All documents</Link>
       )}
       <div className="mb-1 mt-2 flex items-end gap-3">
-        <h1 className="text-[22px] font-semibold tracking-[-0.01em]">{doc.title}</h1>
+        <h1 className="text-title font-semibold tracking-[-0.01em]">{doc.title}</h1>
         {shown && <Pill tone={statusTone(shown.status)}>{shown.status === "PENDING_APPROVAL" ? "In approval" : shown.status.charAt(0) + shown.status.slice(1).toLowerCase()}</Pill>}
         {doc.status === "ARCHIVED" && <Pill tone="na">Archived</Pill>}
-        <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{doc.classification.toLowerCase()}</span>
+        <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption capitalize text-txt2">{doc.classification.toLowerCase()}</span>
       </div>
-      <p className="mb-3 flex flex-wrap items-center gap-x-1.5 text-[13.5px] text-txt2">
+      <p className="mb-3 flex flex-wrap items-center gap-x-1.5 text-sm text-txt2">
         <span className="capitalize">{doc.document_type.toLowerCase()}</span> · Owner {doc.owner?.full_name ?? "—"}
         {shown && <> · v{shown.version_label}</>}
         {doc.next_review_at && <> · <span className={doc.review_status === "overdue" ? "text-bad" : "text-txt2"}>review {doc.next_review_at.slice(0, 10)}</span></>}
@@ -656,16 +656,16 @@ export default function DocumentDetail() {
       </p>
 
       {editErr && (
-        <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{editErr}</div>
+        <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{editErr}</div>
       )}
       {editing && editorDirty && (
-        <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-[12px] text-warn">
+        <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-label text-warn">
           Export downloads the last SAVED draft — you have unsaved changes in the editor.
         </div>
       )}
 
       {doc.open_version && doc.open_version.status === "DRAFT" && !editing && tab === "content" && (
-        <div className="mb-4 rounded-lg border border-warn/40 bg-warn-bg/40 px-4 py-2.5 text-[12.5px] text-warn">
+        <div className="mb-4 rounded-lg border border-warn/40 bg-warn-bg/40 px-4 py-2.5 text-label text-warn">
           Draft v{doc.open_version.version_label} in progress
           {can("documents", "edit") ? <>{" "}—{" "}
             <button onClick={() => setEditing(true)} className="font-semibold underline">continue editing</button>{" "}
@@ -677,7 +677,7 @@ export default function DocumentDetail() {
       <div className="mb-5 flex gap-1 border-b border-bd">
         {(["content", "versions", "approvals", "attestation"] as const).map((tt) => (
           <button key={tt} onClick={() => guardLeaveEditor(() => { setTab(tt); setEditing(false); })}
-            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-[13px] font-medium capitalize",
+            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium capitalize",
               tab === tt ? "border-accent text-ink" : "border-transparent text-txt2")}>
             {tt}{tt === "versions" && ` (${doc.versions.length})`}
           </button>
@@ -695,7 +695,7 @@ export default function DocumentDetail() {
                 {[["Type", doc.document_type.toLowerCase()], ["Classification", doc.classification.toLowerCase()],
                   ["Owner", doc.owner?.full_name], ["Review every", doc.review_cadence_months ? `${doc.review_cadence_months} mo` : "—"],
                   ["Next review", doc.next_review_at?.slice(0, 10)]].map(([k, v]) => (
-                  <div key={k as string} className="flex justify-between py-1 text-[12.5px]">
+                  <div key={k as string} className="flex justify-between py-1 text-label">
                     <span className="text-txt3">{k}</span><span className="font-medium capitalize">{(v as string) || "—"}</span>
                   </div>))}
               </Card>
@@ -705,14 +705,14 @@ export default function DocumentDetail() {
       {tab === "versions" && (
         <Card>
           {doc.versions.map((v) => (
-            <div key={v.id} className="flex items-center gap-3 border-t border-bd py-2.5 text-[13px] first:border-t-0">
+            <div key={v.id} className="flex items-center gap-3 border-t border-bd py-2.5 text-sm first:border-t-0">
               <span className={cn("h-2 w-2 rounded-full", v.id === doc.current_published_version_id ? "bg-ok" : "bg-bd")} />
               <span className="font-mono font-semibold">v{v.version_label}</span>
               <Pill tone={statusTone(v.status)}>{v.status.charAt(0) + v.status.slice(1).toLowerCase()}</Pill>
               <span className="text-txt3">{v.published_at?.slice(0, 10) ?? "—"}</span>
               <span className="truncate text-txt2">{v.changelog ?? ""}</span>
               <span className="ml-auto flex shrink-0 gap-1.5">
-                {v.file_id && <button onClick={() => downloadFile(`/documents/${doc.id}/versions/${v.id}/render.pdf`, `${doc.title} v${v.version_label}.pdf`)} className="rounded-md border border-bd px-2 py-1 text-[12px] hover:bg-canvas">PDF</button>}
+                {v.file_id && <button onClick={() => downloadFile(`/documents/${doc.id}/versions/${v.id}/render.pdf`, `${doc.title} v${v.version_label}.pdf`)} className="rounded-md border border-bd px-2 py-1 text-label hover:bg-canvas">PDF</button>}
               </span>
             </div>
           ))}

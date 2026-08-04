@@ -1,7 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Eye } from "lucide-react";
+import { Eye, Plus } from "lucide-react";
 import { api, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
 import { cn, inputCls, Loading, Modal, PageHead, Pill } from "../lib/ui";
@@ -46,7 +46,7 @@ function StatusCell({ d }: { d: Doc }) {
       </Pill>
     )}
     {!s && d.status !== "ARCHIVED" && <span className="text-txt3">—</span>}
-    {d.latest_version && <span className="font-mono text-[11px] text-txt3">v{d.latest_version}</span>}
+    {d.latest_version && <span className="font-mono text-caption text-txt3">v{d.latest_version}</span>}
   </span>;
 }
 
@@ -75,26 +75,26 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal open onClose={onClose} title="New document">
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-[13px] font-medium">Title *
+        <label className="text-sm font-medium">Title *
           <input required value={f.title} onChange={set("title")} className={inputCls + " mt-1"}
             placeholder="Information Security Policy" />
         </label>
-        <div className="text-[13px] font-medium">Format
+        <div className="text-sm font-medium">Format
           <div className="mt-1 flex gap-2">
             {([["DOCUMENT", "Document"], ["SHEET", "Spreadsheet"]] as const).map(([k, label]) => (
               <button key={k} type="button" onClick={() => setKind(k)}
-                className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
+                className={cn("rounded-full border px-3 py-1.5 text-label font-medium",
                   kind === k ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                     : "border-bd bg-paper text-txt2 hover:bg-canvas")}>{label}</button>
             ))}
           </div>
-          <p className="mt-1 text-[11.5px] font-normal text-txt3">
+          <p className="mt-1 text-caption font-normal text-txt3">
             {kind === "SHEET" ? "A spreadsheet — formulas, formatting and multiple sheets. Published versions freeze their calculated values."
               : "Free-form text, written in the rich text editor."}
           </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
-          <label className="text-[13px] font-medium">Type
+          <label className="text-sm font-medium">Type
             {/* The select renders with zero <option>s while this query is in flight —
                 cosmetically blank for a moment, though the underlying default ("POLICY")
                 is always a valid type, so it never lets a bad value through on submit. */}
@@ -104,23 +104,23 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
               {(types.data ?? []).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Classification
+          <label className="text-sm font-medium">Classification
             <select value={f.classification} onChange={set("classification")} className={inputCls + " mt-1 capitalize"}>
               {CLASSES.map((c) => <option key={c} value={c}>{c.charAt(0) + c.slice(1).toLowerCase()}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Owner *
+          <label className="text-sm font-medium">Owner *
             <select required value={f.owner_person_id} onChange={set("owner_person_id")} className={inputCls + " mt-1"}>
               <option value="">— pick a person —</option>
               {(people.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
             </select>
           </label>
-          <label className="text-[13px] font-medium">Review every (months)
+          <label className="text-sm font-medium">Review every (months)
             <input type="number" value={f.review_cadence_months} onChange={set("review_cadence_months")} className={inputCls + " mt-1"} />
           </label>
         </div>
-        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{err}</div>}
-        <p className="rounded-md bg-canvas px-3 py-2 text-[11.5px] text-txt2">
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+        <p className="rounded-md bg-canvas px-3 py-2 text-caption text-txt2">
           Creates a <b>v1.0 draft</b> to write into. It won't publish until it's approved.
         </p>
         <button disabled={!f.title || !f.owner_person_id || create.isPending}
@@ -148,8 +148,8 @@ function DocPreview({ id, title, onClose }: { id: string; title: string; onClose
   }, [data]);
   return (
     <Modal open onClose={onClose} title={title} size="lg">
-      {isLoading ? <div className="text-[13px] text-txt3">Loading…</div>
-        : !shown ? <div className="text-[13px] text-txt3">No content yet.</div>
+      {isLoading ? <div className="text-sm text-txt3">Loading…</div>
+        : !shown ? <div className="text-sm text-txt3">No content yet.</div>
         : <DocBody content={shown.content} format={shown.content_format}
             className="max-h-[65vh] overflow-y-auto" />}
     </Modal>
@@ -199,7 +199,7 @@ export default function Documents() {
           </button>
           <div>
             <div className="font-medium">{d.title}</div>
-            {d.published_version && <div className="font-mono text-[11px] text-txt3">published v{d.published_version}</div>}
+            {d.published_version && <div className="font-mono text-caption text-txt3">published v{d.published_version}</div>}
           </div>
         </div>
       ),
@@ -210,7 +210,7 @@ export default function Documents() {
     },
     {
       key: "classification", label: "Classification", sortValue: (d) => d.classification,
-      render: (d) => <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{d.classification.toLowerCase()}</span>,
+      render: (d) => <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption capitalize text-txt2">{d.classification.toLowerCase()}</span>,
     },
     {
       key: "status", label: "Status", sortValue: (d) => d.latest_status ?? "",
@@ -234,7 +234,7 @@ export default function Documents() {
       <PageHead eyebrow="Program · Documents" title="Documents"
         lead="Policies, procedures and plans — authored, approved by a quorum, published as controlled PDFs. (Registers will render themselves here too, from Sprint 5.)"
         action={can("documents", "add")
-          ? <button onClick={() => setAdding(true)} className="btn btn-primary">＋ New document</button>
+          ? <button onClick={() => setAdding(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> New document</button>
           : undefined} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
@@ -245,7 +245,7 @@ export default function Documents() {
               if (c.value) next.set("type", c.value); else next.delete("type");
               return next;
             })}
-            className={cn("rounded-full border px-3 py-1.5 text-[12.5px] font-medium",
+            className={cn("rounded-full border px-3 py-1.5 text-label font-medium",
               (typeParam ?? null) === c.value ? "border-accent bg-[rgba(249,115,22,0.09)] text-ink"
                 : "border-bd bg-paper text-txt2 hover:bg-canvas")}>
             {c.label}
@@ -255,7 +255,7 @@ export default function Documents() {
             list always excluded ARCHIVED rows and nothing in the SPA ever sent
             include_archived, so an archived document — and its Restore button — became
             unreachable the moment it was archived. */}
-        <label className="ml-2 flex items-center gap-1.5 text-[12.5px] text-txt2">
+        <label className="ml-2 flex items-center gap-1.5 text-label text-txt2">
           <input type="checkbox" checked={showArchived}
             onChange={(e) => setParams((p) => {
               const next = new URLSearchParams(p);
@@ -268,14 +268,14 @@ export default function Documents() {
 
       {rows.length === 0 && !isFiltered ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-10 text-center">
-          <h3 className="text-[15px] font-semibold">No documents here yet</h3>
-          <p className="mx-auto mt-2 max-w-[52ch] text-[13px] text-txt2">
+          <h3 className="text-body font-semibold">No documents here yet</h3>
+          <p className="mx-auto mt-2 max-w-[52ch] text-sm text-txt2">
             This is where "Please share the policy" gets answered. Write your Information Security
             Policy, route it to approvers, and publish a controlled v1.0 — no more Word file on a
             share drive.
           </p>
           {can("documents", "add") && (
-            <button onClick={() => setAdding(true)} className="btn btn-primary mt-4">＋ New document</button>
+            <button onClick={() => setAdding(true)} className="btn btn-primary mt-4"><Plus size={15} strokeWidth={2.4} /> New document</button>
           )}
         </div>
       ) : (
@@ -298,7 +298,7 @@ export default function Documents() {
       )}
       {adding && <NewDocModal onClose={() => setAdding(false)} />}
       {previewing && <DocPreview id={previewing.id} title={previewing.title} onClose={() => setPreviewing(null)} />}
-      <p className="mt-6 text-[11.5px] text-txt3">
+      <p className="mt-6 text-caption text-txt3">
         Looking for the old Policies page? It's here now — <Link to="/documents?type=POLICY" className="underline">Documents → Policies</Link>.
       </p>
     </>

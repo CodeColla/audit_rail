@@ -550,7 +550,7 @@ export function SheetEditor({ value, onChange, onSave, saving = false, dirty = f
     // scrollbar to reach the rest. jspreadsheet now owns its own overflow.
     <div className="sheet-editor rounded-xl border border-bd bg-paper">
       <div className="flex flex-wrap items-center gap-2 border-b border-bd bg-canvas px-3 py-1.5">
-        <label className="btn cursor-pointer py-1 text-[12px]">
+        <label className="btn cursor-pointer py-1 text-label">
           {importing ? "Reading…" : "Import .xlsx / .csv"}
           <input type="file" accept=".xlsx,.xls,.csv" className="hidden" disabled={importing}
             onChange={(e) => {
@@ -561,13 +561,13 @@ export function SheetEditor({ value, onChange, onSave, saving = false, dirty = f
               void onImport(f);
             }} />
         </label>
-        <span className="text-[11.5px] text-txt3">
+        <span className="text-caption text-txt3">
           Replaces every sheet in this draft. Values and formulas are imported; import is not
           saved until you click <b>Save draft</b>.
         </span>
       </div>
       {importError && (
-        <div role="alert" className="border-b border-bd bg-bad-bg px-3 py-1.5 text-[12px] text-bad">
+        <div role="alert" className="border-b border-bd bg-bad-bg px-3 py-1.5 text-label text-bad">
           Could not import — {importError}.
         </div>
       )}
@@ -586,14 +586,14 @@ export function SheetEditor({ value, onChange, onSave, saving = false, dirty = f
         <div role="toolbar" aria-label="Fullscreen sheet actions"
           className="fixed right-4 top-3 z-[61] flex items-center gap-2 rounded-lg
                      border border-bd bg-paper px-2 py-1.5 shadow-drawer">
-          {dirty && <span className="pl-1 text-[11.5px] text-warn">Unsaved changes</span>}
+          {dirty && <span className="pl-1 text-caption text-warn">Unsaved changes</span>}
           {onSave && (
             <button type="button" onClick={onSave} disabled={saving}
-              className="btn btn-primary py-1 text-[12px] disabled:opacity-50">
+              className="btn btn-primary py-1 text-label disabled:opacity-50">
               {saving ? "Saving…" : "Save draft"}
             </button>
           )}
-          <button type="button" onClick={exitFullscreen} className="btn py-1 text-[12px]">
+          <button type="button" onClick={exitFullscreen} className="btn py-1 text-label">
             Exit fullscreen
           </button>
         </div>

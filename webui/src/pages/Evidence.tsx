@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Trash2 } from "lucide-react";
+import { Plus, Trash2 } from "lucide-react";
 import { api, errText, get } from "../lib/api";
 import { inputCls, Loading, Modal, PageHead, Pill } from "../lib/ui";
 import { useCan } from "../lib/auth";
@@ -109,19 +109,19 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
     <Modal open={open} onClose={onClose} title="Upload evidence" size="lg">
       <form onSubmit={submit} className="flex flex-col gap-3">
         <div className="grid grid-cols-3 gap-3">
-          <label className="text-[13px] font-medium">Type
+          <label className="text-sm font-medium">Type
             {/* P5-S6: was a hardcoded array duplicated in two files. Now the
                 `evidence_type` vocabulary, editable in Masters. */}
             <LookupSelect kind="evidence_type" value={type} onChange={setType} />
           </label>
-          <label className="text-[13px] font-medium">Issued
+          <label className="text-sm font-medium">Issued
             <input type="date" value={issued} onChange={(e) => setIssued(e.target.value)} className={inputCls + " mt-1"} />
           </label>
-          <label className="text-[13px] font-medium">Valid until
+          <label className="text-sm font-medium">Valid until
             <input type="date" value={valid} onChange={(e) => setValid(e.target.value)} className={inputCls + " mt-1"} />
           </label>
         </div>
-        <p className="text-[11.5px] text-txt3">Type and dates apply to every file in this batch — edit any of them afterwards on its own page.</p>
+        <p className="text-caption text-txt3">Type and dates apply to every file in this batch — edit any of them afterwards on its own page.</p>
 
         <label
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -137,8 +137,8 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
             "flex cursor-pointer flex-col items-center gap-1 rounded-lg border-2 border-dashed px-4 py-6 text-center " +
             (dragOver ? "border-accent bg-[rgba(249,115,22,0.06)]" : "border-hair bg-canvas")
           }>
-            <span className="text-[13px] font-medium">{dragOver ? "Drop to add" : "Choose files"}</span>
-            <span className="text-[11.5px] text-txt3">Several at once, or drag them in — each is named after its file.</span>
+            <span className="text-sm font-medium">{dragOver ? "Drop to add" : "Choose files"}</span>
+            <span className="text-caption text-txt3">Several at once, or drag them in — each is named after its file.</span>
             <input type="file" multiple className="hidden"
               onChange={(e) => { add(e.target.files); e.target.value = ""; }} />
           </div>
@@ -155,7 +155,7 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
               // removal, so a deleted row's neighbour would render with the wrong title
               // against the wrong filename.
               <div key={s.id} className="flex items-center gap-2 border-b border-bd px-2.5 py-2 last:border-b-0">
-                <span className="w-5 shrink-0 text-center text-[12px]">
+                <span className="w-5 shrink-0 text-center text-label">
                   {s.state === "ok" ? <span className="text-ok">✓</span>
                     : s.state === "failed" ? <span className="text-bad">✕</span>
                     : s.state === "busy" ? <span className="text-txt3">…</span> : ""}
@@ -163,8 +163,8 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
                 <div className="min-w-0 flex-1">
                   <input value={s.title} disabled={s.state === "ok" || s.state === "busy"}
                     onChange={(e) => patch(s.id, { title: e.target.value })}
-                    className={inputCls + " py-1 text-[12.5px] disabled:opacity-60"} />
-                  <div className="mt-0.5 truncate text-[11px] text-txt3" title={s.file.name}>
+                    className={inputCls + " py-1 text-label disabled:opacity-60"} />
+                  <div className="mt-0.5 truncate text-caption text-txt3" title={s.file.name}>
                     {s.file.name} · {humanSize(s.file.size)}
                     {oversize && s.state === "idle" && (
                       <span className="text-bad"> · exceeds the {MAX_UPLOAD_MB} MB limit</span>)}
@@ -181,7 +181,7 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
         )}
 
         {done > 0 && pending && (
-          <div className="rounded-md bg-warn-bg px-3 py-2 text-[12.5px] text-warn">
+          <div className="rounded-md bg-warn-bg px-3 py-2 text-label text-warn">
             {done} of {slots.length} uploaded. The ones marked ✓ are saved — retry the rest or remove them.
           </div>)}
 
@@ -251,13 +251,13 @@ export default function Evidence() {
           {e.medium !== "LINK" && <QuickPreview id={e.id} title={e.title} mimeType={e.mime_type} />}
           <button onClick={() => nav(`/evidence/view/${e.id}`)}
             className="text-left font-medium hover:text-accent">{e.title}</button>
-          {e.medium === "LINK" && <span className="text-[10px] uppercase tracking-wide text-txt3">link</span>}
+          {e.medium === "LINK" && <span className="text-micro uppercase tracking-wide text-txt3">link</span>}
         </div>
       ),
     },
     {
       key: "type", label: "Type", sortValue: (e) => e.evidence_type,
-      render: (e) => <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-[11px] capitalize text-txt2">{e.evidence_type.replace(/_/g, " ")}</span>,
+      render: (e) => <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption capitalize text-txt2">{e.evidence_type.replace(/_/g, " ")}</span>,
     },
     {
       key: "issued", label: "Issued", sortValue: (e) => e.issued_at,
@@ -294,9 +294,9 @@ export default function Evidence() {
       <PageHead eyebrow="Evidence vault" title="Evidence"
         lead="Typed, dated artifacts linked to controls. Banks ask for recent proof — freshness is tracked here."
         action={can("evidence", "add")
-          ? <button onClick={() => setModal(true)} className="btn btn-primary">＋ Upload evidence</button>
+          ? <button onClick={() => setModal(true)} className="btn btn-primary"><Plus size={15} strokeWidth={2.4} /> Upload evidence</button>
           : undefined} />
-      {delErr && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-[12.5px] text-bad">{delErr}</div>}
+      {delErr && <div className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{delErr}</div>}
       <DataTable
         rows={rows} getId={(e) => e.id} columns={columns}
         onSearch={setQ} searchPlaceholder="Search titles and notes…"

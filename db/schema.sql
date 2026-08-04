@@ -104,6 +104,7 @@ CREATE TABLE tenants (
     slug                text NOT NULL UNIQUE,
     gst_number          text UNIQUE,
     super_admin_user_id text,                       -- FK added in CROSS-LAYER section
+    logo_file_id        text,                       -- P6. FK added in CROSS-LAYER section
     status              text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
     created_at          iso_ts NOT NULL DEFAULT now_iso()
 );
@@ -1563,6 +1564,17 @@ CREATE TABLE activity_log (
 -- P4: tenants is declared before users, so its owner FK lands here.
 ALTER TABLE tenants ADD CONSTRAINT tenants_super_admin_fk
     FOREIGN KEY (super_admin_user_id) REFERENCES users (id) ON DELETE SET NULL;
+
+-- P6: an organisation's logo must be a file that BELONGS to it. The composite reference onto
+-- files (id, tenant_id) is what enforces that — a plain FK on id alone would happily let one
+-- tenant point at another tenant's upload, which is a cross-tenant read through an <img>.
+-- SET NULL on delete: losing the logo is a cosmetic problem, blocking the file's deletion is
+-- an operational one.
+-- The column list on SET NULL is load-bearing: `id` is this table's primary key, so a bare
+-- ON DELETE SET NULL would try to null it and fail. Same fix as tenant_members_role_fk below.
+ALTER TABLE tenants ADD CONSTRAINT tenants_logo_fk
+    FOREIGN KEY (logo_file_id, id) REFERENCES files (id, tenant_id)
+    ON DELETE SET NULL (logo_file_id);
 
 -- P4-S2: a member's role must belong to the SAME organisation as the membership.
 ALTER TABLE tenant_members ADD CONSTRAINT tenant_members_role_fk
