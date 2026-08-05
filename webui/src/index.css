@@ -116,6 +116,46 @@ table {
    the wrapper itself can't use overflow-hidden (it would clip the grid's own scrollbars). */
 .sheet-editor > div:last-child { @apply overflow-hidden rounded-b-xl; }
 
+/* ── P6 sheet surface ─────────────────────────────────────────────────────────────────────
+   Class names taken from node_modules/jspreadsheet-ce/dist/jspreadsheet.css rather than
+   guessed — the widget owns this DOM and renames are its prerogative, so these overrides are
+   deliberately narrow and scoped under `.sheet-editor`.
+
+   Worksheet tabs move to the BOTTOM, where every spreadsheet application puts them.
+   `order` on the headers alone, NOT `flex-direction: column-reverse` on the container — the
+   toolbar is a sibling inside `.jtabs`, so reversing the whole thing sent the toolbar below
+   the grid as well. Move the one element that should move. */
+.sheet-editor .jtabs {
+  display: flex;
+  flex-direction: column;
+}
+.sheet-editor .jtabs-headers-container {
+  order: 99;
+}
+.sheet-editor .jtabs-headers-container {
+  border-top: 1px solid theme("colors.bd");
+}
+
+/* Selection. jspreadsheet ships a flat rgba(0,0,0,.05) wash on the selected range and #dcdcdc
+   on the corresponding headers — legible, but it reads as "disabled" rather than "selected".
+   The accent ring marks the anchor cell, a warm tint marks the range, and the headers darken
+   so the eye can find the row/column of the cell it is editing. */
+.sheet-editor .jss_worksheet .highlight {
+  background-color: #fff7ed;                 /* accent at ~4% — the P6 selected-cell tint */
+}
+.sheet-editor .jss_worksheet > thead > tr > td.selected,
+.sheet-editor .jss_worksheet > tbody > tr.selected > td:first-child {
+  background-color: #dde2e8;
+  color: theme("colors.ink");
+  font-weight: 700;
+}
+/* Column and row headers: a calmer surface than the grid so the data stays the loudest thing
+   on screen. */
+.sheet-editor .jss_worksheet > thead > tr > td,
+.sheet-editor .jss_worksheet > tbody > tr > td:first-child {
+  background-color: #edeff2;
+}
+
 /* Fullscreen (the toolbar's "Toggle Fullscreen"). jspreadsheet implements this as a single
    `classList.add("fullscreen")` on the very element we mount into — no reparenting, no
    inline styles — and its own rule is `position:fixed; inset:0; z-index:21`.
