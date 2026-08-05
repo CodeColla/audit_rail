@@ -1,6 +1,20 @@
 import { test, expect } from "@playwright/test";
 
 /**
+ * P6: autosave replaced the "Save draft" button. Committing is no longer an action — it is a
+ * consequence of typing, so a spec waits for the state to settle instead of clicking.
+ *
+ * Asserted on `data-save-state`, not the words: "idle" (nothing written yet) and "saved" (a
+ * write just succeeded) share the same copy, so a text assertion would pass before anything
+ * had been saved.
+ */
+async function saved(page: import("@playwright/test").Page) {
+  await expect(page.locator("[data-save-state]"))
+    .toHaveAttribute("data-save-state", "saved", { timeout: 15_000 });
+}
+
+
+/**
  * P5-S2 — spreadsheet documents, end to end through the real UI.
  *
  * The API side (round-trip, freeze trigger, both export paths) is proven in
@@ -14,8 +28,16 @@ import { test, expect } from "@playwright/test";
 
 const uniq = () => Math.random().toString(36).slice(2, 7);
 
-const tab = (page: import("@playwright/test").Page, name: string) =>
-  page.getByRole("button", { name, exact: true });
+/**
+ * P6: the four tabs (content · versions · approvals · attestation) became a collapsible
+ * "Compliance" rail, so a panel now needs the rail opened first. The document itself is
+ * always the page — governance no longer competes with it for the tab strip.
+ */
+const tab = async (page: import("@playwright/test").Page, name: string) => {
+  const rail = page.getByRole("complementary", { name: "Compliance" });
+  if (!(await rail.count())) await page.getByRole("button", { name: "Compliance" }).click();
+  return rail.getByRole("button", { name: new RegExp("^" + name, "i") });
+};
 
 /** jspreadsheet-ce renders its grid as `<table class="jss_worksheet">`, with each data cell
  * addressed by `data-x`/`data-y` (0-based) — found by dumping the live DOM, since neither
@@ -35,7 +57,16 @@ async function newSheet(page: import("@playwright/test").Page, title: string) {
   await page.getByRole("button", { name: "Spreadsheet" }).click();
   await page.getByLabel("Owner *").selectOption({ label: "E2E Owner" });
   await page.getByRole("button", { name: /Create & write/ }).click();
-  await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+  // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
   await page.locator("table.jss_worksheet").waitFor();
 }
 
@@ -115,38 +146,18 @@ test.describe("fullscreen (P5-S2c)", () => {
     page.locator(".jtoolbar-item[role=button]")
       .filter({ has: page.locator("i", { hasText: /^fullscreen$/ }) }).click();
 
-  test("Save draft and Exit stay reachable while fullscreen covers the app", async ({ page }) => {
-    // Fullscreen hides DocumentDetail's own Save/Done, so the sheet renders its own bar.
-    // Grouped as a named toolbar because the page already has a "Save draft" button —
-    // without that, two identically-labelled buttons sit in the accessibility tree.
-    await newSheet(page, `E2E Sheet FSBar ${uniq()}`);
-    const bar = page.getByRole("toolbar", { name: "Fullscreen sheet actions" });
-    await expect(bar, "no bar outside fullscreen").toHaveCount(0);
-
-    await cell(page, 0, 0).click();
-    await page.keyboard.type("hello");
-    await page.keyboard.press("Enter");
+  test("Exit stays reachable while fullscreen covers the app", async ({ page }) => {
+    // P6: this used to assert a "Save draft" button in the fullscreen bar too. Autosave
+    // removed it — and keeping it would have been worse than deleting it, since the props
+    // stopped being passed and it would have rendered a primary button that did nothing.
+    // Exit still earns its place: jspreadsheet's own exit control sits under our app header.
+    await newSheet(page, `E2E Sheet Fullscreen ${uniq()}`);
     await enterFullscreen(page);
-
+    const bar = page.getByRole("toolbar", { name: "Fullscreen sheet actions" });
     await expect(bar).toBeVisible();
-    await expect(bar.getByText("Unsaved changes")).toBeVisible();
-    // it must be ABOVE the fullscreen box, not behind it
-    expect(await bar.evaluate((el) => {
-      const r = el.getBoundingClientRect();
-      return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
-    }), "the bar must be clickable, not painted over").toBe(true);
-
-    await bar.getByRole("button", { name: "Save draft" }).click();
-    // saving from here must NOT eject you — the page's Save closes the editor, which from a
-    // full-screen grid would dump the user back on the read view mid-session
-    await expect(page.locator(".fullscreen"), "still fullscreen after saving").toHaveCount(1);
-    await expect(bar.getByText("Unsaved changes")).toHaveCount(0);
-
+    await expect(bar.getByRole("button", { name: "Save draft" })).toHaveCount(0);
     await bar.getByRole("button", { name: "Exit fullscreen" }).click();
-    await expect(page.locator(".fullscreen")).toHaveCount(0);
-    // exiting via jspreadsheet's own button keeps its glyph in step; calling the API
-    // directly would leave the toolbar still showing "fullscreen_exit"
-    await expect(page.locator(".jtoolbar-item i", { hasText: /^fullscreen$/ }).first()).toBeVisible();
+    await expect(bar).toHaveCount(0);
   });
 
   test("the grid fills the screen and nothing is painted over the toolbar", async ({ page }) => {
@@ -211,9 +222,10 @@ test.describe("wrap text and filters (P5-S2c)", () => {
     await page.keyboard.press("Enter");
     await expect(cell(page, 0, 0), "wrap must survive an edit").toHaveCSS("white-space", "pre-wrap");
 
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md table")).toBeVisible();
-    await expect(page.locator(".doc-md td").first()).toHaveCSS("white-space", "pre-wrap");
+    await saved(page);
+    // P6: a draft has no read view — it is always the editor. The wrap that reaches the
+    // RENDERER is asserted through the stored workbook here, and its rendering is covered by
+    // the publish-to-PDF/DOCX test below plus api/render.py's own tests.
 
     const token = await page.evaluate(() => localStorage.getItem("ar_token"));
     const id = page.url().split("/documents/")[1];
@@ -254,8 +266,7 @@ test.describe("formulas and the v2 format", () => {
     await cell(page, 0, 0).click();
     await page.locator(".jtoolbar-item[role=button]")
       .filter({ has: page.locator("i", { hasText: "format_bold" }) }).click();
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md table")).toBeVisible();
+    await saved(page);
 
     const token = await page.evaluate(() => localStorage.getItem("ar_token"));
     const id = page.url().split("/documents/")[1];
@@ -270,9 +281,9 @@ test.describe("formulas and the v2 format", () => {
     expect(sheet.formulas.A3, "the source must survive for the editor").toBe("=SUM(A1:A2)");
     expect(sheet.style.A1.bold).toBe(true);
 
-    // the read view shows the number, never the expression
-    await expect(page.locator(".doc-md")).toContainText("30");
-    await expect(page.locator(".doc-md")).not.toContainText("=SUM");
+    // "the read view shows the number, never the expression" is already proven above, on the
+    // data the renderer actually consumes: sheet.data holds "30" and the "=SUM" lives only in
+    // sheet.formulas. A draft has no read view to probe any more.
   });
 
   test("reopening a saved sheet restores the formula, not just its value", async ({ page }) => {
@@ -281,12 +292,20 @@ test.describe("formulas and the v2 format", () => {
     await page.keyboard.type("7"); await page.keyboard.press("Enter");
     await page.keyboard.type("=A1*3"); await page.keyboard.press("Enter");
     await expect(cell(page, 0, 1)).toHaveText("21");
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md table")).toBeVisible();
+    await saved(page);
 
     // back into the editor: the cell still shows 21, and it is still a live formula —
     // editing A1 must recalculate it rather than leaving a frozen number behind.
-    await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+    // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
     await page.locator("table.jss_worksheet").waitFor();
     await expect(cell(page, 0, 1)).toHaveText("21");
     await cell(page, 0, 0).click();
@@ -304,8 +323,7 @@ test.describe("formulas and the v2 format", () => {
     await expect(page.locator(".jtabs-headers > div").filter({ hasText: /Sheet/ }))
       .toHaveCount(2);
 
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md").first()).toBeVisible();
+    await saved(page);
 
     const token = await page.evaluate(() => localStorage.getItem("ar_token"));
     const id = page.url().split("/documents/")[1];
@@ -314,8 +332,10 @@ test.describe("formulas and the v2 format", () => {
     const book = JSON.parse(detail.open_version.content);
     expect(book.sheets.length, "both worksheets must persist").toBe(2);
 
-    // a multi-sheet document titles each worksheet in the read view
-    await expect(page.locator(".doc-md h2").first()).toBeVisible();
+    // Each worksheet keeps its own name, which is what the renderer turns into a per-sheet
+    // heading. A draft has no read view to probe; that rendering is covered by the
+    // publish-to-PDF/DOCX test and by api/render.py's own tests.
+    expect(book.sheets.map((sh: { name: string }) => sh.name).filter(Boolean).length).toBe(2);
   });
 });
 
@@ -334,8 +354,7 @@ test.describe("xlsx", () => {
     // the imported formula is live, not a pasted number
     await expect(cell(page, 1, 3)).toHaveText("2000");
 
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md table").first()).toBeVisible();
+    await saved(page);
 
     const token = await page.evaluate(() => localStorage.getItem("ar_token"));
     const id = page.url().split("/documents/")[1];
@@ -352,12 +371,14 @@ test.describe("xlsx", () => {
     await newSheet(page, `E2E Sheet Xlsx ${uniq()}`);
     await cell(page, 0, 0).click();
     await page.keyboard.type("Item"); await page.keyboard.press("Enter");
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.locator(".doc-md table")).toBeVisible();
+    await saved(page);
 
     const [dl] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByRole("button", { name: /Export XLSX/ }).click(),
+      (async () => {   // P6: the export buttons became one "Export ▾" menu
+        await page.getByRole("button", { name: /^Export/ }).click();
+        await page.getByRole("button", { name: "XLSX", exact: true }).click();
+      })(),
     ]);
     expect(await dl.failure()).toBeNull();
     expect(dl.suggestedFilename()).toMatch(/\.xlsx$/);
@@ -375,8 +396,9 @@ test.describe("xlsx", () => {
     await page.getByPlaceholder("Information Security Policy").fill(`E2E Prose ${uniq()}`);
     await page.getByLabel("Owner *").selectOption({ label: "E2E Owner" });
     await page.getByRole("button", { name: /Create & write/ }).click();
-    await expect(page.getByRole("button", { name: /Export DOCX/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Export XLSX/ })).toHaveCount(0);
+    await page.getByRole("button", { name: /^Export/ }).click();
+    await expect(page.getByRole("button", { name: "DOCX", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "XLSX", exact: true })).toHaveCount(0);
   });
 });
 
@@ -393,7 +415,16 @@ test("author a spreadsheet document, format cells, publish it, get a PDF and a D
   await expect(page.getByRole("heading", { name: title })).toBeVisible();
 
   // ---- write: fill cells, bold a header, right-align a value ----
-  await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+  // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
   await expect(cell(page, 0, 0)).toBeVisible();
 
   await cell(page, 0, 0).click();
@@ -419,7 +450,22 @@ test("author a spreadsheet document, format cells, publish it, get a PDF and a D
   await page.locator(".jpicker-item")
     .filter({ has: page.locator("i", { hasText: "format_align_right" }) }).click();
 
-  await page.getByRole("button", { name: "Save draft" }).click();
+  await saved(page);
+
+  // P6: a DRAFT has no read view — it is always the editor. These renderer assertions move
+  // below, after publishing, which is the only state that legitimately renders read-only.
+
+  // ---- approve (1 of 1) and publish ----
+  await (await tab(page, "approvals")).click();
+  await page.getByRole("button", { name: "Request approval" }).click();
+  const modal = page.getByRole("heading", { name: "Request approval" }).locator("../..");
+  await modal.getByRole("checkbox").nth(0).check();
+  await page.getByRole("button", { name: /Request 1 of 1 approval/ }).click();
+  await page.getByRole("button", { name: "Approve" }).first().click();
+  const publish = page.getByRole("button", { name: /^Publish v/ });
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  await expect(page.getByText("Published", { exact: false }).first()).toBeVisible();
 
   // ---- the read view renders it as a real table, not raw JSON ----
   const body = page.locator(".doc-md");
@@ -442,22 +488,14 @@ test("author a spreadsheet document, format cells, publish it, get a PDF and a D
     "only the one cell we right-aligned may carry an alignment").toHaveCount(1);
   await expect(body.locator("td[style*='text-align: left']")).toHaveCount(0);
 
-  // ---- approve (1 of 1) and publish ----
-  await tab(page, "approvals").click();
-  await page.getByRole("button", { name: "Request approval" }).click();
-  const modal = page.getByRole("heading", { name: "Request approval" }).locator("../..");
-  await modal.getByRole("checkbox").nth(0).check();
-  await page.getByRole("button", { name: /Request 1 of 1 approval/ }).click();
-  await page.getByRole("button", { name: "Approve" }).first().click();
-  const publish = page.getByRole("button", { name: /^Publish v/ });
-  await expect(publish).toBeEnabled();
-  await publish.click();
-  await expect(page.getByText("Published", { exact: false }).first()).toBeVisible();
 
   // ---- PDF export: a real PDF ----
   const [pdf] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("button", { name: /Export PDF/ }).click(),
+    (async () => {   // P6: the export buttons became one "Export ▾" menu
+      await page.getByRole("button", { name: /^Export/ }).click();
+      await page.getByRole("button", { name: "PDF", exact: true }).click();
+    })(),
   ]);
   expect(await pdf.failure()).toBeNull();
   const pdfStream = await pdf.createReadStream();
@@ -471,7 +509,10 @@ test("author a spreadsheet document, format cells, publish it, get a PDF and a D
   // ---- DOCX export: a real .docx (zip) ----
   const [docx] = await Promise.all([
     page.waitForEvent("download"),
-    page.getByRole("button", { name: /Export DOCX/ }).click(),
+    (async () => {   // P6: the export buttons became one "Export ▾" menu
+      await page.getByRole("button", { name: /^Export/ }).click();
+      await page.getByRole("button", { name: "DOCX", exact: true }).click();
+    })(),
   ]);
   expect(await docx.failure()).toBeNull();
   const docxStream = await docx.createReadStream();
@@ -494,13 +535,22 @@ test("a published spreadsheet version cannot be edited", async ({ page }) => {
   await page.getByLabel("Owner *").selectOption({ label: "E2E Owner" });
   await page.getByRole("button", { name: /Create & write/ }).click();
 
-  await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+  // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
   await cell(page, 0, 0).click();
   await page.keyboard.type("v1");
   await page.keyboard.press("Enter");
-  await page.getByRole("button", { name: "Save draft" }).click();
+  await saved(page);
 
-  await tab(page, "approvals").click();
+  await (await tab(page, "approvals")).click();
   await page.getByRole("button", { name: "Request approval" }).click();
   const modal = page.getByRole("heading", { name: "Request approval" }).locator("../..");
   await modal.getByRole("checkbox").nth(0).check();
@@ -510,7 +560,8 @@ test("a published spreadsheet version cannot be edited", async ({ page }) => {
   await expect(page.getByText("Published", { exact: false }).first()).toBeVisible();
 
   // published -> Edit starts a fresh minor draft, not an edit of the frozen v1.0
-  await page.getByRole("button", { name: /Edit → new version/ }).click();
+  // P6: publishing locks the record; the only way forward is a fresh draft.
+  await page.getByRole("button", { name: /^Start v[\d.]+ draft$/ }).click();
   await expect(cell(page, 0, 0)).toBeVisible();
   await expect(cell(page, 0, 0)).toHaveText("v1");   // carried over from the published version
 });

@@ -1,6 +1,20 @@
 import { test, expect, Page } from "@playwright/test";
 
 /**
+ * P6: autosave replaced the "Save draft" button. Committing is no longer an action — it is a
+ * consequence of typing, so a spec waits for the state to settle instead of clicking.
+ *
+ * Asserted on `data-save-state`, not the words: "idle" (nothing written yet) and "saved" (a
+ * write just succeeded) share the same copy, so a text assertion would pass before anything
+ * had been saved.
+ */
+async function saved(page: import("@playwright/test").Page) {
+  await expect(page.locator("[data-save-state]"))
+    .toHaveAttribute("data-save-state", "saved", { timeout: 15_000 });
+}
+
+
+/**
  * P4-S4 — the rich editor, DOCX export, and the archive / discard lifecycle.
  *
  * The API side is proven in tests/test_documents.py, test_html_sanitize.py and
@@ -23,7 +37,16 @@ async function newDoc(page: Page, title: string) {
 }
 
 async function openEditor(page: Page) {
-  await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+  // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
   const editor = page.locator(".ProseMirror");
   await expect(editor).toBeVisible();
   await editor.click();
@@ -68,7 +91,7 @@ test.describe("rich editor", () => {
     await expect(editor.locator("strong")).toContainText("everyone");
     await expect(editor.locator("ul li")).toContainText("Lock screens");
 
-    await page.getByRole("button", { name: "Save draft" }).click();
+    await saved(page);
 
     // …and survives the round trip through the sanitiser and back onto the read view
     const body = page.locator(".doc-md");
@@ -83,7 +106,7 @@ test.describe("rich editor", () => {
     await page.getByRole("button", { name: "Insert table" }).click();
     await editor.locator("th").first().click();
     await editor.pressSequentially("Control");
-    await page.getByRole("button", { name: "Save draft" }).click();
+    await saved(page);
 
     await expect(page.locator(".doc-md table")).toBeVisible();
     await expect(page.locator(".doc-md th").first()).toContainText("Control");
@@ -95,7 +118,7 @@ test.describe("rich editor", () => {
     await newDoc(page, `E2E XSS ${uniq()}`);
     const editor = await openEditor(page);
     await editor.pressSequentially('<script>window.__pwned = 1</script>ordinary text');
-    await page.getByRole("button", { name: "Save draft" }).click();
+    await saved(page);
 
     await expect(page.locator(".doc-md")).toContainText("ordinary text");
     expect(await page.evaluate(() => (window as any).__pwned)).toBeUndefined();
@@ -110,7 +133,11 @@ test.describe("export", () => {
 
     const [download] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByRole("button", { name: /Export DOCX/ }).click(),
+      (async () => {
+        // P6: the three export buttons became one "Export ▾" menu.
+        await page.getByRole("button", { name: /^Export/ }).click();
+        await page.getByRole("button", { name: "DOCX", exact: true }).click();
+      })(),
     ]);
     expect(await download.failure()).toBeNull();
     expect(download.suggestedFilename()).toMatch(/\.docx$/);
@@ -135,14 +162,21 @@ test.describe("export", () => {
 
     const [pdf] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByRole("button", { name: /Export PDF/ }).click(),
+      (async () => {
+        await page.getByRole("button", { name: /^Export/ }).click();
+        await page.getByRole("button", { name: "PDF", exact: true }).click();
+      })(),
     ]);
     expect(await pdf.failure(), "PDF export must not fail on this title").toBeNull();
     expect(pdf.suggestedFilename()).toMatch(/\.pdf$/);
 
     const [docx] = await Promise.all([
       page.waitForEvent("download"),
-      page.getByRole("button", { name: /Export DOCX/ }).click(),
+      (async () => {
+        // P6: the three export buttons became one "Export ▾" menu.
+        await page.getByRole("button", { name: /^Export/ }).click();
+        await page.getByRole("button", { name: "DOCX", exact: true }).click();
+      })(),
     ]);
     expect(await docx.failure(), "DOCX export must not fail on this title").toBeNull();
     expect(docx.suggestedFilename()).toMatch(/\.docx$/);
@@ -156,18 +190,30 @@ test.describe("lifecycle", () => {
 
     // specs share one worker and one database, so an earlier spec may already have left a
     // draft open on this document — accept either entry point into the editor
-    await page.getByRole("button", { name: /Edit → new version|Continue editing/ }).click();
+    // P6: there is no edit toggle. A DRAFT lands directly on the editable surface; a published
+  // or archived version shows a locked banner whose "Start v1.x draft" unlocks it.
+  const unlock = page.getByRole("button", { name: /^Start v[\d.]+ draft$/ });
+  // WAIT for the page to settle before deciding. `.count()` does not auto-wait — asking while
+  // the document is still loading answers 0, so the click never happens and the editor never
+  // appears. Fourth time this trap has bitten in Phase 6.
+  // ".ProseMirror, .sheet-editor" covers BOTH surfaces — a spreadsheet document has no
+  // ProseMirror at all, so a doc-only selector waits forever on half the fixtures.
+  await expect(unlock.or(page.locator(".ProseMirror, .sheet-editor")).first()).toBeVisible();
+  if (await unlock.count()) await unlock.click();
     await expect(page.locator(".ProseMirror")).toBeVisible();
 
-    await page.getByRole("button", { name: "Discard draft" }).click();
-    const modal = page.getByRole("dialog");
-    await expect(modal).toContainText(/will be deleted and the document reverts/);
-    await modal.getByRole("button", { name: "Discard draft" }).click();
-
+    // P6: discard moved from the editor's button bar into the Compliance rail, where version
+    // management lives, and is guarded by a native confirm rather than a modal.
+    await page.getByRole("button", { name: "Compliance" }).click();
+    const rail = page.getByRole("complementary", { name: "Compliance" });
+    await rail.getByRole("button", { name: /^Versions/ }).click();
+    page.once("dialog", (d) => d.accept());
+    await rail.getByRole("button", { name: /^Discard draft/ }).click();
     // back to the published document with no draft anywhere
     await expect(page.locator(".ProseMirror")).toHaveCount(0);
     await expect(page.getByText(/Draft v.* in progress/)).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /Edit → new version/ })).toBeVisible();
+    // back to the locked published record, offering a fresh draft
+    await expect(page.getByRole("button", { name: /^Start v[\d.]+ draft$/ })).toBeVisible();
   });
 
   test("archiving hides a document from the list, restoring brings it back", async ({ page }) => {
@@ -175,7 +221,7 @@ test.describe("lifecycle", () => {
     await newDoc(page, title);
 
     await page.getByRole("button", { name: "Archive", exact: true }).click();
-    await expect(page.getByText("Archived")).toBeVisible();
+    await expect(page.getByText("Archived", { exact: true })).toBeVisible();
 
     await page.goto("/documents");
     await expect(page.getByRole("cell", { name: title })).toHaveCount(0);
@@ -207,42 +253,39 @@ test.describe("lifecycle", () => {
     await page.getByRole("button", { name: "Restore", exact: true }).click();
   });
 
-  test("switching tabs with unsaved edits warns before discarding them", async ({ page }) => {
-    await newDoc(page, `E2E Unsaved ${uniq()}`);
-    const editor = await openEditor(page);
-    await editor.pressSequentially("edit that is never saved");
-
-    // the tab's accessible name is "versions (N)" — a count suffix, not a static label
-    const versionsTab = page.getByRole("button", { name: /^versions/ });
-    page.once("dialog", (d) => d.dismiss());     // stay on Content
-    await versionsTab.click();
-    await expect(page.locator(".ProseMirror")).toBeVisible();
-    await expect(editor).toContainText("edit that is never saved");
-
-    page.once("dialog", (d) => d.accept());       // leave anyway
-    await versionsTab.click();
-    await expect(page.locator(".ProseMirror")).toHaveCount(0);
+  test("edits survive a reload without any save action", async ({ page }) => {
+    // Replaces "switching tabs with unsaved edits warns before discarding them". There are no
+    // tabs and there is no unsaved state to warn about — the guarantee autosave has to earn
+    // instead is that what you typed is still there when you come back.
+    const title = `P6 persist ${uniq()}`;
+    await newDoc(page, title);
+    await page.locator(".ProseMirror").click();
+    await page.locator(".ProseMirror").pressSequentially("survives a reload");
+    await saved(page);
+    await page.reload();
+    await expect(page.locator(".ProseMirror")).toContainText("survives a reload");
   });
 
-  test("Edit works from a tab other than Content", async ({ page }) => {
-    // onEdit used to flip `editing` without switching the tab back to "content" — the
-    // Editor only renders on that tab, so clicking Edit from Versions/Approvals visibly
-    // did nothing.
-    await newDoc(page, `E2E Edit-from-tab ${uniq()}`);
-    await page.getByRole("button", { name: /^versions/ }).click();
-    await expect(page.locator(".ProseMirror")).toHaveCount(0);
-
-    await page.getByRole("button", { name: /Continue editing|Edit/ }).first().click();
+  test("a draft opens straight into the editor — there is no edit toggle", async ({ page }) => {
+    // Replaces "Edit works from a tab other than Content", which tested a bug in a model that
+    // no longer exists: there are no tabs and no Edit button. A user with edit rights lands
+    // on the editable surface, which is the whole point of the P6 redesign.
+    await newDoc(page, `P6 direct ${uniq()}`);
     await expect(page.locator(".ProseMirror")).toBeVisible();
+    await expect(page.getByRole("button", { name: /Continue editing|^Edit$/ })).toHaveCount(0);
+    await page.locator(".ProseMirror").click();
+    await page.locator(".ProseMirror").pressSequentially("typed with no click first");
+    await saved(page);
   });
 
-  test("exporting while editing warns the download may be stale", async ({ page }) => {
-    await newDoc(page, `E2E Stale Export ${uniq()}`);
-    const editor = await openEditor(page);
-    await editor.pressSequentially("unsaved change");
-
-    await expect(page.getByText(/Export downloads the last SAVED draft/)).toBeVisible();
-    await page.getByRole("button", { name: "Save draft" }).click();
-    await expect(page.getByText(/Export downloads the last SAVED draft/)).toHaveCount(0);
+  test("there is no stale-export warning, because there is nothing unsaved", async ({ page }) => {
+    // Replaces "exporting while editing warns the download may be stale". That warning existed
+    // because a manual Save meant the editor could hold changes the export would miss.
+    // Autosave removes the state the warning described, so the warning must go with it.
+    await newDoc(page, `P6 nostale ${uniq()}`);
+    await page.locator(".ProseMirror").click();
+    await page.locator(".ProseMirror").pressSequentially("content");
+    await saved(page);
+    await expect(page.getByText(/unsaved changes/i)).toHaveCount(0);
   });
 });

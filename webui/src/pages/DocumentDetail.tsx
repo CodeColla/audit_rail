@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../lib/api";
 import { useCan } from "../lib/auth";
@@ -47,120 +47,79 @@ const statusTone = (s: string) =>
   s === "PUBLISHED" ? "ok" : s === "PENDING_APPROVAL" ? "warn" : s === "SUPERSEDED" ? "na" : "info";
 
 // ─────────────────────────────────────────────────────── editor
-function Editor({ docId, version, onDone, onDirtyChange, canDiscard }:
-  { docId: string; version: Version; onDone: () => void;
-    onDirtyChange?: (dirty: boolean) => void; canDiscard: boolean }) {
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+/**
+ * The editable surface. **Autosaves** — there is no Save button, no Done button (P6).
+ *
+ * The old shape was an editor you entered from a read view and left via "Save draft". That is
+ * the defect this redesign exists to remove: a user *with* edit rights landed on a read-only
+ * page and had to click to begin. Saving is now a background consequence of typing and the
+ * save state is the only affordance.
+ *
+ * Only DRAFTS reach here — and that is not merely a UI rule. `freeze_published_version()`
+ * refuses writes to a published version at the database level, so autosave cannot corrupt a
+ * signed record even if this component were mounted on one by mistake.
+ */
+function Editor({ docId, version, onSaveStateChange }:
+  { docId: string; version: Version; onSaveStateChange: (s: SaveState, err?: string) => void }) {
   const qc = useQueryClient();
   const isSheet = version.content_format === "SHEET";
-  // `editor_html` is the server's HTML rendering of this draft. For a pre-S4 MARKDOWN
-  // version it is md_to_html(content) — the editor must never be handed markdown, because
-  // TipTap parses any string it is given as HTML and would collapse the whole document
-  // into one paragraph of literal source, which the next save would then persist. SHEET
-  // versions get no `editor_html` at all (documents.py returns None for them) — SheetEditor
-  // wants the raw JSON in `content`, not an HTML rendering of it.
+  // `editor_html` is the server's HTML rendering of this draft. For a pre-S4 MARKDOWN version
+  // it is md_to_html(content) — the editor must never be handed markdown, because TipTap
+  // parses any string it is given as HTML and would collapse the document into one paragraph
+  // of literal source, which the next save would persist. SHEET versions get no `editor_html`
+  // at all (documents.py returns None): SheetEditor wants the raw JSON in `content`.
   const initial = version.editor_html ?? version.content;
   const [content, setContent] = useState(initial);
   const [changelog, setChangelog] = useState(version.changelog ?? "");
-  const [discarding, setDiscarding] = useState(false);
-  const [leaving, setLeaving] = useState(false);
   const dirty = content !== initial || changelog !== (version.changelog ?? "");
-  // Reports dirty state up so the PARENT's own exit routes (tab clicks, "All documents")
-  // can guard too — "Done" isn't the only way out of this component. The parent unmounts
-  // Editor directly on a tab click, which used to bypass this component's own guard
-  // entirely because that guard only covered the Done button.
-  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty]);
 
   const save = useMutation({
-    // A version's format never changes mid-edit (SHEET stays SHEET) — only a pre-S4
-    // MARKDOWN version gets migrated to HTML on first edit through the rich text editor,
-    // per the editor_html note above.
-    mutationFn: (_opts?: { stayOpen?: boolean }) =>
+    mutationFn: (payload: { content: string; changelog: string }) =>
       api.patch(`/documents/${docId}/versions/${version.id}`,
-                { content, changelog, content_format: isSheet ? "SHEET" : "HTML" }),
-    // Saving normally closes the editor — long-standing behaviour of the "Save draft"
-    // button. `stayOpen` is for the sheet's fullscreen bar: closing there would unmount the
-    // editor mid-session and dump the user back on the read view from a full-screen grid.
-    // Same mutation either way, so there is no second save path to drift.
-    onSuccess: (_data, opts) => {
+                { ...payload, content_format: isSheet ? "SHEET" : "HTML" }),
+    onMutate: () => onSaveStateChange("saving"),
+    onSuccess: () => {
+      // Refresh the version list and review dates — but never unmount the editor. The whole
+      // point of the redesign is that the surface does not go away.
       qc.invalidateQueries({ queryKey: ["document", docId] });
-      if (!opts?.stayOpen) onDone();
+      onSaveStateChange("saved");
     },
-  });
-  const discard = useMutation({
-    mutationFn: () => api.delete(`/documents/${docId}/versions/${version.id}`),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["document", docId] }); onDone(); },
+    // A failed save used to be indistinguishable from a successful one: the button reverted
+    // to "Save draft" and the author walked away believing it had landed.
+    onError: (e: any) => onSaveStateChange("error", errText(e, "could not save")),
   });
 
-  // The body lives in local state until saved, so a reload or a closed tab loses it.
+  // Debounced autosave: 1.2s idle is long enough not to write on every keystroke, short
+  // enough that little is lost if the tab closes. The ref carries the latest values so the
+  // timer is not re-armed by its own dependencies.
+  const latest = useRef({ content, changelog });
+  latest.current = { content, changelog };
   useEffect(() => {
     if (!dirty) return;
+    const t = setTimeout(() => save.mutate(latest.current), 1200);
+    return () => clearTimeout(t);
+  }, [content, changelog]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Autosave debounces, so a tab closed inside that window still loses the last edit.
+  useEffect(() => {
+    if (!dirty && !save.isPending) return;
     const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [dirty, save.isPending]);
 
+  // Blur commits immediately instead of waiting out the debounce — clicking away is the
+  // clearest "done with that thought" signal a text surface gets.
   return (
-    <div>
-      <div className="mb-2 flex items-center gap-2">
-        <input value={changelog} onChange={(e) => setChangelog(e.target.value)}
-          placeholder="Changelog — what changed in this version?" className={inputCls} />
-        <button disabled={save.isPending} onClick={() => save.mutate({})}
-          className="btn btn-primary shrink-0 disabled:opacity-50">{save.isPending ? "Saving…" : "Save draft"}</button>
-        <button onClick={() => (dirty ? setLeaving(true) : onDone())}
-          className="btn shrink-0">Done</button>
-        {/* A document must keep at least one version — the API 409s discarding the only
-            one. Offering the button anyway on every brand-new document (the most common
-            time to be in the editor) was a guaranteed-to-fail affordance. */}
-        {canDiscard && (
-          <button onClick={() => setDiscarding(true)}
-            className="btn shrink-0 text-bad hover:border-bad">Discard draft</button>
-        )}
-      </div>
-      {/* A failed save used to be indistinguishable from a successful one: the button
-          simply reverted to "Save draft" and the author walked away thinking it landed. */}
-      {save.isError && (
-        <div role="alert" className="mb-2 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">
-          Could not save this draft — {errText(save.error)}. Your text is still here; try again.
-        </div>
-      )}
+    <div onBlur={() => { if (dirty) save.mutate(latest.current); }}>
       {isSheet
-        ? <SheetEditor value={content} onChange={setContent}
-            // The sheet's own fullscreen mode covers this page's Save/Done buttons, so it
-            // renders its own bar from these. Same mutation either way — there is no second
-            // save path that could behave differently.
-            onSave={() => save.mutate({ stayOpen: true })} saving={save.isPending} dirty={dirty} />
+        ? <SheetEditor value={content} onChange={setContent} />
         : <RichTextEditor value={content} onChange={setContent} />}
-
-      <Modal open={leaving} onClose={() => setLeaving(false)} title="Leave without saving?">
-        <p className="text-sm text-txt2">
-          You have unsaved changes in this draft. Leaving the editor discards them.
-        </p>
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={() => setLeaving(false)} className="btn">Keep editing</button>
-          <button onClick={() => { setLeaving(false); save.mutate({}); }}
-            className="btn btn-primary">Save and close</button>
-          <button onClick={() => { setLeaving(false); onDone(); }}
-            className="btn text-bad hover:border-bad">Discard changes</button>
-        </div>
-      </Modal>
-
-      <Modal open={discarding} onClose={() => setDiscarding(false)} title="Discard this draft?">
-        <p className="text-sm text-txt2">
-          Draft v{version.version_label} will be deleted and the document reverts to its last
-          published version. This cannot be undone.
-        </p>
-        {discard.isError && (
-          <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">
-            {errText(discard.error)}
-          </div>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={() => setDiscarding(false)} className="btn">Keep editing</button>
-          <button disabled={discard.isPending} onClick={() => discard.mutate()}
-            className="btn btn-primary disabled:opacity-50">
-            {discard.isPending ? "Discarding…" : "Discard draft"}</button>
-        </div>
-      </Modal>
+      <input value={changelog} onChange={(e) => setChangelog(e.target.value)}
+        aria-label="Changelog" placeholder="Changelog — what changed in this version?"
+        className={inputCls + " mt-4"} />
     </div>
   );
 }
@@ -545,47 +504,173 @@ function AttestationTab({ doc }: { doc: Detail }) {
   );
 }
 
+/** 816×1056 = 8.5×11in at 96dpi, with ~1in margins. The page has to *be* a page, or the
+ *  paper metaphor just reads as a card that happens to be white. */
+const PAPER = "mx-auto min-h-[1056px] w-full max-w-[816px] rounded-sm bg-paper px-[92px] " +
+  "py-[84px] shadow-[0_1px_3px_rgba(14,26,43,.12),0_8px_24px_rgba(14,26,43,.06)]";
+
+// ─────────────────────────────────────────────────────── save indicator
+const SAVE_LABEL: Record<SaveState, string> = {
+  idle: "All changes saved", saving: "Saving…", saved: "All changes saved",
+  error: "Couldn't save — retrying on your next edit",
+};
+
+function SaveIndicator({ state, error }: { state: SaveState; error?: string }) {
+  return (
+    // `data-save-state` is machine-readable on purpose: "idle" (nothing to save yet) and
+    // "saved" (a write just succeeded) deliberately share the same words, so asserting on the
+    // TEXT would pass before anything had been saved at all.
+    <span data-save-state={state}
+      className={cn("flex shrink-0 items-center gap-1.5 whitespace-nowrap text-caption",
+        state === "error" ? "text-bad" : "text-txt3")}>
+      <span aria-hidden="true">{state === "saving" ? "◌" : state === "error" ? "⚠" : "✓"}</span>
+      <span role="status">{state === "error" && error ? `Couldn't save — ${error}` : SAVE_LABEL[state]}</span>
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────── compliance rail
+/**
+ * Governance lives in a collapsible rail, not in tabs above the content.
+ *
+ * The page used to be four tabs — content · versions · approvals · attestation — so reading
+ * the document and checking who had approved it were mutually exclusive, and three quarters
+ * of the tab strip was metadata competing with the thing itself. Every panel here is data
+ * `GET /documents/{id}` already returns; nothing new is fetched.
+ */
+type RailTab = "details" | "approvals" | "versions" | "attest";
+
+function ComplianceRail({ doc, onClose, onDiff }:
+  { doc: Detail; onClose: () => void; onDiff: () => void }) {
+  const qc = useQueryClient();
+  const can = useCan();
+  const [tab, setTab] = useState<RailTab>("details");
+  const [err, setErr] = useState("");
+  const draft = doc.open_version?.status === "DRAFT" ? doc.open_version : null;
+  const discard = useMutation({
+    mutationFn: () => api.delete(`/documents/${doc.id}/versions/${draft!.id}`),
+    onSuccess: () => { setErr(""); qc.invalidateQueries({ queryKey: ["document", doc.id] }); },
+    onError: (e: any) => setErr(errText(e, "Could not discard this draft.")),
+  });
+  const TABS: [RailTab, string][] = [
+    ["details", "Details"], ["approvals", "Approvals"],
+    ["versions", `Versions`], ["attest", "Attest"],
+  ];
+  return (
+    <aside aria-label="Compliance"
+      className="w-[312px] shrink-0 overflow-y-auto border-l border-bd bg-paper">
+      <div className="flex items-center justify-between border-b border-bd px-4 py-3">
+        <span className="eyebrow">Compliance</span>
+        <button onClick={onClose} aria-label="Close compliance panel"
+          className="grid h-7 w-7 place-items-center rounded-md text-txt2 hover:bg-canvas">✕</button>
+      </div>
+      <div className="flex border-b border-bd">
+        {TABS.map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={cn("flex-1 px-1 py-2.5 text-caption font-semibold",
+              tab === k ? "bg-[rgba(249,115,22,0.08)] text-accent" : "text-txt2 hover:bg-canvas")}>
+            {label}{k === "versions" && ` ${doc.versions.length}`}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4">
+        {tab === "details" && (
+          <>
+            {[["Type", doc.document_type.toLowerCase()],
+              ["Classification", doc.classification.toLowerCase()],
+              ["Owner", doc.owner?.full_name],
+              ["Review every", doc.review_cadence_months ? `${doc.review_cadence_months} mo` : "—"],
+              ["Next review", doc.next_review_at?.slice(0, 10)]].map(([k, v]) => (
+              <div key={k as string} className="flex justify-between gap-3 py-1.5 text-label">
+                <span className="shrink-0 text-txt3">{k}</span>
+                <span className="truncate font-medium capitalize">{(v as string) || "—"}</span>
+              </div>))}
+          </>
+        )}
+        {tab === "approvals" && <ApprovalsTab doc={doc} />}
+        {tab === "attest" && <AttestationTab doc={doc} />}
+        {tab === "versions" && (
+          <>
+            {doc.versions.map((v) => (
+              <div key={v.id} className="border-t border-bd py-2.5 first:border-t-0">
+                <div className="flex items-center gap-2">
+                  <span className={cn("h-2 w-2 shrink-0 rounded-full",
+                    v.id === doc.current_published_version_id ? "bg-ok"
+                      : v.status === "DRAFT" ? "bg-accent" : "bg-bd")} />
+                  <span className="font-mono text-label font-semibold">v{v.version_label}</span>
+                  <Pill tone={statusTone(v.status)}>{v.status.charAt(0) + v.status.slice(1).toLowerCase()}</Pill>
+                </div>
+                <div className="mt-1 pl-4 text-caption text-txt3">
+                  {v.published_at?.slice(0, 10) ?? "not published"}
+                  {v.changelog ? ` · ${v.changelog}` : ""}
+                </div>
+              </div>
+            ))}
+            {doc.versions.length > 1 && (
+              <button onClick={onDiff} className="btn mt-3 w-full justify-center">Compare versions</button>)}
+            {/* Discard used to sit on the editor's button bar, which autosave removed. It is
+                version management, so it belongs here — and only when there is another
+                version to fall back to: the API 409s on discarding the only one, so offering
+                it on a brand-new document was a guaranteed-to-fail affordance. */}
+            {draft && doc.versions.length > 1 && can("documents", "edit") && (
+              <button
+                onClick={() => { if (confirm(
+                    `Discard draft v${draft.version_label}?\n\nIts changes are lost. The last ` +
+                    `published version is unaffected.`)) discard.mutate(); }}
+                disabled={discard.isPending}
+                className="btn mt-2 w-full justify-center text-bad hover:border-bad disabled:opacity-50">
+                {discard.isPending ? "Discarding…" : `Discard draft v${draft.version_label}`}
+              </button>)}
+            {err && <div role="alert" className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 // ─────────────────────────────────────────────────────── page
 export default function DocumentDetail() {
   const { id } = useParams();
-  const nav = useNavigate();
   const qc = useQueryClient();
   const can = useCan();
-  const [tab, setTab] = useState<"content" | "versions" | "approvals" | "attestation">("content");
-  const [editing, setEditing] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
   const [diffing, setDiffing] = useState(false);
-  const [editorDirty, setEditorDirty] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveErr, setSaveErr] = useState<string>();
+  const [err, setErr] = useState("");
 
-  // A tab click or the "All documents" link unmounts Editor directly — its own unsaved-
-  // changes modal never runs for those exits. Guard here too.
-  const guardLeaveEditor = (proceed: () => void) => {
-    if (editing && editorDirty
-        && !window.confirm("You have unsaved changes in this draft. Leave and discard them?")) {
-      return;
-    }
-    proceed();
-  };
+  const { data: doc, isLoading } = useQuery({
+    queryKey: ["document", id], queryFn: () => get<Detail>(`/documents/${id}`) });
 
-  const { data: doc, isLoading } = useQuery({ queryKey: ["document", id], queryFn: () => get<Detail>(`/documents/${id}`) });
-
-  const [editErr, setEditErr] = useState("");
   const newDraft = useMutation({
     mutationFn: (bump: string) => api.post(`/documents/${id}/versions`, { bump }),
-    onSuccess: () => {
-      setEditErr("");
-      qc.invalidateQueries({ queryKey: ["document", id] });
-      setTab("content"); setEditing(true);
-    },
-    // Calling this on a PENDING_APPROVAL version 409s ("already an open draft") — that
-    // used to vanish with no feedback at all, indistinguishable from nothing happening.
-    onError: (e: any) => setEditErr(errText(e, "Could not start a new draft.")),
+    onSuccess: () => { setErr(""); qc.invalidateQueries({ queryKey: ["document", id] }); },
+    // Calling this on a PENDING_APPROVAL version 409s ("already an open draft") — that used
+    // to vanish with no feedback at all, indistinguishable from nothing happening.
+    onError: (e: any) => setErr(errText(e, "Could not start a new draft.")),
   });
+  // Archive/Restore is a real capability, not chrome — retiring a policy without deleting it
+  // is how a compliance record stops applying while staying auditable. It lived on the old
+  // action row and has to survive the header rework.
   const archive = useMutation({
     mutationFn: (status: string) => api.patch(`/documents/${id}`, { status }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["document", id] });
       qc.invalidateQueries({ queryKey: ["documents"] });
     },
+    onError: (e: any) => setErr(errText(e, "Could not change the document status.")),
+  });
+  const rename = useMutation({
+    mutationFn: (title: string) => api.patch(`/documents/${id}`, { title }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["document", id] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
+    },
+    onError: (e: any) => setErr(errText(e, "Could not rename this document.")),
   });
 
   const shown = useMemo(() => {
@@ -596,135 +681,147 @@ export default function DocumentDetail() {
 
   if (isLoading || !doc) return <Loading />;
 
-  function onEdit() {
-    // The editor only renders on the Content tab — clicking Edit from Versions,
-    // Approvals or Attestation used to flip `editing` with no visible effect at all.
-    if (doc!.open_version?.status === "DRAFT") { setTab("content"); setEditing(true); }
-    else newDraft.mutate("minor");   // published → start a new minor draft
-  }
+  // THE state machine of this page, and the only read-only state that is legitimate.
+  // Editable = an open DRAFT + the permission. Anything else is a published or in-approval
+  // record, which is the audit trail and must not be editable at all.
+  const draft = doc.open_version?.status === "DRAFT" ? doc.open_version : null;
+  const canEdit = can("documents", "edit") && doc.status !== "ARCHIVED";
+  const editable = !!draft && canEdit;
+  const isSheet = (shown?.content_format ?? "HTML") === "SHEET";
 
   return (
-    <>
-      {editing && editorDirty ? (
-        <button onClick={() => guardLeaveEditor(() => nav("/documents"))}
-          className="text-sm text-txt2 hover:text-ink">← All documents</button>
-      ) : (
-        <Link to="/documents" className="text-sm text-txt2 hover:text-ink">← All documents</Link>
-      )}
-      <div className="mb-1 mt-2 flex items-end gap-3">
-        <h1 className="text-title font-semibold tracking-[-0.01em]">{doc.title}</h1>
-        {shown && <Pill tone={statusTone(shown.status)}>{shown.status === "PENDING_APPROVAL" ? "In approval" : shown.status.charAt(0) + shown.status.slice(1).toLowerCase()}</Pill>}
-        {doc.status === "ARCHIVED" && <Pill tone="na">Archived</Pill>}
-        <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption capitalize text-txt2">{doc.classification.toLowerCase()}</span>
-      </div>
-      <p className="mb-3 flex flex-wrap items-center gap-x-1.5 text-sm text-txt2">
-        <span className="capitalize">{doc.document_type.toLowerCase()}</span> · Owner {doc.owner?.full_name ?? "—"}
-        {shown && <> · v{shown.version_label}</>}
-        {doc.next_review_at && <> · <span className={doc.review_status === "overdue" ? "text-bad" : "text-txt2"}>review {doc.next_review_at.slice(0, 10)}</span></>}
-        {can("documents", "edit") && (
-          <button onClick={onEdit} disabled={newDraft.isPending} className="btn ml-2 py-1.5 disabled:opacity-50">
-            {doc.open_version?.status === "DRAFT" ? "Continue editing" : "Edit → new version"}
-          </button>
-        )}
-        {shown && (
-          <button onClick={() => downloadFile(
-            `/documents/${doc.id}/versions/${shown.id}/render.pdf`,
-            `${doc.title} v${shown.version_label}.pdf`)}
-            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
-            className="btn py-1.5">Export PDF ↓</button>)}
-        {shown && (
-          <button onClick={() => downloadFile(
-            `/documents/${doc.id}/versions/${shown.id}/render.docx`,
-            `${doc.title} v${shown.version_label}.docx`)}
-            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
-            className="btn py-1.5">Export DOCX ↓</button>)}
-        {/* Spreadsheets only — there is no sensible workbook projection of a prose policy,
-            and the API 400s if you ask for one. The .xlsx is a WORKING copy: it carries live
-            formulas, so a recipient who edits it will see figures diverge from the signed
-            PDF. That is intended; the PDF stays the controlled artefact. */}
-        {shown && shown.content_format === "SHEET" && (
-          <button onClick={() => downloadFile(
-            `/documents/${doc.id}/versions/${shown.id}/render.xlsx`,
-            `${doc.title} v${shown.version_label}.xlsx`)}
-            title={editing && editorDirty ? "Downloads the last SAVED draft — you have unsaved changes" : undefined}
-            className="btn py-1.5">Export XLSX ↓</button>)}
-        {can("documents", "edit") && (
-          <button onClick={() => archive.mutate(doc.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
-            disabled={archive.isPending} className="btn py-1.5 disabled:opacity-50">
-            {doc.status === "ARCHIVED" ? "Restore" : "Archive"}
-          </button>)}
-      </p>
+    <div className="-mx-6 -mt-6 flex min-h-[calc(100vh-57px)] flex-col">
+      {/* ── header: identity and actions ─────────────────────────────── */}
+      <header className="shrink-0 border-b border-bd bg-paper px-5 pt-2.5">
+        <div className="flex items-center gap-3.5">
+          <Link to="/documents" className="shrink-0 text-label text-txt2 hover:text-ink">← All documents</Link>
+          <span className="h-[22px] w-px shrink-0 bg-bd" />
+          {/* Rename in place — no modal, no separate field. contentEditable rather than an
+              <input> so the title keeps document-heading weight instead of looking like a
+              form control sitting in the chrome. */}
+          <h1
+            contentEditable={canEdit}
+            suppressContentEditableWarning
+            spellCheck={false}
+            onBlur={(e) => {
+              const next = e.currentTarget.textContent?.trim() ?? "";
+              if (next && next !== doc.title) rename.mutate(next);
+              else e.currentTarget.textContent = doc.title;
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+              if (e.key === "Escape") { e.currentTarget.textContent = doc.title; e.currentTarget.blur(); }
+            }}
+            className={cn("max-w-[460px] truncate rounded px-1.5 py-0.5 text-subtitle font-semibold outline-none",
+              canEdit && "hover:bg-canvas focus:bg-canvas focus:shadow-[inset_0_0_0_1.5px_#F97316]")}>
+            {doc.title}
+          </h1>
+          {shown && <Pill tone={statusTone(shown.status)}>
+            {shown.status === "PENDING_APPROVAL" ? "In approval"
+              : shown.status.charAt(0) + shown.status.slice(1).toLowerCase()} · v{shown.version_label}
+          </Pill>}
+          {doc.status === "ARCHIVED" && <Pill tone="na">Archived</Pill>}
+          <span className="shrink-0 rounded border border-bd bg-canvas px-2 py-0.5 text-caption capitalize text-txt2">
+            {doc.classification.toLowerCase()}
+          </span>
 
-      {editErr && (
-        <div role="alert" className="mb-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{editErr}</div>
-      )}
-      {editing && editorDirty && (
-        <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-label text-warn">
-          Export downloads the last SAVED draft — you have unsaved changes in the editor.
-        </div>
-      )}
-
-      {doc.open_version && doc.open_version.status === "DRAFT" && !editing && tab === "content" && (
-        <div className="mb-4 rounded-lg border border-warn/40 bg-warn-bg/40 px-4 py-2.5 text-label text-warn">
-          Draft v{doc.open_version.version_label} in progress
-          {can("documents", "edit") ? <>{" "}—{" "}
-            <button onClick={() => setEditing(true)} className="font-semibold underline">continue editing</button>{" "}
-            or go to <button onClick={() => setTab("approvals")} className="font-semibold underline">Approvals</button> to request sign-off.
-          </> : <> — not yet published.</>}
-        </div>
-      )}
-
-      <div className="mb-5 flex gap-1 border-b border-bd">
-        {(["content", "versions", "approvals", "attestation"] as const).map((tt) => (
-          <button key={tt} onClick={() => guardLeaveEditor(() => { setTab(tt); setEditing(false); })}
-            className={cn("-mb-px border-b-2 px-3.5 py-2.5 text-sm font-medium capitalize",
-              tab === tt ? "border-accent text-ink" : "border-transparent text-txt2")}>
-            {tt}{tt === "versions" && ` (${doc.versions.length})`}
-          </button>
-        ))}
-      </div>
-
-      {tab === "content" && (editing && doc.open_version
-        ? <Editor docId={doc.id} version={doc.open_version} onDone={() => setEditing(false)}
-                 onDirtyChange={setEditorDirty} canDiscard={doc.versions.length > 1} />
-        : <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_240px]">
-            <Card className="min-h-[40vh]"><Body v={shown} /></Card>
-            <div className="space-y-4">
-              <Card>
-                <div className="eyebrow mb-2">Details</div>
-                {[["Type", doc.document_type.toLowerCase()], ["Classification", doc.classification.toLowerCase()],
-                  ["Owner", doc.owner?.full_name], ["Review every", doc.review_cadence_months ? `${doc.review_cadence_months} mo` : "—"],
-                  ["Next review", doc.next_review_at?.slice(0, 10)]].map(([k, v]) => (
-                  <div key={k as string} className="flex justify-between py-1 text-label">
-                    <span className="text-txt3">{k}</span><span className="font-medium capitalize">{(v as string) || "—"}</span>
-                  </div>))}
-              </Card>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            <button onClick={() => setRailOpen((o) => !o)}
+              className={cn("btn py-1.5", railOpen && "border-accent bg-[rgba(249,115,22,0.08)] text-accent")}>
+              Compliance
+            </button>
+            <div className="relative">
+              <button onClick={() => setExporting((o) => !o)} className="btn py-1.5">Export ▾</button>
+              {exporting && shown && (
+                <div className="absolute right-0 top-full z-30 mt-1 w-40 overflow-hidden rounded-md border border-bd bg-paper shadow-drawer">
+                  {([["PDF", "render.pdf", "pdf"], ["DOCX", "render.docx", "docx"],
+                     // Spreadsheets only — there is no sensible workbook projection of a prose
+                     // policy and the API 400s if you ask for one. The .xlsx is a WORKING copy
+                     // carrying live formulas; the PDF stays the controlled artefact.
+                     ...(isSheet ? [["XLSX", "render.xlsx", "xlsx"]] : [])] as const).map(
+                    ([label, route, ext]) => (
+                      <button key={label} onClick={() => {
+                        setExporting(false);
+                        downloadFile(`/documents/${doc.id}/versions/${shown.id}/${route}`,
+                                     `${doc.title} v${shown.version_label}.${ext}`);
+                      }} className="block w-full px-3 py-2 text-left text-label hover:bg-canvas">{label}</button>
+                    ))}
+                </div>
+              )}
             </div>
-          </div>)}
+            {can("documents", "edit") && (
+              <button onClick={() => archive.mutate(doc.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
+                disabled={archive.isPending} className="btn py-1.5 disabled:opacity-50">
+                {doc.status === "ARCHIVED" ? "Restore" : "Archive"}
+              </button>)}
+            {editable && (
+              <button onClick={() => setSubmitting(true)} className="btn btn-primary py-1.5">
+                Request sign-off
+              </button>)}
+          </div>
+        </div>
 
-      {tab === "versions" && (
-        <Card>
-          {doc.versions.map((v) => (
-            <div key={v.id} className="flex items-center gap-3 border-t border-bd py-2.5 text-sm first:border-t-0">
-              <span className={cn("h-2 w-2 rounded-full", v.id === doc.current_published_version_id ? "bg-ok" : "bg-bd")} />
-              <span className="font-mono font-semibold">v{v.version_label}</span>
-              <Pill tone={statusTone(v.status)}>{v.status.charAt(0) + v.status.slice(1).toLowerCase()}</Pill>
-              <span className="text-txt3">{v.published_at?.slice(0, 10) ?? "—"}</span>
-              <span className="truncate text-txt2">{v.changelog ?? ""}</span>
-              <span className="ml-auto flex shrink-0 gap-1.5">
-                {v.file_id && <button onClick={() => downloadFile(`/documents/${doc.id}/versions/${v.id}/render.pdf`, `${doc.title} v${v.version_label}.pdf`)} className="rounded-md border border-bd px-2 py-1 text-label hover:bg-canvas">PDF</button>}
-              </span>
+        <div className="flex items-center gap-3 py-1.5">
+          <span className="text-caption capitalize text-txt3">{doc.document_type.toLowerCase()}</span>
+          <span className="text-caption text-txt3">Owner {doc.owner?.full_name ?? "—"}</span>
+          {doc.next_review_at && (
+            <span className={cn("text-caption", doc.review_status === "overdue" ? "text-bad" : "text-txt3")}>
+              review {doc.next_review_at.slice(0, 10)}
+            </span>)}
+          {editable && <SaveIndicator state={saveState} error={saveErr} />}
+        </div>
+      </header>
+
+      {err && <div role="alert" className="mx-5 mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+
+      {/* ── the surface, and the rail ─────────────────────────────────── */}
+      <div className="flex min-h-0 flex-1">
+        <div className={cn("min-w-0 flex-1", isSheet ? "bg-paper" : "bg-[#E9EBEE] px-6 py-6")}>
+          {!editable && (
+            /* The ONLY legitimate read-only state. Deliberately not phrased as "view mode":
+               an approved record is the audit trail, and the way forward is a new draft. */
+            <div className="mx-auto mb-5 max-w-[816px] rounded-lg border border-bd bg-paper px-4 py-3">
+              <div className="text-label font-semibold">
+                {doc.status === "ARCHIVED" ? "This document is archived."
+                  : shown?.status === "PENDING_APPROVAL"
+                    ? `v${shown.version_label} is out for approval and can't be edited.`
+                    : `v${shown?.version_label ?? "1.0"} is approved and locked. Approved records can't be edited — that's the audit trail.`}
+              </div>
+              {canEdit && doc.status !== "ARCHIVED" && shown?.status !== "PENDING_APPROVAL" && (
+                <button onClick={() => newDraft.mutate("minor")} disabled={newDraft.isPending}
+                  className="btn btn-primary mt-2.5 py-1.5 disabled:opacity-50">
+                  {newDraft.isPending ? "Starting…" : `Start v${nextMinor(shown?.version_label)} draft`}
+                </button>)}
+              {!canEdit && (
+                <div className="mt-1 text-caption text-txt3">
+                  You can read this document but not change it.
+                </div>)}
             </div>
-          ))}
-          {doc.versions.length > 1 && (
-            <button onClick={() => setDiffing(true)} className="btn mt-3">Compare versions (diff)</button>)}
-        </Card>
-      )}
+          )}
 
-      {tab === "approvals" && <ApprovalsTab doc={doc} />}
-      {tab === "attestation" && <AttestationTab doc={doc} />}
+          {editable
+            ? <div className={cn(!isSheet && PAPER)}>
+                <Editor key={draft.id} docId={doc.id} version={draft}
+                  onSaveStateChange={(s, e) => { setSaveState(s); setSaveErr(e); }} />
+              </div>
+            : <div className={cn(!isSheet && PAPER)}>
+                <Body v={shown} />
+              </div>}
+        </div>
+
+        {railOpen && <ComplianceRail doc={doc} onClose={() => setRailOpen(false)}
+          onDiff={() => setDiffing(true)} />}
+      </div>
 
       {diffing && <DiffModal docId={doc.id} versions={doc.versions} onClose={() => setDiffing(false)} />}
-    </>
+      {submitting && draft && (
+        <SubmitModal docId={doc.id} versionId={draft.id} onClose={() => setSubmitting(false)} />)}
+    </div>
   );
+}
+
+/** "1.0" -> "1.1". The server decides the real number; this is only for the button label. */
+function nextMinor(label: string | undefined): string {
+  const [maj, min] = (label ?? "1.0").split(".");
+  return `${maj}.${Number(min ?? 0) + 1}`;
 }

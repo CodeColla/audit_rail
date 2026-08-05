@@ -15,7 +15,10 @@ async function openAttestationTab(page: import("@playwright/test").Page) {
   await page.goto("/documents");
   await page.getByRole("cell", { name: DOC }).click();
   await expect(page.getByRole("heading", { name: DOC })).toBeVisible();
-  await page.getByRole("button", { name: "attestation" }).click();
+  // P6: attestation moved from a page tab into the Compliance rail.
+  await page.getByRole("button", { name: "Compliance" }).click();
+  await page.getByRole("complementary", { name: "Compliance" })
+    .getByRole("button", { name: /^Attest/i }).click();
 }
 
 test("campaign issues a link, and the coverage bar reflects reality", async ({ page }) => {

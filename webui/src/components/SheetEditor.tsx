@@ -248,15 +248,9 @@ async function importWorkbook(file: File): Promise<StoredSheet[]> {
   });
 }
 
-export function SheetEditor({ value, onChange, onSave, saving = false, dirty = false }: {
+export function SheetEditor({ value, onChange }: {
   value: string;
   onChange: (json: string) => void;
-  /** Save the draft. Optional so the component still works standalone, but `DocumentDetail`
-   *  passes it: jspreadsheet's fullscreen covers the whole viewport including our own
-   *  Save draft / Done buttons, which otherwise leaves no way to save without exiting. */
-  onSave?: () => void;
-  saving?: boolean;
-  dirty?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const onChangeRef = useRef(onChange);
@@ -586,13 +580,10 @@ export function SheetEditor({ value, onChange, onSave, saving = false, dirty = f
         <div role="toolbar" aria-label="Fullscreen sheet actions"
           className="fixed right-4 top-3 z-[61] flex items-center gap-2 rounded-lg
                      border border-bd bg-paper px-2 py-1.5 shadow-drawer">
-          {dirty && <span className="pl-1 text-caption text-warn">Unsaved changes</span>}
-          {onSave && (
-            <button type="button" onClick={onSave} disabled={saving}
-              className="btn btn-primary py-1 text-label disabled:opacity-50">
-              {saving ? "Saving…" : "Save draft"}
-            </button>
-          )}
+          {/* P6: the Save button that used to live here is gone with autosave. Keeping it
+              would have been worse than removing it — the props stopped being passed, so it
+              would have rendered a primary button that did nothing. Exit remains, because
+              jspreadsheet's own exit control sits under our app header. */}
           <button type="button" onClick={exitFullscreen} className="btn py-1 text-label">
             Exit fullscreen
           </button>
