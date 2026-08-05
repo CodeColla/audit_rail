@@ -259,6 +259,19 @@ export function SheetEditor({ value, onChange }: {
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const hostSheets = useRef<any[] | null>(null);
+  // The formula bar's view of the grid: which cell is anchored, and its SOURCE (a formula
+  // where there is one, not the computed value — that is the point of a formula bar).
+  const [sel, setSel] = useState<{ x: number; y: number; value: string } | null>(null);
+  /** Commit the formula bar's text into the anchored cell. `setValueFromCoords(..., true)`
+   *  writes the SOURCE, so "=SUM(A1:A2)" stays a live formula rather than literal text. */
+  const commitFormulaBar = (next: string) => {
+    if (!sel) return;
+    const root = (hostSheets.current?.[0] as any)?.parent;
+    const ws = root?.worksheets?.[root?.getWorksheetActive?.() ?? 0] ?? hostSheets.current?.[0];
+    ws?.setValueFromCoords?.(sel.x, sel.y, next, true);
+    setSel({ ...sel, value: next });
+  };
   // Importing replaces the whole workbook, which a mount-once widget cannot do in place.
   // Bumping this re-runs the effect, which destroys and rebuilds the grid from the new
   // `initialValue` — the same path a fresh page load takes, so there is no second code
@@ -503,6 +516,9 @@ export function SheetEditor({ value, onChange }: {
         },
       };
 
+      // NOTE: `sheets` is assigned AFTER this call returns, but jspreadsheet fires events
+      // during mount — hence the null guards on it elsewhere. `hostSheets` is the ref the
+      // formula bar reads, populated on the line after the constructor.
       sheets = jspreadsheet(el, {
         // Append "Wrap text" to the STOCK toolbar rather than replacing it — the default set
         // (undo/redo, font, size, align, bold, colours, merge, borders, fullscreen) has no
@@ -519,6 +535,18 @@ export function SheetEditor({ value, onChange }: {
           return Array.isArray(arg) ? next : { ...arg, items: next };
         }) as any,
         tabs: true,         // worksheet tabs + the "add sheet" button
+        // P6: the formula bar mirrors and edits the selected cell, so it needs to know what
+        // is selected. jspreadsheet reports the range; the bar addresses the anchor (x1,y1).
+        onselection: (_el: any, x1: number, y1: number) => {
+          const root = (hostSheets.current?.[0] as any)?.parent;
+          const ws = root?.worksheets?.[root?.getWorksheetActive?.() ?? 0]
+                     ?? hostSheets.current?.[0];
+          // `getValueFromCoords(x, y, processed)` — processed TRUE returns the computed
+          // value ("20"), FALSE returns the source ("=A1*5"). The formula bar wants the
+          // source; the grid already shows the value. Same inversion trap as `getData`,
+          // whose bundled types document it backwards (see the note at the top of this file).
+          setSel({ x: x1, y: y1, value: String(ws?.getValueFromCoords?.(x1, y1, false) ?? "") });
+        },
         onchange: emit, onafterchanges: emit, onchangestyle: emit,
         onmerge: emit, onresizecolumn: emit,
         oninsertrow: emit, ondeleterow: emit,
@@ -528,6 +556,7 @@ export function SheetEditor({ value, onChange }: {
         oncreateworksheet: emit, ondeleteworksheet: emit,
         worksheets,
       });
+      hostSheets.current = sheets;
     })();
 
     return () => {
@@ -542,7 +571,33 @@ export function SheetEditor({ value, onChange }: {
     // NOTE: no `overflow-hidden` here. It used to be the only clipper on the whole ancestor
     // chain, and combined with the missing tableWidth a wide grid was cut off with no
     // scrollbar to reach the rest. jspreadsheet now owns its own overflow.
-    <div className="sheet-editor rounded-xl border border-bd bg-paper">
+    // P6: full-bleed. The card border and radius are gone — the grid IS the view, edge to
+    // edge, the way a spreadsheet app looks. This also removed the reason the separate
+    // fullscreen mode existed (the grid used to be boxed inside a narrow card).
+    <div className="sheet-editor bg-paper">
+      {/* P6 formula bar: the cell reference, an fx marker, and the cell's SOURCE. It shows
+          "=SUM(A1:A2)" where the grid shows 30 — a formula bar that mirrored the computed
+          value would be a second copy of the cell rather than a way to see behind it. */}
+      <div className="flex items-center gap-2 border-b border-bd bg-paper px-3 py-1.5">
+        <span className="min-w-[52px] rounded-md border border-bd bg-paper px-2 py-0.5 text-center
+                         font-mono text-caption font-semibold">
+          {sel ? `${colLetter(sel.x)}${sel.y + 1}` : "—"}
+        </span>
+        <span className="font-mono text-caption italic text-txt3">fx</span>
+        <input
+          aria-label="Formula bar"
+          value={sel?.value ?? ""}
+          disabled={!sel}
+          onChange={(e) => setSel(sel ? { ...sel, value: e.target.value } : null)}
+          onBlur={(e) => commitFormulaBar(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { commitFormulaBar((e.target as HTMLInputElement).value);
+                                     (e.target as HTMLInputElement).blur(); }
+          }}
+          className="min-w-0 flex-1 bg-transparent font-mono text-label outline-none
+                     disabled:cursor-not-allowed" />
+      </div>
+
       <div className="flex flex-wrap items-center gap-2 border-b border-bd bg-canvas px-3 py-1.5">
         <label className="btn cursor-pointer py-1 text-label">
           {importing ? "Reading…" : "Import .xlsx / .csv"}
@@ -556,8 +611,8 @@ export function SheetEditor({ value, onChange }: {
             }} />
         </label>
         <span className="text-caption text-txt3">
-          Replaces every sheet in this draft. Values and formulas are imported; import is not
-          saved until you click <b>Save draft</b>.
+          Replaces every sheet in this draft. Values and formulas are imported, and the
+          import saves itself like any other edit.
         </span>
       </div>
       {importError && (

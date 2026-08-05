@@ -146,6 +146,32 @@ test.describe("fullscreen (P5-S2c)", () => {
     page.locator(".jtoolbar-item[role=button]")
       .filter({ has: page.locator("i", { hasText: /^fullscreen$/ }) }).click();
 
+  test("the formula bar shows the SOURCE of a cell, and can edit it", async ({ page }) => {
+    // P6. A formula bar that mirrored the computed value would just be a second copy of the
+    // cell; its whole purpose is to show what is BEHIND the number.
+    await newSheet(page, `E2E Formula Bar ${uniq()}`);
+    await cell(page, 0, 0).click();
+    await page.keyboard.type("4"); await page.keyboard.press("Enter");
+    await page.keyboard.type("=A1*5"); await page.keyboard.press("Enter");
+    await expect(cell(page, 0, 1)).toHaveText("20");
+
+    const bar = page.getByLabel("Formula bar");
+    await cell(page, 0, 1).click();
+    await expect(bar).toHaveValue("=A1*5");           // the source, not "20"
+
+    await cell(page, 0, 0).click();
+    await expect(bar).toHaveValue("4");
+
+    // and it writes back — still as a live formula, not literal text
+    await cell(page, 0, 1).click();
+    await bar.fill("=A1*10");
+    await bar.press("Enter");
+    await expect(cell(page, 0, 1)).toHaveText("40");
+    await cell(page, 0, 0).click();
+    await page.keyboard.type("5"); await page.keyboard.press("Enter");
+    await expect(cell(page, 0, 1), "still a live formula, not a frozen 40").toHaveText("50");
+  });
+
   test("Exit stays reachable while fullscreen covers the app", async ({ page }) => {
     // P6: this used to assert a "Save draft" button in the fullscreen bar too. Autosave
     // removed it — and keeping it would have been worse than deleting it, since the props
