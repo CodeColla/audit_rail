@@ -15,12 +15,13 @@ mirroring the on-screen render so the PDF matches what was approved.
 
 from __future__ import annotations
 
+import base64
 import html as _html
 import io
 import json
 import re
 
-from api.html_sanitize import sanitize_document_html
+from api.html_sanitize import IMG_SRC_RE, sanitize_document_html
 
 # ── markdown -> HTML ────────────────────────────────────────────────────────
 try:
@@ -54,6 +55,21 @@ MIN_FONT_PT, MAX_FONT_PT = 6, 72
 _COLOUR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 _ADDR_RE = re.compile(r"^[A-Z]{1,3}[1-9][0-9]{0,6}$")
 
+#: The currencies a column can be formatted in (P6-S4). Deliberately a closed list rather
+#: than a free-text symbol: the code travels into an .xlsx number-format string and into the
+#: PDF, so an unvalidated symbol would be another string interpolated into a rendered
+#: document. Authors pick per column, which is why there is no org-wide currency setting —
+#: one workbook can hold a rupee column beside a dollar one, which a vendor register needs.
+CURRENCY_SYMBOLS = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£"}
+_FORMAT_RE = re.compile(r"^(?:percent|currency:(?:%s))$" % "|".join(CURRENCY_SYMBOLS))
+
+#: What counts as a number for formatting purposes. Deliberately NOT `float()`: Python
+#: accepts "1_000", "nan" and "inf", and JavaScript's `Number()` does not — and the browser
+#: grid, this renderer and `DocBody.tsx` must agree on which cells get formatted or the
+#: editor and the PDF would disagree. This regex is the shared definition; `NUMERIC_RE` in
+#: `webui/src/lib/sheetFormat.ts` is its twin.
+_NUMERIC_RE = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+
 #: Every style property we persist, and the validator each value must pass. This allow-list
 #: IS the security boundary: `sheet_json_to_html` interpolates these into a style=""
 #: attribute, so anything not validated here would be raw CSS injection into a document that
@@ -75,9 +91,40 @@ def _cell_text(value) -> str:
     return "" if value is None else str(value)
 
 
+#: A cell comment is a reviewer's note, not policy text. Bounded because it is content that
+#: rides along in a hashed, signed column and appears in the version diff — a 50kB essay in one
+#: cell would bury the diff the way a base64 image would.
+MAX_COMMENT_CHARS = 2000
+
+
 def _blank_sheet(name: str = "Sheet1") -> dict:
     return {"name": name, "data": [], "formulas": {}, "style": {},
-            "merges": {}, "colWidths": [], "colWrap": []}
+            "merges": {}, "colWidths": [], "colWrap": [], "colFormat": [], "comments": {}}
+
+
+def format_cell_value(text: str, fmt: str) -> str:
+    """Apply a column's number format to one stored cell value (P6-S4).
+
+    **Text falls through unchanged**, which is the whole reason this is a function and not an
+    f-string at the call site. A register's header lives in the same column as its figures,
+    so "Amount" under a currency format must stay "Amount" rather than becoming a bare "₹" —
+    and that is also exactly what Excel does, where a number format applies to numbers and
+    text passes through. `SheetEditor.tsx`'s column `render` hook and `DocBody.tsx` apply the
+    identical rule, so the editor, the read view and the PDF agree cell for cell.
+
+    **Percent follows Excel's convention: the stored number is a ratio**, so 0.15 reads as
+    15.00%. Chosen over "15 means 15%" because `0.00%` in the exported .xlsx multiplies by
+    100 whatever we do — deviating here would make the workbook disagree with the PDF.
+    """
+    if not fmt or not _NUMERIC_RE.match(text or ""):
+        return text
+    value = float(text)
+    if fmt == "percent":
+        return f"{value * 100:,.2f}%"
+    symbol = CURRENCY_SYMBOLS.get(fmt.split(":", 1)[1], "")
+    # Sign OUTSIDE the symbol ("-₹5.00", not "₹-5.00") — the accounting convention, and the
+    # same spelling `formatCell` in sheetFormat.ts produces.
+    return f"-{symbol}{abs(value):,.2f}" if value < 0 else f"{symbol}{value:,.2f}"
 
 
 def _parse_v1(obj: dict) -> dict:
@@ -187,6 +234,36 @@ def _parse_sheet_obj(raw, index: int) -> dict:
     if not isinstance(wrap, list) or not all(isinstance(w, bool) for w in wrap):
         raise SheetFormatError(f"{where}: 'colWrap' must be a list of true/false")
     out["colWrap"] = list(wrap)
+
+    # Number format is per COLUMN for the same reason wrap is, and it is not a `_STYLE_PROPS`
+    # entry: jspreadsheet reads formatting off `options.columns[i]` (its `render` hook takes
+    # the column config as an argument and there is no per-cell equivalent), so a per-cell
+    # format would be a setting the editor could never actually honour. It also suits a
+    # register, where "Annual cost" is a column.
+    fmt = raw.get("colFormat", [])
+    if not isinstance(fmt, list) or not all(
+            isinstance(f, str) and (f == "" or _FORMAT_RE.match(f)) for f in fmt):
+        raise SheetFormatError(
+            f"{where}: 'colFormat' entries must be \"\", 'percent', or 'currency:' plus one "
+            f"of {', '.join(sorted(CURRENCY_SYMBOLS))}")
+    out["colFormat"] = list(fmt)
+
+    # Per-CELL, unlike wrap and number format — a comment is about one cell, and jspreadsheet's
+    # comment API is per cell too (`setComments`), so nothing forces it up to the column here.
+    comments = raw.get("comments", {})
+    if not isinstance(comments, dict):
+        raise SheetFormatError(f"{where}: 'comments' must be an object keyed by cell")
+    for addr, note in comments.items():
+        if not (isinstance(addr, str) and _ADDR_RE.match(addr)):
+            raise SheetFormatError(f"{where}: '{addr}' is not a cell address")
+        if not isinstance(note, str):
+            raise SheetFormatError(f"{where}: the comment at {addr} must be text")
+        if len(note) > MAX_COMMENT_CHARS:
+            raise SheetFormatError(
+                f"{where}: the comment at {addr} is longer than {MAX_COMMENT_CHARS} characters")
+    # Empty strings mean "no comment" — jspreadsheet clears a comment by setting "" — so they
+    # are dropped rather than stored, keeping an uncommented sheet's JSON identical to before.
+    out["comments"] = {a: n for a, n in comments.items() if n}
     return out
 
 
@@ -202,7 +279,9 @@ def parse_sheet(content: str) -> dict:
             "style": {"A1": {"bold": true, "align": "center", "fontSize": 12,
                              "color": "#1a2432", "background": "#eef0f2"}},
             "merges": {"A1": {"colspan": 2, "rowspan": 1}},
-            "colWidths": [120, 100]}]}
+            "colWidths": [120, 100],
+            "colWrap": [false, true],                        # per COLUMN, not per cell
+            "colFormat": ["currency:INR", "percent"]}]}      # ditto — see `_parse_sheet_obj`
 
     **v1** (P5-S2) — `{"data": …, "bold": […], "align": {…}}`, upcast by `_parse_v1`. That
     path is permanent; see its docstring for why published rows can never be migrated.
@@ -278,13 +357,17 @@ def _cell_css(props: dict) -> str:
 def _sheet_to_table(sheet: dict) -> str:
     """One worksheet -> one HTML <table>."""
     wrap_cols = sheet.get("colWrap") or []
+    fmt_cols = sheet.get("colFormat") or []
     rows_html = []
     for r, row in enumerate(sheet["data"]):
         cells = []
         for c, cell in enumerate(row):
             addr = f"{_col_letter(c)}{r + 1}"
             props = sheet["style"].get(addr, {})
-            text = _html.escape(cell)
+            # Format for DISPLAY only — `data` keeps the raw number, so the same cell can be
+            # re-rendered in another currency, or none, without the value having been lost.
+            text = _html.escape(format_cell_value(
+                cell, fmt_cols[c] if c < len(fmt_cols) else ""))
             # <strong>/<em>/<u>, not <th> — bold here means "this cell's text is bold," not
             # "this is a header cell." <th> would be a semantic mismatch (bold can be
             # anywhere in the grid) and would also make docx_export._table() treat an
@@ -335,16 +418,31 @@ def sheet_diff_lines(content: str) -> list[str]:
     lines: list[str] = []
     for sheet in book["sheets"]:
         prefix = f"{sheet['name']}!" if multi else ""
+        # A column's number format is content, not decoration: flipping a column from
+        # currency to percent changes every figure a reader sees while leaving `data`
+        # byte-identical, so without these lines that change would diff as "no change".
+        # Emitted per column, addressed by letter, because that is where the format lives.
+        for c, fmt in enumerate(sheet.get("colFormat") or []):
+            if fmt:
+                lines.append(f"{prefix}column {_col_letter(c)}: format={fmt}")
+        seen: set[str] = set()
         for r, row in enumerate(sheet["data"]):
             for c, cell in enumerate(row):
                 addr = f"{_col_letter(c)}{r + 1}"
                 formula = sheet["formulas"].get(addr)
                 props = sheet["style"].get(addr, {})
-                if not cell and not formula and not props:
+                note = sheet.get("comments", {}).get(addr)
+                if not cell and not formula and not props and not note:
                     continue
                 line = f"{prefix}{addr}: {cell}"
                 if formula:
                     line += f"  [{formula}]"
+                if note:
+                    # A reviewer's note is content in a controlled document — "why is this
+                    # figure an exception" is exactly the sort of thing an approver is being
+                    # asked to sign off. Without this a note could be added, changed or
+                    # deleted between versions and the diff would say "no change".
+                    line += f'  <{" ".join(note.split())}>'
                 if props:
                     # Formatting is content in a controlled document — a cell going bold, or
                     # a total turning red, is a real change an approver should see in the
@@ -354,6 +452,13 @@ def sheet_diff_lines(content: str) -> list[str]:
                     if flags:
                         line += f"  {{{flags}}}"
                 lines.append(line)
+                seen.add(addr)
+        # A comment can sit on a cell the data grid does not reach — the editor trims trailing
+        # blank rows and columns, and a note on an otherwise-empty cell is a legitimate thing
+        # to write. Without this the note would be stored and still diff as "no change".
+        for addr, note in sorted((sheet.get("comments") or {}).items()):
+            if addr not in seen and note:
+                lines.append(f'{prefix}{addr}:   <{" ".join(note.split())}>')
     return lines
 
 
@@ -380,22 +485,54 @@ def sheet_json_to_html(content: str) -> str:
     return "".join(parts)
 
 
+#: The letterhead repeats on EVERY page, via xhtml2pdf's static frames (P6-S5).
+#:
+#: It used to be one `<div>` at the top of the body flow and another after the last block, so
+#: a three-page policy identified itself on page 1 and pages 2-3 carried nothing — a printed
+#: page found on its own was unattributable, which is exactly what a controlled document must
+#: not be. `-pdf-frame-content` pulls an element out of the flow and paints it on every page;
+#: verified supported at xhtml2pdf/context.py, and the DOCX export has always behaved this way
+#: through real Word section headers, so this also closes a PDF/DOCX divergence.
+#:
+#: THE CONTENT FRAME IS NOT OPTIONAL. Declaring `@frame` boxes turns off xhtml2pdf's implicit
+#: single frame, so without `content_frame` the body has nowhere to flow and the render fails —
+#: and `_xhtml2pdf` swallows every exception, so the failure presents as the one-line
+#: "PDF renderer unavailable" fallback rather than as an error. `test_the_real_pdf_engine_runs`
+#: exists to catch precisely that.
+#:
+#: EVERY GEOMETRY NUMBER HERE WAS MEASURED, by rendering a PDF and reading the text back —
+#: none of them is a guess, and none should be nudged without re-running
+#: `test_the_letterhead_survives_a_long_organisation_name`. A static frame whose content
+#: overflows is not clipped or scaled: it is discarded whole, in silence. Three separate
+#: silent losses were found this way during P6-S5 — a 12mm footer swallowing its own text, a
+#: 20mm header swallowing itself the moment a logo appeared, and a long organisation name
+#: doing the same at 32mm. The frames are oversized on purpose.
 _PAGE_CSS = """
-@page { size: A4; margin: 22mm 20mm; }
+@page {
+  size: A4;
+  @frame header_frame { -pdf-frame-content: doc-header;
+                        left: 20mm; top: 10mm; width: 170mm; height: 36mm; }
+  @frame content_frame { left: 20mm; top: 50mm; width: 170mm; height: 213mm; }
+  @frame footer_frame { -pdf-frame-content: doc-footer;
+                        left: 20mm; top: 265mm; width: 170mm; height: 26mm; }
+}
 body { font-family: 'Helvetica','Arial',sans-serif; font-size: 11pt; color: #1a2432; line-height: 1.5; }
 h1 { font-size: 20pt; color: #0E1A2B; margin: 0 0 4pt; }
 h2 { font-size: 15pt; color: #0E1A2B; margin: 16pt 0 4pt; }
 h3 { font-size: 12.5pt; color: #0E1A2B; margin: 12pt 0 3pt; }
-.hdr { border-bottom: 2px solid #0E1A2B; padding-bottom: 8pt; margin-bottom: 16pt; }
+/* A table, not `float:right`. reportlab's float support is partial and the classification
+   chip drifted; a two-cell table lands where it is put on every engine. */
+.hdr { width: 100%; border-bottom: 2px solid #0E1A2B; }
+.hdr td { border: none; padding: 0 0 4pt; vertical-align: bottom; font-size: 10pt; }
 .hdr .org { font-weight: bold; font-size: 13pt; color: #0E1A2B; }
-.hdr .meta { color: #5B6573; font-size: 9pt; }
-.cls { display: inline-block; border: 1px solid #5B6573; color: #5B6573; border-radius: 3pt;
-       padding: 1pt 5pt; font-size: 8pt; letter-spacing: 0.5pt; }
+.hdr .meta { color: #5B6573; font-size: 8.5pt; padding-top: 2pt; }
+.cls { border: 1px solid #5B6573; color: #5B6573; padding: 1pt 5pt;
+       font-size: 8pt; letter-spacing: 0.5pt; }
 code { background: #eef0f2; padding: 1pt 3pt; border-radius: 2pt; font-family: monospace; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #D5D9DE; padding: 4pt 6pt; text-align: left; font-size: 10pt; }
-.foot { margin-top: 20pt; border-top: 1px solid #D5D9DE; padding-top: 6pt;
-        color: #9AA1AB; font-size: 8pt; }
+.foot { border-top: 1px solid #D5D9DE; padding-top: 4pt; color: #9AA1AB; font-size: 8pt; }
+.foot td { border: none; padding: 0; font-size: 8pt; color: #9AA1AB; }
 """
 
 
@@ -415,9 +552,138 @@ def doc_meta(*, title: str, classification: str, version_label: str,
     }
 
 
+#: Matches one `<img …>` in nh3's canonical output, capturing its src.
+_IMG_TAG = re.compile(r'<img\b[^>]*?\bsrc="([^"]*)"[^>]*>', re.I)
+
+#: How many bytes of decoded image one document may embed. xhtml2pdf holds the whole HTML
+#: string AND every decoded image in memory, so this is a real memory figure. An author with
+#: forty large photographs gets a degraded PDF; the worker does not fall over.
+MAX_EMBEDDED_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _embed_images(html: str, resolver) -> str:
+    """Replace every image src with a base64 `data:` URI, or drop the `<img>` entirely.
+
+    **This is what makes the SSRF unreachable rather than merely unlikely.** After this runs,
+    no `<img>` in the document has a src that is not `data:`, so xhtml2pdf's
+    `FileNetworkManager` can only ever dispatch to `B64InlineURI` — a plain `base64.b64decode`.
+    `NetworkFileUri` (which calls `urlopen`) and `LocalFileURI` (which `open()`s any path it is
+    given, an arbitrary-file-read primitive) become unreachable by construction.
+
+    `resolver is None` means DROP EVERY IMAGE. The default is never "leave the URL alone" —
+    a caller with no way to resolve an image must not hand an unresolved one to the renderer.
+
+    Runs on the sanitised body only, and therefore AFTER `sanitize_document_html`. Running it
+    before would mean re-implementing `IMG_SRC_RE` here and maintaining a second security
+    boundary that can drift from the first. It re-matches anyway, as an assertion — but an
+    assertion is never allowed to be the only check.
+
+    A regex rather than lxml: the input is nh3's own output, where attributes are always
+    double-quoted and values always escaped, so the match is exact. Reserialising an HTML
+    body through a second parser would also reflow bytes that the next save writes straight
+    back to a hashed column.
+    """
+    budget = MAX_EMBEDDED_IMAGE_BYTES
+
+    def swap(match: re.Match) -> str:
+        nonlocal budget
+        if resolver is None:
+            return ""
+        found = IMG_SRC_RE.match(match.group(1))
+        if not found:
+            return ""
+        got = resolver(found.group(1))
+        if not got:
+            return ""                      # unknown, wrong tenant, or bytes gone from disk
+        data, mime = got
+        if len(data) > budget:
+            return ""
+        budget -= len(data)
+        uri = f"data:{mime};base64,{base64.b64encode(data).decode()}"
+        return match.group(0).replace(f'src="{match.group(1)}"', f'src="{uri}"', 1)
+
+    return _IMG_TAG.sub(swap, html)
+
+
+#: The box a logo is scaled into, in xhtml2pdf's image units.
+#:
+#: Sized against the 36mm header frame WITH ROOM TO SPARE, measured rather than guessed by
+#: rendering PDFs and reading them back: at 20mm the header vanished entirely, and a 70-char
+#: organisation name still overflowed 32mm. The margin is deliberate, because the failure mode
+#: is silent and total — see `_logo_img`.
+LOGO_BOX_W, LOGO_BOX_H = 130, 30
+
+
+def _logo_img(logo_data_uri: str | None, width: int | None, height: int | None) -> str:
+    """The letterhead logo, sized so it cannot destroy the header.
+
+    **Both of these were found by rendering a real PDF and reading it back, not by reasoning.**
+
+    1. **The image MUST carry explicit `width`/`height` attributes.** Unsized, xhtml2pdf lays
+       it out at its intrinsic pixel size — a 240x120 mark becomes far taller than the 20mm
+       header frame — and an overflowing static frame is discarded ENTIRELY, silently. The
+       symptom is not a squashed logo; it is a document with no letterhead at all, and no
+       error anywhere.
+    2. **No `<br/>` after it.** One line break was enough to push the block past the frame and
+       produce exactly the same silent loss. The logo now sits beside the organisation name,
+       which is where a letterhead usually puts it anyway.
+
+    Falls back to a height-only attribute when the intrinsic size is unknown (Pillow could not
+    read it); that also renders, and keeps the aspect ratio.
+    """
+    if not logo_data_uri:
+        return ""
+    # No escaping: this string is built by `branding.letterhead` from our own vault bytes,
+    # never from anything a user typed. It is base64 of a magic-byte-verified raster.
+    if width and height:
+        scale = min(LOGO_BOX_W / width, LOGO_BOX_H / height, 1.0)
+        size = f' width="{max(1, round(width * scale))}" height="{max(1, round(height * scale))}"'
+    else:
+        size = f' height="{LOGO_BOX_H}"'
+    return f'<img src="{logo_data_uri}"{size} alt="" /> '
+
+
+def _letterhead_html(*, org: str, title: str, classification: str, version_label: str,
+                     status: str, logo_data_uri: str | None,
+                     logo_w: int | None = None, logo_h: int | None = None) -> str:
+    """The two static-frame blocks. Built AFTER the body is sanitised and never passed through
+    the sanitiser — this is our own markup about the tenant, not author input, which is why a
+    logo `<img>` here does not touch the `img` ban in `api/html_sanitize.py`.
+
+    The logo arrives as a `data:` URI. xhtml2pdf routes those to `B64InlineURI`, a plain
+    `base64.b64decode` — no `urlopen`, so this cannot become the server-side fetch that the
+    ban exists to prevent."""
+    logo = _logo_img(logo_data_uri, logo_w, logo_h)
+    # The header's height must be BOUNDED, not merely usually-small. Everything else in this
+    # block is fixed-size; only the organisation name can grow without limit, and a long
+    # enough one wraps the block past the frame and silently deletes the whole letterhead.
+    # Clamping it here costs nothing real: the footer carries the full legal name, in full, on
+    # every single page.
+    header_org = org if len(org) <= 60 else org[:57].rstrip() + "\u2026"
+    return f"""
+<div id="doc-header">
+  <table class="hdr"><tr>
+    <td>{logo}<span class="org">{_html.escape(header_org)}</span>
+        <div class="meta">{_html.escape(title)} &middot; v{version_label}
+        &middot; {status}</div></td>
+    <td align="right"><span class="cls">{_html.escape(classification)}</span></td>
+  </tr></table>
+</div>
+<div id="doc-footer">
+  <table class="foot"><tr>
+    <td>{_html.escape(org)} &middot; {_html.escape(title)} v{version_label} &middot;
+        Classification: {_html.escape(classification)} &middot; This document is controlled;
+        printed copies are uncontrolled.</td>
+    <td align="right">Page <pdf:pagenumber> of <pdf:pagecount></td>
+  </tr></table>
+</div>"""
+
+
 def build_html(*, title: str, body_md: str, classification: str, version_label: str,
                org: str = DEFAULT_ORG, status: str = "DRAFT",
-               content_format: str = "MARKDOWN") -> str:
+               content_format: str = "MARKDOWN",
+               logo_data_uri: str | None = None, image_resolver=None,
+               logo_w: int | None = None, logo_h: int | None = None) -> str:
     # P4-S4: authored content is HTML now, but everything written earlier is markdown and
     # stays that way. Feeding HTML through md_to_html is NOT identity — python-markdown
     # reflows it — so the branch is required, not merely an optimisation.
@@ -434,18 +700,18 @@ def build_html(*, title: str, body_md: str, classification: str, version_label: 
     # xhtml2pdf/files.py), so without this a markdown policy could make *publishing* fetch
     # an author-controlled URL. Sanitising only the HTML branch left that wide open.
     body = sanitize_document_html(body)
+    # Resolve author images to bytes we already hold. Must be AFTER the sanitiser — see
+    # `_embed_images`. Applies to the body only, so the letterhead logo below (which is our
+    # own markup, not author input) is never rescanned.
+    body = _embed_images(body, image_resolver)
+    letterhead = _letterhead_html(org=org, title=title, classification=classification,
+                                  version_label=version_label, status=status,
+                                  logo_data_uri=logo_data_uri, logo_w=logo_w, logo_h=logo_h)
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <style>{_PAGE_CSS}</style></head><body>
-<div class="hdr">
-  <span class="org">{_html.escape(org)}</span>
-  <span class="cls" style="float:right">{_html.escape(classification)}</span>
-  <div class="meta">{_html.escape(title)} &middot; v{version_label} &middot; {status}</div>
-</div>
+{letterhead}
 <h1>{_html.escape(title)}</h1>
 {body}
-<div class="foot">{_html.escape(org)} &middot; {_html.escape(title)} v{version_label}
-&middot; Classification: {_html.escape(classification)} &middot; This document is controlled;
-printed copies are uncontrolled.</div>
 </body></html>"""
 
 
@@ -495,11 +761,20 @@ def _minimal_pdf(title: str) -> bytes:
 
 
 def render_pdf(*, title: str, body_md: str, classification: str, version_label: str,
-               status: str = "DRAFT", content_format: str = "MARKDOWN") -> tuple[bytes, str]:
-    """Return (pdf_bytes, engine_name)."""
+               status: str = "DRAFT", content_format: str = "MARKDOWN",
+               org: str = DEFAULT_ORG, logo_data_uri: str | None = None,
+               image_resolver=None, logo_w: int | None = None,
+               logo_h: int | None = None) -> tuple[bytes, str]:
+    """Return (pdf_bytes, engine_name).
+
+    `org`/`logo_data_uri` come from `api.branding.letterhead()`. Until P6-S5 this function had
+    no `org` parameter at all, so every tenant's export was letterheaded with `DEFAULT_ORG` —
+    the first customer's name. Callers that omit them still get that fallback, which is why
+    `documents.py` must pass them on every path rather than most of them."""
     html = build_html(title=title, body_md=body_md, classification=classification,
                       version_label=version_label, status=status,
-                      content_format=content_format)
+                      content_format=content_format, org=org, logo_data_uri=logo_data_uri,
+                      image_resolver=image_resolver, logo_w=logo_w, logo_h=logo_h)
     for name, fn in (("weasyprint", _weasyprint), ("xhtml2pdf", _xhtml2pdf)):
         data = fn(html)
         if data and data[:4] == b"%PDF":

@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import {
+  CURRENCY_SYMBOLS, FORMAT_OPTIONS, NUMERIC_RE, formatCell, unformatCell,
+} from "../lib/sheetFormat";
 
 /**
  * The spreadsheet-document authoring surface, parallel to `RichTextEditor` — same
@@ -37,6 +40,17 @@ import { useEffect, useRef, useState } from "react";
  */
 
 const ALIGNMENTS = new Set(["left", "center", "right"]);
+/** The number-format picker's id and accessible name.
+ *
+ *  A `tooltip` would be the obvious way to name it and does not work: jspreadsheet renames a
+ *  toolbar item's `tooltip` to `title`, and jSuites only turns THAT into an attribute for
+ *  ICON items — a `select` comes out as a bare `role="combobox"` with no accessible name,
+ *  unusable by a screen reader and unaddressable by a spec. `id` is set before jSuites
+ *  branches on item type, so it survives; the label is applied in `updateState`, the only
+ *  callback holding the element (the toolbar is built asynchronously, so querying for it
+ *  after the constructor returns finds nothing). Both read out of the libraries' sources. */
+const FORMAT_ITEM_ID = "sheet-number-format";
+const FORMAT_ITEM_LABEL = "Number format for this column";
 /** Mirrors `render.MIN_FONT_PT`/`MAX_FONT_PT` — the server rejects anything outside. */
 const MIN_FONT_PT = 6, MAX_FONT_PT = 72;
 
@@ -55,7 +69,84 @@ type StoredSheet = {
    *  wiped by jspreadsheet's own updateCell on the next value change (verified in a browser),
    *  whereas `columns[i].wordWrap` is consulted on every render and survives editing. */
   colWrap: boolean[];
+  /** Per-COLUMN number format — "" | "percent" | "currency:INR" (P6-S4). Per column for the
+   *  same reason, and because jspreadsheet exposes formatting nowhere else: its `render` hook
+   *  takes the COLUMN config as an argument. See lib/sheetFormat.ts. */
+  colFormat: string[];
+  /** Per-CELL reviewer notes (P6-S5b), `{A1: "why this figure is an exception"}`. Per cell,
+   *  unlike wrap and format, because a note is about one cell and jspreadsheet's comment API
+   *  is per cell too. */
+  comments: Record<string, string>;
 };
+
+/**
+ * Format one already-rendered cell in place, stashing the raw value it displaced.
+ *
+ * Called from the column `render` hook, which jspreadsheet invokes immediately after it has
+ * written the cell's own value into `textContent` — so the text found here is the RAW value
+ * (the computed result for a formula), at full precision, and the stash is exact rather than
+ * a re-parse of formatted text.
+ *
+ * That stash is load-bearing on save: `getData(processed)` reads `element.innerHTML`, so once
+ * a cell displays "₹1,234.57" that is what the naive save path would store. `emit` reads
+ * `dataset.raw` instead and keeps the number.
+ */
+function formatInPlace(cell: HTMLElement, fmt: string) {
+  const raw = cell.textContent ?? "";
+  if (!fmt || !NUMERIC_RE.test(raw)) return;
+  cell.dataset.raw = raw;
+  cell.textContent = formatCell(raw, fmt);
+}
+
+/** jspreadsheet's per-column display hook. ONE function serves every column — it reads the
+ *  format off the column config it is handed, so changing a column's format needs no rebind.
+ *  Non-numeric cells are left untouched, which is why this exists instead of the library's
+ *  `mask` option: a mask renders the header "Amount" as a bare "₹" (verified against
+ *  jsuites' `mask.render`), silently destroying the top row of any register. */
+function renderFormattedCell(
+  cell: HTMLElement | null, _value: unknown, _x: number, _y: number,
+  _instance: unknown, colOpts: any,
+) {
+  if (!cell) return;
+  // jspreadsheet has just rewritten textContent, so any previous stash describes a value
+  // that is no longer there.
+  delete cell.dataset.raw;
+  formatInPlace(cell, String(colOpts?.numberFormat ?? ""));
+}
+
+/** Re-format a cell that is already on screen, for the toolbar path — here the STASH is the
+ *  authoritative raw value, because `textContent` currently holds our own formatted text. */
+function reformatInPlace(cell: HTMLElement, fmt: string) {
+  const raw = cell.dataset.raw;
+  if (raw !== undefined) {
+    cell.textContent = raw;
+    delete cell.dataset.raw;
+  }
+  formatInPlace(cell, fmt);
+}
+
+/** One reviewer note, flattened across worksheets for the panel. */
+type CommentEntry = { sheet: string; sheetIndex: number; cell: string; note: string };
+
+/** Every comment in the workbook, in reading order.
+ *
+ *  Reads the LIVE worksheet list rather than the array captured at mount, for the same reason
+ *  `emit` does: a worksheet added through the tab bar is a new instance the original array
+ *  never sees. */
+function collectComments(sheets: any[] | null): CommentEntry[] {
+  if (!sheets?.length) return [];
+  const parent = (sheets[0] as any)?.parent;
+  const live = (parent?.worksheets ?? sheets) as any[];
+  const out: CommentEntry[] = [];
+  live.forEach((inst, i) => {
+    const found = (inst?.getComments?.() ?? {}) as Record<string, string>;
+    const name = String(inst?.options?.worksheetName ?? `Sheet${i + 1}`);
+    for (const [cell, note] of Object.entries(found)) {
+      if (note) out.push({ sheet: name, sheetIndex: i, cell, note });
+    }
+  });
+  return out.sort((a, b) => a.sheetIndex - b.sheetIndex || a.cell.localeCompare(b.cell));
+}
 
 /** "rgb(1, 2, 3)" | "#abc" | "#aabbcc" -> "#aabbcc", or null if it isn't a colour we store.
  *  The server only accepts 3/6-digit hex (`render._COLOUR_RE`), and browsers report computed
@@ -147,11 +238,13 @@ function trimBlankEdges(
   return data.slice(0, lastRow + 1).map((row) => row.slice(0, lastCol + 1));
 }
 
-/** `[true,false,false]` -> `[true]`. Positional, so dropping only the TAIL cannot shift
- *  any column's meaning. */
-function dropTrailingFalse(flags: boolean[]): boolean[] {
+/** `[true,false,false]` -> `[true]`, and `["","percent",""]` -> `["","percent"]`. Positional,
+ *  so dropping only the TAIL cannot shift any column's meaning. Both per-column arrays are
+ *  trimmed for the same reason blank rows are: an untouched 20-column grid would otherwise
+ *  store 20 entries of nothing in every document and every version diff. */
+function dropTrailingEmpty<T extends boolean | string>(flags: T[], blank: T): T[] {
   let last = -1;
-  flags.forEach((f, i) => { if (f) last = i; });
+  flags.forEach((f, i) => { if (f !== blank) last = i; });
   return last < 0 ? [] : flags.slice(0, last + 1);
 }
 
@@ -177,7 +270,8 @@ function readWorkbook(raw: string): StoredSheet[] {
   if (!parsed || typeof parsed !== "object") parsed = {};
 
   const blank = (name: string): StoredSheet =>
-    ({ name, data: [], formulas: {}, style: {}, merges: {}, colWidths: [], colWrap: [] });
+    ({ name, data: [], formulas: {}, style: {}, merges: {}, colWidths: [], colWrap: [],
+       colFormat: [], comments: {} });
 
   if (parsed.version === 2 && Array.isArray(parsed.sheets) && parsed.sheets.length) {
     return parsed.sheets.map((s: any, i: number) => ({
@@ -188,6 +282,8 @@ function readWorkbook(raw: string): StoredSheet[] {
       merges: s?.merges && typeof s.merges === "object" ? s.merges : {},
       colWidths: Array.isArray(s?.colWidths) ? s.colWidths : [],
       colWrap: Array.isArray(s?.colWrap) ? s.colWrap : [],
+      colFormat: Array.isArray(s?.colFormat) ? s.colFormat : [],
+      comments: s?.comments && typeof s.comments === "object" ? s.comments : {},
     }));
   }
 
@@ -221,20 +317,39 @@ async function importWorkbook(file: File): Promise<StoredSheet[]> {
     const ws = wb.Sheets[name];
     const sheet: StoredSheet = {
       name, data: [], formulas: {}, style: {}, merges: {}, colWidths: [], colWrap: [],
+      colFormat: [], comments: {},
     };
     const ref = ws["!ref"];
     if (!ref) return sheet;
     const range = XLSX.utils.decode_range(ref);
+
+    // Column formats FIRST, because they change how the values below are read. Without this
+    // an imported currency column arrived as the text "₹1,234.50" in `data` — it looked
+    // right and was neither sortable, computable, nor re-formattable, which is the exact
+    // defect P6-S4 exists to remove.
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      let fmt = "";
+      for (let r = range.s.r; r <= range.e.r && !fmt; r++) {
+        const cell = ws[XLSX.utils.encode_cell({ r, c })] as any;
+        if (typeof cell?.v === "number") fmt = excelFormatToOurs(cell.z);
+      }
+      sheet.colFormat[c - range.s.c] = fmt;
+    }
+
     for (let r = range.s.r; r <= range.e.r; r++) {
       const row: string[] = [];
       for (let c = range.s.c; c <= range.e.c; c++) {
         const cell = ws[XLSX.utils.encode_cell({ r, c })] as any;
-        // `w` is the formatted text Excel displays; fall back to the raw value.
-        row.push(cell == null ? "" : String(cell.w ?? cell.v ?? ""));
+        // `w` is the formatted text Excel displays; fall back to the raw value. In a
+        // FORMATTED column take `v` instead — we render the symbol ourselves, and taking `w`
+        // there would both duplicate it and turn the number into text.
+        const formatted = sheet.colFormat[c - range.s.c] && typeof cell?.v === "number";
+        row.push(cell == null ? "" : String(formatted ? cell.v : (cell.w ?? cell.v ?? "")));
         if (cell?.f) sheet.formulas[`${colLetter(c - range.s.c)}${r - range.s.r + 1}`] = `=${cell.f}`;
       }
       sheet.data.push(row);
     }
+    sheet.colFormat = dropTrailingEmpty(sheet.colFormat, "");
     for (const m of (ws["!merges"] ?? []) as any[]) {
       const colspan = m.e.c - m.s.c + 1, rowspan = m.e.r - m.s.r + 1;
       if (colspan > 1 || rowspan > 1) {
@@ -246,6 +361,22 @@ async function importWorkbook(file: File): Promise<StoredSheet[]> {
       .map((col) => (col?.wch ? Math.round(col.wch * 7) : 100));
     return sheet;
   });
+}
+
+/** An Excel number-format string -> one of ours, or "" for anything we do not model.
+ *
+ *  Matched on the SYMBOL rather than on Excel's built-in format ids because a real workbook
+ *  spells rupees as `[$₹-en-IN]#,##0.00`, `"₹"#,##0.00` or a locale id depending on where it
+ *  was written, and all three contain the symbol. Anything unrecognised imports as a plain
+ *  number, which is lossless — the author can then pick a format from the toolbar. */
+function excelFormatToOurs(z: unknown): string {
+  const s = typeof z === "string" ? z : "";
+  if (!s) return "";
+  if (s.includes("%")) return "percent";
+  for (const [code, symbol] of Object.entries(CURRENCY_SYMBOLS)) {
+    if (s.includes(symbol)) return `currency:${code}`;
+  }
+  return "";
 }
 
 export function SheetEditor({ value, onChange }: {
@@ -263,6 +394,25 @@ export function SheetEditor({ value, onChange }: {
   // The formula bar's view of the grid: which cell is anchored, and its SOURCE (a formula
   // where there is one, not the computed value — that is the point of a formula bar).
   const [sel, setSel] = useState<{ x: number; y: number; value: string } | null>(null);
+  // Every comment in the workbook, for the panel. Kept in React state rather than read on
+  // render because the grid is a mount-once widget and its DOM is not ours to poll.
+  const [comments, setComments] = useState<CommentEntry[]>([]);
+  const [showComments, setShowComments] = useState(false);
+  /** Select the cell a comment belongs to, switching worksheet first if it is on another.
+   *  A list of notes you cannot navigate from is a list, not a view. */
+  const goToComment = (c: CommentEntry) => {
+    const root = (hostSheets.current?.[0] as any)?.parent;
+    if (root?.getWorksheetActive?.() !== c.sheetIndex) root?.openWorksheet?.(c.sheetIndex);
+    const ws = root?.worksheets?.[c.sheetIndex] ?? hostSheets.current?.[c.sheetIndex];
+    const m = /^([A-Z]+)(\d+)$/.exec(c.cell);
+    if (!ws || !m) return;
+    const x = m[1].split("").reduce((a, ch) => a * 26 + (ch.charCodeAt(0) - 64), 0) - 1;
+    const y = parseInt(m[2], 10) - 1;
+    ws.updateSelectionFromCoords?.(x, y, x, y);
+    (ws.records?.[y]?.[x]?.element as HTMLElement | undefined)
+      ?.scrollIntoView?.({ block: "center" });
+  };
+
   /** Commit the formula bar's text into the anchored cell. `setValueFromCoords(..., true)`
    *  writes the SOURCE, so "=SUM(A1:A2)" stays a live formula rather than literal text. */
   const commitFormulaBar = (next: string) => {
@@ -361,12 +511,18 @@ export function SheetEditor({ value, onChange }: {
           const css = styleToCss(props);
           if (css) style[addr] = css;
         }
-        // `wordWrap` per column is what makes wrapping survive cell edits.
-        const ncols = Math.max(s.colWidths.length, s.colWrap.length);
+        // `wordWrap` per column is what makes wrapping survive cell edits; `render` is what
+        // makes a number format survive them, for the same reason — both are consulted by
+        // jspreadsheet on every render rather than being applied once to the cells present.
+        // `numberFormat` is our own key on the column config: the library passes the whole
+        // config to `render`, so it rides along without needing a closure per column.
+        const ncols = Math.max(s.colWidths.length, s.colWrap.length, s.colFormat.length);
         const columns = ncols
           ? Array.from({ length: ncols }, (_, i) => ({
               width: s.colWidths[i] ?? 100,
               wordWrap: !!s.colWrap[i],
+              numberFormat: s.colFormat[i] ?? "",
+              render: renderFormattedCell,
             }))
           : undefined;
         return {
@@ -389,6 +545,11 @@ export function SheetEditor({ value, onChange }: {
           // the view can never cause us to persist only the visible rows (checked in the
           // library source — the opposite would be silent data loss).
           filters: true,
+          // Explicit, though it is also the default. Until P6-S5b the context menu offered
+          // "Add comments", wrote a native `title` tooltip, and `emit` never read it — so the
+          // note was invisible unless you hovered the exact cell and was silently lost on the
+          // next save. Owning the option is how that stops being an accident.
+          allowComments: true,
           tableOverflow: true,
           tableHeight: "60vh",
           // REQUIRED for horizontal sizing at all. In jspreadsheet's source the overflow
@@ -462,8 +623,32 @@ export function SheetEditor({ value, onChange }: {
           }
 
           const widths = inst.getWidth() as unknown;
+          // Read formats off the LIVE column options — the toolbar picker mutates them.
+          const colOpts = ((inst as any).options?.columns ?? []) as any[];
+          const fmts = colOpts.map((col) => String(col?.numberFormat ?? ""));
+
+          // A formatted column cannot be read out of `shown`: that is `element.innerHTML`,
+          // which now carries OUR rendering ("₹1,234.57"), so storing it would put display
+          // text in `data` and lose the number. Unformatted columns keep the original path
+          // byte for byte, so nothing that predates P6-S4 can drift.
           const data = trimBlankEdges(
-            shown.map((row) => row.map((c) => (c == null ? "" : String(c)))),
+            shown.map((row, r) => row.map((c, x) => {
+              const text = c == null ? "" : String(c);
+              const fmt = fmts[x] || "";
+              if (!fmt) return text;
+              const src = source[r]?.[x];
+              if (typeof src !== "string" || !src.startsWith("=")) {
+                // Not a formula: `options.data` already holds the raw value the user typed,
+                // at full precision, and text (a column header) passes through untouched.
+                return src == null ? "" : String(src);
+              }
+              // A formula's computed value exists ONLY in the DOM, so take the raw value
+              // `renderFormattedCell` stashed before it overwrote the cell. `unformatCell`
+              // is the fallback for a cell that was never re-rendered; it is lossy past two
+              // decimals, which is exactly why the stash is preferred.
+              const stash = (inst as any).records?.[r]?.[x]?.element?.dataset?.raw;
+              return stash !== undefined ? String(stash) : unformatCell(text, fmt);
+            })),
             formulas, style, merges);
           return {
             // Read the name off the live instance — a sheet added or renamed at runtime
@@ -475,14 +660,23 @@ export function SheetEditor({ value, onChange }: {
             colWidths: Array.isArray(widths)
               ? widths.map((w) => Number(w)).filter((w) => Number.isFinite(w) && w > 0) : [],
             // Read wrap off the live column options — the toolbar button mutates them.
-            // Trailing `false`s are dropped for the same reason blank rows are: an
-            // untouched 20-column grid would otherwise store 20 booleans of nothing in
-            // every document and every version diff.
-            colWrap: dropTrailingFalse(
-              (((inst as any).options?.columns ?? []) as any[]).map((col) => !!col?.wordWrap)),
+            colWrap: dropTrailingEmpty(colOpts.map((col) => !!col?.wordWrap), false),
+            colFormat: dropTrailingEmpty(fmts, ""),
+            // `getComments()` scans the cells' `title` attributes, which is where
+            // `setComments` puts them — so this reads what is actually on screen rather than
+            // a parallel bookkeeping object that could drift.
+            comments: (inst.getComments?.() ?? {}) as Record<string, string>,
           };
         });
         onChangeRef.current(JSON.stringify({ version: 2, sheets: book }));
+        setComments(collectComments(sheets));
+      };
+
+      /** Which columns a column-level toolbar control acts on: the selected column headers
+       *  if any, otherwise the column the anchored cell sits in. */
+      const targetColumns = (inst: any): number[] => {
+        const sel: number[] = inst?.getSelectedColumns?.() ?? [];
+        return sel.length ? sel : [(inst?.getSelection?.() ?? [0])[0] ?? 0];
       };
 
       const WRAP_ITEM = {
@@ -491,8 +685,7 @@ export function SheetEditor({ value, onChange }: {
         onclick: (_el: any, _tb: any, itemEl: any) => {
           const inst: any = currentSheet();
           if (!inst) return;
-          const sel: number[] = inst.getSelectedColumns?.() ?? [];
-          const cols = sel.length ? sel : [(inst.getSelection?.() ?? [0])[0] ?? 0];
+          const cols = targetColumns(inst);
           const opts = inst.options;
           opts.columns = opts.columns ?? [];
           // Resolve a mixed selection to ONE outcome from the first column's current state,
@@ -510,9 +703,58 @@ export function SheetEditor({ value, onChange }: {
           emit();
         },
         updateState: (_t: any, _ti: any, itemEl: any, ws: any) => {
-          const sel: number[] = ws?.getSelectedColumns?.() ?? [];
-          const c = sel.length ? sel[0] : (ws?.getSelection?.() ?? [0])[0] ?? 0;
+          const c = targetColumns(ws)[0];
           itemEl?.classList?.toggle("jtoolbar-active", !!ws?.options?.columns?.[c]?.wordWrap);
+        },
+      };
+
+      /**
+       * P6-S4: the column number-format picker — currency (per column, so one workbook can
+       * hold a rupee column beside a dollar one) and percent.
+       *
+       * A `type: "select"` item with NO `content`: jSuites' picker shows a fixed icon when
+       * `content` is set and the CURRENT option's label when it isn't, and a control that
+       * cannot show which format a column already has would be a control that lies. The stock
+       * font-family picker is built the same way, for the same reason.
+       */
+      const FORMAT_ITEM = {
+        type: "select",
+        width: "112px",
+        // `id` rather than `tooltip`: jSuites sets it as an attribute before it branches on
+        // item type, so it is the one handle that survives on a select. See FORMAT_ITEM_ID.
+        id: FORMAT_ITEM_ID,
+        options: FORMAT_OPTIONS.map((f) => f.label),
+        render: (label: string) => `<span class="jss-format-option">${label}</span>`,
+        // (itemEl, picker, value, value2, valueIndex) — index into our own list rather than
+        // matching on the label, which is display copy and free to change.
+        onchange: (_itemEl: any, _picker: any, _v: any, _v2: any, index: any) => {
+          const inst: any = currentSheet();
+          if (!inst) return;
+          const fmt = FORMAT_OPTIONS[Number(index)]?.value ?? "";
+          const opts = inst.options;
+          opts.columns = opts.columns ?? [];
+          for (const c of targetColumns(inst)) {
+            // `render` governs FUTURE renders — including every cell edited from now on, and
+            // every row inserted — which is what makes the format survive editing. Existing
+            // cells need re-formatting now, or nothing visibly changes until each is retyped.
+            opts.columns[c] = { ...(opts.columns[c] ?? {}), numberFormat: fmt,
+                                render: renderFormattedCell };
+            for (const row of inst.records ?? []) {
+              if (row?.[c]?.element) reformatInPlace(row[c].element, fmt);
+            }
+          }
+          emit();
+        },
+        updateState: (_t: any, _ti: any, itemEl: any, ws: any) => {
+          // The only guaranteed handle on this element: jspreadsheet builds its toolbar
+          // asynchronously, so querying for it straight after the constructor returns finds
+          // nothing. See FORMAT_ITEM_ID for why it has no accessible name of its own.
+          itemEl?.setAttribute?.("aria-label", FORMAT_ITEM_LABEL);
+          const fmt = String(ws?.options?.columns?.[targetColumns(ws)[0]]?.numberFormat ?? "");
+          const idx = Math.max(0, FORMAT_OPTIONS.findIndex((f) => f.value === fmt));
+          // One argument, not two: jSuites' `setValue(k, e)` only fires `onchange` when `e`
+          // is passed, and firing it here would re-apply the format on every selection move.
+          itemEl?.picker?.setValue?.(idx);
         },
       };
 
@@ -520,10 +762,10 @@ export function SheetEditor({ value, onChange }: {
       // during mount — hence the null guards on it elsewhere. `hostSheets` is the ref the
       // formula bar reads, populated on the line after the constructor.
       sheets = jspreadsheet(el, {
-        // Append "Wrap text" to the STOCK toolbar rather than replacing it — the default set
-        // (undo/redo, font, size, align, bold, colours, merge, borders, fullscreen) has no
-        // wrap control of its own. `wrap_text` is a Material Icons ligature, which renders
-        // because we self-host that font.
+        // Append "Wrap text" and the number-format picker to the STOCK toolbar rather than
+        // replacing it — the default set (undo/redo, font, size, align, bold, colours, merge,
+        // borders, fullscreen) has neither. `wrap_text` is a Material Icons ligature, which
+        // renders because we self-host that font.
         //
         // NB the declared signature is `(items: ToolbarItem[]) => ToolbarItem[]`, but at
         // RUNTIME jspreadsheet passes `{items: ToolbarItem[]}` and expects that shape back
@@ -531,7 +773,7 @@ export function SheetEditor({ value, onChange }: {
         // same class of mismatch as getData's inverted `processed` flag.
         toolbar: ((arg: any) => {
           const items = Array.isArray(arg) ? arg : (arg?.items ?? []);
-          const next = [...items, WRAP_ITEM];
+          const next = [...items, WRAP_ITEM, { type: "divisor" }, FORMAT_ITEM];
           return Array.isArray(arg) ? next : { ...arg, items: next };
         }) as any,
         tabs: true,         // worksheet tabs + the "add sheet" button
@@ -548,6 +790,7 @@ export function SheetEditor({ value, onChange }: {
           setSel({ x: x1, y: y1, value: String(ws?.getValueFromCoords?.(x1, y1, false) ?? "") });
         },
         onchange: emit, onafterchanges: emit, onchangestyle: emit,
+        oncomments: emit,
         onmerge: emit, onresizecolumn: emit,
         oninsertrow: emit, ondeleterow: emit,
         oninsertcolumn: emit, ondeletecolumn: emit,
@@ -557,6 +800,21 @@ export function SheetEditor({ value, onChange }: {
         worksheets,
       });
       hostSheets.current = sheets;
+
+      // Stored comments must be REPLAYED through `setComments`, not seeded via the worksheet
+      // option. `comments` in the options object is only ever written by `setComments` itself;
+      // nothing reads it at first render, so a seeded workbook would carry the notes in memory
+      // while showing no marker and no tooltip. Read out of the library source, not guessed —
+      // the same class of trap as `wordWrap` and the number-format mask.
+      stored.forEach((sheet, i) => {
+        const entries = Object.entries(sheet.comments ?? {});
+        if (entries.length && sheets?.[i]) {
+          (sheets[i] as any).setComments?.(Object.fromEntries(entries));
+        }
+      });
+      // …and that replay counts as a change, so snapshot AFTER it rather than letting the
+      // first real edit look like it added every comment in the document.
+      setComments(collectComments(sheets));
     })();
 
     return () => {
@@ -599,6 +857,14 @@ export function SheetEditor({ value, onChange }: {
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-b border-bd bg-canvas px-3 py-1.5">
+        {/* P6-S5b: comments existed in the context menu long before there was any way to READ
+            them — they were a native tooltip on one cell, findable only by hovering the exact
+            cell that had one. This is the view. */}
+        <button type="button" onClick={() => setShowComments((v) => !v)}
+          aria-expanded={showComments}
+          className="btn py-1 text-label">
+          Comments{comments.length ? ` (${comments.length})` : ""}
+        </button>
         <label className="btn cursor-pointer py-1 text-label">
           {importing ? "Reading…" : "Import .xlsx / .csv"}
           <input type="file" accept=".xlsx,.xls,.csv" className="hidden" disabled={importing}
@@ -618,6 +884,33 @@ export function SheetEditor({ value, onChange }: {
       {importError && (
         <div role="alert" className="border-b border-bd bg-bad-bg px-3 py-1.5 text-label text-bad">
           Could not import — {importError}.
+        </div>
+      )}
+      {showComments && (
+        <div role="region" aria-label="Cell comments"
+          className="max-h-56 overflow-auto border-b border-bd bg-paper px-3 py-2">
+          {comments.length === 0 ? (
+            <p className="text-caption text-txt3">
+              No comments yet. Right-click a cell and choose “Add comments” to leave a note for
+              whoever reviews this.
+            </p>
+          ) : (
+            <ul className="space-y-1">
+              {comments.map((c) => (
+                <li key={`${c.sheetIndex}:${c.cell}`}>
+                  <button type="button" onClick={() => goToComment(c)}
+                    className="flex w-full items-baseline gap-2 rounded px-1 py-0.5 text-left
+                               hover:bg-canvas">
+                    <span className="shrink-0 font-mono text-caption font-semibold text-txt2">
+                      {comments.some((o) => o.sheetIndex !== c.sheetIndex)
+                        ? `${c.sheet}!${c.cell}` : c.cell}
+                    </span>
+                    <span className="text-label text-txt">{c.note}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
       <div ref={host} />

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../lib/api";
-import { useCan } from "../lib/auth";
+import { useAuth, useCan } from "../lib/auth";
+import { OrgLogo } from "../components/Avatar";
 import { DocBody } from "../components/DocBody";
 import { RichTextEditor } from "../components/RichTextEditor";
 import { SheetEditor } from "../components/SheetEditor";
@@ -15,6 +16,40 @@ type Version = {
   /** Server-rendered HTML for the editor; present on open_version only. See the Editor. */
   editor_html?: string;
 };
+/**
+ * What the PDF and Word exports will actually be letterheaded with (P6-S5b).
+ *
+ * The org logo has driven every export header since P6-S5, but the only place to set it is
+ * Admin → Organisation — nowhere near a document, so the natural question standing on this
+ * page ("where do I set the header?") had no visible answer. This is the answer: the mark and
+ * the name that will be printed, and a way to reach the setting.
+ *
+ * Deliberately not a new setting of its own. There is one organisation identity and it is
+ * already editable; adding a second place to configure the same thing would create two
+ * sources of truth for what a controlled document says it belongs to.
+ */
+function Letterhead() {
+  const { user } = useAuth();
+  const can = useCan();
+  const org = user?.organisations?.find((o) => o.tenant_id === user?.tenant_id)?.name;
+  const body = (
+    <>
+      <OrgLogo name={org} size="xs" />
+      <span className="text-caption text-txt3">Letterhead · {org ?? "your organisation"}</span>
+    </>
+  );
+  const title = "Printed at the top of every page of the PDF and Word exports"
+    + (can("org", "edit") ? " — click to change the logo" : "");
+  return can("org", "edit") ? (
+    <Link to="/admin" title={title} aria-label={title}
+      className="ml-auto flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-canvas">
+      {body}
+    </Link>
+  ) : (
+    <span title={title} className="ml-auto flex items-center gap-1.5">{body}</span>
+  );
+}
+
 type Decision = { approver_person_id: string; full_name: string; state: string; comment: string | null };
 type Approval = {
   id: string; threshold_required: number; status: string; approved: number;
@@ -116,7 +151,7 @@ function Editor({ docId, version, onSaveStateChange }:
     <div onBlur={() => { if (dirty) save.mutate(latest.current); }}>
       {isSheet
         ? <SheetEditor value={content} onChange={setContent} />
-        : <RichTextEditor value={content} onChange={setContent} />}
+        : <RichTextEditor value={content} onChange={setContent} docId={docId} />}
       <input value={changelog} onChange={(e) => setChangelog(e.target.value)}
         aria-label="Changelog" placeholder="Changelog — what changed in this version?"
         className={inputCls + " mt-4"} />
@@ -769,6 +804,7 @@ export default function DocumentDetail() {
               review {doc.next_review_at.slice(0, 10)}
             </span>)}
           {editable && <SaveIndicator state={saveState} error={saveErr} />}
+          <Letterhead />
         </div>
       </header>
 

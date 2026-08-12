@@ -35,7 +35,8 @@ from docx.oxml.shared import OxmlElement
 from docx.shared import Mm, Pt, RGBColor
 from lxml import html as lhtml
 
-from api import render
+from api import imagefile, render
+from api.html_sanitize import IMG_SRC_RE
 
 #: Style names verified present on a default python-docx Document(); `tests/test_docx_export.py`
 #: re-checks this so an upgrade that renames one fails loudly instead of raising KeyError in
@@ -107,8 +108,9 @@ def _text(el) -> str:
 class _Walker:
     """Recursive HTML -> python-docx emitter over the sanitiser's tag set."""
 
-    def __init__(self, doc):
+    def __init__(self, doc, image_resolver=None):
         self.doc = doc
+        self.image_resolver = image_resolver
         self._abstract: dict[str, str | None] = {}
 
     # ---- inline ----
@@ -152,11 +154,53 @@ class _Walker:
             elif tag == "code":
                 self._inline(par, child, {**marks, "code": True})
             elif tag == "img":
-                # never fetched — see api.html_sanitize on why img is off the allow-list
-                self._run(par, f"[image omitted: {child.get('alt') or 'image'}]", marks)
+                if not self._picture(par, child):
+                    self._run(par, f"[image omitted: {child.get('alt') or 'image'}]", marks)
             else:
                 self._inline(par, child, marks)
             self._run(par, child.tail or "", marks)
+
+    #: The usable text width from `_page_setup`: A4 minus 20mm each side.
+    _MAX_PICTURE_MM = 170
+
+    def _picture(self, par, el) -> bool:
+        """Embed one image, or return False so the caller writes the placeholder instead.
+
+        **Nothing is ever fetched.** The src is matched against `html_sanitize.IMG_SRC_RE` and
+        the id handed to the injected resolver, which reads bytes we already hold, scoped to
+        the tenant. A remote URL never matches, so the pre-P6-S5 promise — that a Word export
+        cannot be turned into a server-side fetch — is unchanged.
+
+        Fails soft on anything odd: python-docx raises for formats it cannot parse (it has no
+        WebP support at all, hence `to_docx_safe`) and for corrupt bytes, and one strange
+        picture must not cost the author the whole export.
+        """
+        if self.image_resolver is None:
+            return False
+        found = IMG_SRC_RE.match(el.get("src") or "")
+        if not found:
+            return False
+        got = self.image_resolver(found.group(1))
+        if not got:
+            return False
+        data, mime = got
+        try:
+            width_px = int(el.get("width") or 0)
+        except ValueError:
+            width_px = 0
+        # CSS pixels are 1/96in; Word wants a real measure. Clamped to the text column so a
+        # 4000px screenshot cannot run off the page.
+        width_mm = min(width_px * 25.4 / 96, self._MAX_PICTURE_MM) if width_px else None
+        try:
+            run = par.add_run()
+            if width_mm:
+                run.add_picture(io.BytesIO(imagefile.to_docx_safe(data, mime)),
+                                width=Mm(width_mm))
+            else:
+                run.add_picture(io.BytesIO(imagefile.to_docx_safe(data, mime)))
+            return True
+        except Exception:
+            return False
 
     def _para(self, el, style: str = "Normal", marks: dict | None = None):
         par = self.doc.add_paragraph(style=style)
@@ -323,7 +367,8 @@ class _Walker:
             self._para(el)
 
 
-def _page_setup(doc, meta: dict) -> None:
+def _page_setup(doc, meta: dict, logo: bytes | None = None,
+                logo_mime: str | None = None) -> None:
     """A4 with the PDF's margins — python-docx defaults to US Letter."""
     sec = doc.sections[0]
     sec.page_width, sec.page_height = Mm(210), Mm(297)
@@ -331,7 +376,19 @@ def _page_setup(doc, meta: dict) -> None:
     sec.top_margin = sec.bottom_margin = Mm(22)
 
     head = sec.header.paragraphs[0]
-    head.text = f"{meta['org']}\t{meta['classification']}"
+    # Runs, not `head.text = …`. Assigning `.text` REPLACES every run in the paragraph, so it
+    # would silently delete the logo picture added just before it — the kind of change that
+    # looks harmless in a diff and produces a Word file with no logo.
+    if logo:
+        try:
+            head.add_run().add_picture(
+                io.BytesIO(imagefile.to_docx_safe(logo, logo_mime)), height=Mm(7))
+            head.add_run("  ")
+        except Exception:
+            # A bad logo must never fail a policy export. Same fail-soft discipline the rest
+            # of this module applies to odd markup: degrade to the text-only header.
+            pass
+    head.add_run(f"{meta['org']}\t{meta['classification']}")
     foot = sec.footer.paragraphs[0]
     foot.text = meta["footer_line"]
     for par in (head, foot):
@@ -345,7 +402,9 @@ def _page_setup(doc, meta: dict) -> None:
 
 def render_docx(*, title: str, body_html: str, classification: str, version_label: str,
                 org: str = render.DEFAULT_ORG, status: str = "DRAFT",
-                content_format: str = "MARKDOWN") -> bytes:
+                content_format: str = "MARKDOWN",
+                logo: bytes | None = None, logo_mime: str | None = None,
+                image_resolver=None) -> bytes:
     """Render one document version as a .docx. Always on the fly; nothing is persisted."""
     # pre-S4 versions hold markdown; convert so they export as headings rather than "# x"
     html = body_html or ""
@@ -359,12 +418,12 @@ def render_docx(*, title: str, body_html: str, classification: str, version_labe
     meta = render.doc_meta(title=title, classification=classification,
                            version_label=version_label, org=org, status=status)
     doc = Document()
-    _page_setup(doc, meta)
+    _page_setup(doc, meta, logo, logo_mime)
 
     doc.add_paragraph(meta["header_line"], style="Caption")
     doc.add_paragraph(title, style="Title")
 
-    walker = _Walker(doc)
+    walker = _Walker(doc, image_resolver)
     root = lhtml.fragment_fromstring(html, create_parent="div")
     for el in root:
         if isinstance(el.tag, str):

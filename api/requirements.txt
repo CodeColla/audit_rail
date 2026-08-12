@@ -29,6 +29,17 @@ nh3>=0.2
 # DOCX export, alongside the existing PDF. lxml comes in via xhtml2pdf and parses the HTML.
 python-docx>=1.1
 
+# P6-S5: documents can carry images. Pillow arrives via xhtml2pdf anyway, but `api/imagefile.py`
+# now imports it DIRECTLY — to read an image's dimensions (a letterhead logo without explicit
+# width/height overflows the PDF's static header frame and silently deletes the whole
+# letterhead) and to transcode WebP to PNG, which python-docx cannot read at all. A direct
+# import deserves a direct pin rather than depending on another package's transitive choice.
+Pillow>=10.0
+
 # Dev/test
 pytest>=8.0
 httpx>=0.28          # Starlette TestClient
+# pypdf is a hard dependency of xhtml2pdf, so it is always present wherever the renderer is.
+# Named here because the render tests READ published PDFs back — a static frame that overflows
+# is dropped in silence, and text extraction is the only thing that catches it.
+pypdf>=3.1

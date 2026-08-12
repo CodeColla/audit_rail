@@ -79,13 +79,78 @@ def test_hostile_input_is_stripped(label, html, forbidden):
     assert forbidden not in clean(html), f"{label} survived sanitisation"
 
 
-def test_images_are_rejected_entirely():
-    """`img` is off the allow-list on purpose: xhtml2pdf resolves image URLs with a
-    server-side urlopen() when a version is published, so a remote src would make
-    publishing an SSRF primitive. If you re-add `img`, you must add an src filter — and
-    this test must be rewritten deliberately, not deleted."""
-    assert "<img" not in clean('<p><img src="https://evil.test/x.png" alt="a"></p>')
-    assert "<img" not in clean('<img src="/api/files/1/raw">')
+#: A well-formed `files.id` and the one URL shape that may carry it.
+_UID = "0a5f2b1c-1111-2222-3333-444455556666"
+_OK_SRC = f"/api/documents/images/{_UID}"
+
+
+def test_only_our_own_image_urls_survive():
+    """Rewritten deliberately in P6-S5, as `test_images_are_rejected_entirely` instructed.
+
+    `img` was off the allow-list entirely because xhtml2pdf resolves image URLs with a
+    server-side `urlopen()` at publish time, so a remote src made publishing an SSRF
+    primitive. The ban is now narrower, not gone: `IMG_SRC_RE` admits exactly one URL shape —
+    this app's own image route — and `URL_SCHEMES` is untouched.
+
+    Every row below is a way people get this wrong. The `\\n` case is not hypothetical: it
+    survived the first version of the regex, because Python's `$` also matches before a
+    trailing newline, so an anchored-looking pattern was not anchored."""
+    assert "<img" in clean(f'<p><img src="{_OK_SRC}" alt="diagram"></p>')
+
+    for label, src in [
+        ("remote https",       "https://evil.test/x.png"),
+        ("protocol relative",  "//evil.test/x.png"),
+        ("javascript",         "javascript:alert(1)"),
+        ("data uri",           "data:image/png;base64,AAAA"),
+        ("file scheme",        "file:///etc/passwd"),
+        ("path traversal",     "/api/documents/images/../../../etc/passwd"),
+        ("query smuggle",      f"{_OK_SRC}?x=https://evil.test"),
+        ("fragment smuggle",   f"{_OK_SRC}#x"),
+        ("trailing newline",   f"{_OK_SRC}\n"),
+        ("trailing space",     f"{_OK_SRC} "),
+        ("uppercase uuid",     f"/api/documents/images/{_UID.upper()}"),
+        ("uppercase path",     f"/API/DOCUMENTS/IMAGES/{_UID}"),
+        ("another route",      f"/api/evidence/{_UID}/file"),
+        ("suffix after uuid",  f"{_OK_SRC}/../../x"),
+    ]:
+        out = clean(f'<p><img src="{src}" alt="a"></p>')
+        assert "<img" not in out, f"{label} survived: {out}"
+        assert "evil.test" not in out and "passwd" not in out
+
+
+def test_a_refused_image_leaves_no_element_behind():
+    """nh3 can drop an ATTRIBUTE from a filter but not an ELEMENT, so a foreign image would
+    survive as a bare srcless `<img>`. Inert, but "no foreign image survives in any form" is a
+    much easier invariant to keep true than "it survives but is harmless" — and it keeps every
+    older `"<img" not in html` assertion meaning what it says."""
+    assert clean('<p><img src="https://evil.test/x.png"></p>') == "<p></p>"
+    assert "<img" not in clean("<p><img alt=\"no src at all\"></p>")
+
+
+def test_image_dimensions_are_bounded():
+    """These land in the PDF layout; `width="99999999"` is a way to make a published policy
+    unreadable."""
+    for good in ("1", "640", "9999"):
+        assert f'width="{good}"' in clean(f'<p><img src="{_OK_SRC}" width="{good}"></p>')
+    for bad in ("0", "-5", "99999", "1e3", "640px", "640\n"):
+        assert "width=" not in clean(f'<p><img src="{_OK_SRC}" width="{bad}"></p>')
+
+
+def test_url_schemes_must_not_be_widened_for_images():
+    """The obvious wrong fix, asserted against directly: images are admitted by an anchored
+    src match, never by teaching the sanitiser a new scheme. `data:` in URL_SCHEMES would
+    also apply to `<a href>`, which is a stored-XSS vector."""
+    from api.html_sanitize import URL_SCHEMES
+
+    assert URL_SCHEMES == {"http", "https", "mailto"}
+
+
+def test_an_image_survives_a_second_pass_unchanged():
+    """`_clean` runs on every save and `build_html` sanitises again at render time, so a
+    document that keeps being edited must not lose its pictures to repeated cleaning."""
+    once = clean(f'<p><img src="{_OK_SRC}" alt="d" title="t" width="640" height="480"></p>')
+    assert clean(once) == once
+    assert "<img" in once
 
 
 def test_safe_links_keep_href_and_gain_rel():

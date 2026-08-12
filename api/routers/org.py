@@ -23,42 +23,20 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from fastapi.responses import FileResponse
 from sqlalchemy import insert, select, update
 
-from api import activity, storage
+from api import activity, imagefile, storage
 from api.auth import Principal, get_current_user
 from api.database import engine, get_conn, t
+from api.imagefile import MAX_LOGO_MB
 from api.permissions import require
 from api.util import now_iso
 
 router = APIRouter(prefix="/org", tags=["org"])
 
-#: A logo is chrome, not evidence. 2 MB is generous for a raster mark and keeps a 40 MB
-#: "logo" out of the vault and out of every page load.
-MAX_LOGO_MB = 2
-
-#: magic bytes -> mime. Checked against the file's actual first bytes.
-_SIGNATURES: list[tuple[bytes, str]] = [
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-]
-
-
-def _sniff(data: bytes) -> str:
-    """The real format, from the bytes. Returns the mime type or raises a 400 saying why."""
-    for sig, mime in _SIGNATURES:
-        if data.startswith(sig):
-            return mime
-    # WebP is RIFF....WEBP — the marker sits at offset 8, so it needs its own check.
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    head = data[:400].lstrip().lower()
-    if head.startswith(b"<?xml") or head.startswith(b"<svg"):
-        raise HTTPException(400, "SVG logos are not accepted — an SVG can carry scripts and "
-                                 "this image is rendered inside the app. Please upload a PNG, "
-                                 "JPEG or WebP.")
-    raise HTTPException(400, "that does not look like an image — please upload a PNG, JPEG "
-                             "or WebP file")
+# P6-S5: the magic-byte sniffer and the size caps moved to `api/imagefile.py` when document
+# images started needing exactly the same gate. Nothing about the behaviour changed — the same
+# formats, the same refusals, the same 400 messages — so `tests/test_org_logo.py` still passes
+# unedited, which is what proves the move was a move and not a rewrite.
+_sniff = imagefile.sniff
 
 
 @router.put("/logo")

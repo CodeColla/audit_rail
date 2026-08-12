@@ -12,6 +12,7 @@ import io
 import re
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 
@@ -338,6 +339,23 @@ def build_sheet_workbook(title: str, content: str) -> bytes:
                                and sheet["colWrap"][c - 1])
                 if props or wrapped:
                     _apply_style(cell, props or {}, wrap=wrapped)
+                # A formatted column travels as a NUMBER carrying an Excel number format,
+                # never as pre-formatted text: "₹1,234.50" as a string is unsortable and
+                # uncomputable, which defeats the point of exporting a working copy. Applied
+                # only where the cell really is numeric or a formula, mirroring
+                # `render.format_cell_value` leaving text alone — so a "Amount" header in a
+                # currency column stays plain.
+                fmts = sheet.get("colFormat") or []
+                number_format = _number_format(fmts[c - 1] if c - 1 < len(fmts) else "")
+                if number_format and (formula or isinstance(cell.value, (int, float))):
+                    cell.number_format = number_format
+                # A reviewer's note becomes a real Excel comment (P6-S5b), not a suffix on the
+                # value — so it stays a note rather than becoming part of the data, and Excel
+                # shows it the same way it shows its own.
+                note = (sheet.get("comments") or {}).get(
+                    f"{render._col_letter(c - 1)}{r}")
+                if note:
+                    cell.comment = Comment(note, "audit_rail")
 
         for addr, span in sheet["merges"].items():
             m = re.match(r"^([A-Z]+)(\d+)$", addr)
@@ -359,6 +377,24 @@ def build_sheet_workbook(title: str, content: str) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _number_format(fmt: str) -> str | None:
+    """Our column format -> an Excel number-format string (P6-S4).
+
+    `0.00%` multiplies by 100 on display, which is why `render.format_cell_value` treats a
+    stored percent as a ratio: any other choice would make the .xlsx and the PDF show
+    different numbers for the same cell. The currency symbol is quoted so Excel treats it as
+    a literal rather than trying to parse it as a format token."""
+    from api import render  # noqa: PLC0415 — same circular-import dodge as the caller
+
+    if fmt == "percent":
+        return "0.00%"
+    if fmt.startswith("currency:"):
+        symbol = render.CURRENCY_SYMBOLS.get(fmt.split(":", 1)[1])
+        if symbol:
+            return f'"{symbol}"#,##0.00'
+    return None
 
 
 def _coerce(value: str):

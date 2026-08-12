@@ -27,11 +27,12 @@ import secrets
 import uuid
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete, func, insert, select, text, update
 
-from api import activity, docx_export, render, storage, vocabularies, xlsx_io
+from api import (activity, branding, docx_export, imagefile, render, storage,
+                 vocabularies, xlsx_io)
 from api.auth import Principal
 from api.html_sanitize import sanitize_document_html
 from api.permissions import require
@@ -117,12 +118,46 @@ def _disposition(disposition: str, filename: str) -> str:
             f"filename*=UTF-8''{quote(clean, safe='')}")
 
 
+def image_resolver(conn, tenant_id: str):
+    """`file_id -> (bytes, mime)` for images this tenant owns, or `None`. Injected into
+    `render.build_html` and `docx_export.render_docx` so neither has to import a database.
+
+    **The tenant predicate is not belt-and-braces, it is the control.** The MARKDOWN branch of
+    a document is stored UNSANITISED on purpose (`_clean` leaves it alone, because rewriting
+    the bytes would move `content_sha256`, which backs the e-signature), so an author can
+    hand-write `![](/api/documents/images/<another-tenant's-uuid>)` and have it arrive here.
+    Looking the id up by itself would embed another organisation's bytes into a published,
+    frozen, signed PDF. `purpose` does the same job across modules — see `db/schema.sql`.
+    """
+    files = t("files")
+
+    def resolve(file_id: str):
+        row = conn.execute(
+            select(files.c.storage_key, files.c.mime_type).where(
+                files.c.id == file_id, files.c.tenant_id == tenant_id,
+                files.c.purpose == "DOC_IMAGE")).mappings().first()
+        if row is None:
+            return None
+        try:
+            return storage.path_for(row["storage_key"]).read_bytes(), \
+                row["mime_type"] or "image/png"
+        except (OSError, ValueError):
+            # A vanished blob must degrade to "no image", never to a failed export.
+            return None
+
+    return resolve
+
+
 def _render_and_store(conn, user: Principal, doc: dict, ver: dict) -> str:
     """Render the version to PDF, save it to the vault, return the new file_id."""
+    brand = branding.letterhead(conn, user.tenant_id)
     pdf, _engine = render.render_pdf(
         title=doc["title"], body_md=ver["content"] or "",
         classification=doc["classification"], version_label=ver["version_label"],
-        status="PUBLISHED", content_format=ver["content_format"])
+        status="PUBLISHED", content_format=ver["content_format"],
+        org=brand["org"], logo_data_uri=brand["logo_data_uri"],
+        logo_w=brand["width"], logo_h=brand["height"],
+        image_resolver=image_resolver(conn, user.tenant_id))
     key, sha, size = storage.save(user.tenant_id, pdf,
                                   f"{doc['title']}-v{ver['version_label']}.pdf")
     file_id = str(uuid.uuid4())
@@ -178,8 +213,86 @@ def _validate_sheet(content: str | None, fmt: str) -> None:
         raise HTTPException(400, f"invalid spreadsheet content: {e}") from e
 
 
-# Declared before /{doc_id} on purpose — FastAPI matches in order, and otherwise "types"
+# ------------------------------------------------------------------ inline images (P6-S5)
+
+@router.post("/{doc_id}/images", status_code=201)
+async def upload_document_image(doc_id: str, file: UploadFile = File(...),
+                                user: Principal = Depends(require("documents", "edit"))):
+    """Take an image into the vault so a document can reference it.
+
+    The bytes are gated by `imagefile.sniff` — magic bytes, not the filename and not the
+    browser's `Content-Type`, both of which the uploader controls — and the SNIFFED type is
+    what gets stored. SVG is refused with a reason: it is executable markup, and this image is
+    rendered inside the app and walked by the export code.
+
+    `purpose='DOC_IMAGE'` is what lets the serving route below authorise safely; see the note
+    on `files` in db/schema.sql for the cross-module read it prevents.
+    """
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "that file is empty")
+    if len(data) > imagefile.MAX_IMAGE_MB * 1024 * 1024:
+        raise HTTPException(413, f"an image must be under {imagefile.MAX_IMAGE_MB} MB")
+    mime = imagefile.sniff(data)
+
+    with engine.begin() as conn:
+        _require_active(_doc(conn, user, doc_id))
+        # The extension comes from the SNIFFED mime, never from the upload's filename: a
+        # pasted screenshot arrives as "image.png" or nameless, and a hostile one arrives as
+        # "invoice.pdf.png". `storage.save` takes its suffix from whatever it is handed.
+        key, sha, size = storage.save(
+            user.tenant_id, data, f"image{imagefile.EXTENSIONS.get(mime, '.bin')}")
+        file_id = str(uuid.uuid4())
+        conn.execute(insert(t("files")).values(
+            id=file_id, tenant_id=user.tenant_id, storage_key=key,
+            original_name=file.filename or "image", mime_type=mime,
+            size_bytes=size, sha256=sha, purpose="DOC_IMAGE",
+            uploaded_by_member_id=_member_id(conn, user.tenant_id, user.user_id),
+            created_at=now_iso()))
+
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="document.image_added", entity_type="document", entity_id=doc_id,
+                 detail={"file_id": file_id, "mime_type": mime, "size_bytes": size})
+    # `url` is returned rather than assembled in the browser so exactly one place in the
+    # system decides the shape `html_sanitize.IMG_SRC_RE` will accept.
+    return {"file_id": file_id, "url": f"/api/documents/images/{file_id}",
+            "mime_type": mime, "size_bytes": size, **imagefile.dimensions(data)}
+
+
+# Declared before /{doc_id} on purpose — FastAPI matches in order, and otherwise "images"
 # would be read as a document id.
+@router.get("/images/{file_id}")
+def get_document_image(file_id: str,
+                       user: Principal = Depends(require("documents", "view")),
+                       conn=Depends(get_conn)):
+    """Serve one document image to a member of the tenant that owns it.
+
+    **`purpose == 'DOC_IMAGE'` is load-bearing, not tidiness.** `files` is a shared vault:
+    evidence uploads, contracts, asset photos, templates and published PDFs all live in it,
+    and most of those routes store `file.content_type` — the value the browser claimed. Without
+    this predicate, anyone holding `documents.view` could read any file in the tenant through
+    this route, and an uploader could steer it by lying about a content type. With it, this
+    route can only ever reach rows its own sniffing upload path created.
+
+    404 rather than 403 for someone else's id: a 403 confirms the file exists.
+    """
+    files = t("files")
+    row = conn.execute(
+        select(files.c.storage_key, files.c.mime_type).where(
+            files.c.id == file_id, files.c.tenant_id == user.tenant_id,
+            files.c.purpose == "DOC_IMAGE")).mappings().first()
+    if row is None:
+        raise HTTPException(404, "image not found")
+    path = storage.path_for(row["storage_key"])
+    if not path.exists():
+        raise HTTPException(410, "image missing from storage")
+    # Cached hard, unlike the org logo: an image inside a version is immutable — a published
+    # version is frozen, and a draft edit produces a new file id rather than new bytes.
+    return FileResponse(path, media_type=row["mime_type"] or "image/png",
+                        headers={"Content-Disposition": 'inline; filename="image"',
+                                 "Cache-Control": "private, max-age=3600"})
+
+
 @router.get("/types")
 def document_types(user: Principal = Depends(require("documents", "view"))):
     """The document types the database will actually accept.
@@ -642,10 +755,14 @@ def render_version(doc_id: str, version_id: str,
             data = path.read_bytes()
             return Response(data, media_type="application/pdf", headers=headers)
     # draft preview → render on the fly
+    brand = branding.letterhead(conn, user.tenant_id)
     pdf, _ = render.render_pdf(title=doc["title"], body_md=v["content"] or "",
                                classification=doc["classification"],
                                version_label=v["version_label"], status=v["status"],
-                               content_format=v["content_format"])
+                               content_format=v["content_format"],
+                               org=brand["org"], logo_data_uri=brand["logo_data_uri"],
+                               logo_w=brand["width"], logo_h=brand["height"],
+                               image_resolver=image_resolver(conn, user.tenant_id))
     return Response(pdf, media_type="application/pdf", headers=headers)
 
 
@@ -666,10 +783,13 @@ def render_version_docx(doc_id: str, version_id: str,
         dv.c.id == version_id, dv.c.document_id == doc_id)).mappings().first()
     if v is None:
         raise HTTPException(404, "version not found")
+    brand = branding.letterhead(conn, user.tenant_id)
     data = docx_export.render_docx(
         title=doc["title"], body_html=v["content"] or "",
         classification=doc["classification"], version_label=v["version_label"],
-        status=v["status"], content_format=v["content_format"])
+        status=v["status"], content_format=v["content_format"],
+        org=brand["org"], logo=brand["logo"], logo_mime=brand["logo_mime"],
+        image_resolver=image_resolver(conn, user.tenant_id))
     return Response(data, media_type=DOCX_MIME, headers={
         "Content-Disposition": _disposition(
             disposition, f'{doc["title"][:80]} v{v["version_label"]}.docx')})

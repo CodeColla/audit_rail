@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import re
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import insert, select, text, update
 
+from api import storage
 from api.database import engine, t
+from api.html_sanitize import IMG_SRC_RE
 from api.util import StrictModel, now_iso
 
 router = APIRouter(prefix="/sign", tags=["signing"])
@@ -59,6 +63,22 @@ def _client_ip(request: Request) -> str | None:
         return None
 
 
+def _images_for_token(content: str, token: str) -> str:
+    """Point every image src at the token-scoped route, for the logged-out signing page.
+
+    Done here, server-side, rather than in the browser: `Sign.tsx` is built on bare `fetch`
+    with no bearer token — deliberately, so a signer needs no account — and the app's normal
+    image path is a blob fetch through the axios instance, whose 401 interceptor would bounce
+    a signer to the login screen. Rewriting the src means that page needs no image code at
+    all: a plain `<img>` on an unauthenticated route just works.
+
+    Only the exact shape `html_sanitize` already accepted is rewritten, so this cannot invent
+    a URL that was not in the frozen content.
+    """
+    return re.sub(r'(?<=src=")/api/documents/images/([0-9a-f-]{36})(?=")',
+                  lambda m: f"/api/sign/{token}/images/{m.group(1)}", content)
+
+
 def _load_attestation(conn, tok):
     """The signature row + its version, document and person, from an ATTEST token."""
     ds, dv, d, ppl = (t("document_signatures"), t("document_versions"),
@@ -91,9 +111,59 @@ def sign_page(token: str):
             "classification": doc["classification"], "version_label": ver["version_label"],
             # the public page is the second place content is rendered; without the format
             # an HTML version would show its tags as literal text on the attestation screen
-            "content": ver["content"] or "", "content_format": ver["content_format"],
+            "content": _images_for_token(ver["content"] or "", token),
+            "content_format": ver["content_format"],
             "consent_text": tok["consent_text"],
             "signer_name": person["full_name"], "signer_email": person["email"]}
+
+
+@router.get("/{token}/images/{file_id}")
+def sign_page_image(token: str, file_id: str):
+    """One image out of the policy this token is for — to somebody with no account (P6-S5).
+
+    The signing page is deliberately logged out: a field engineer opens a link and reads the
+    policy they are being asked to attest to. If its diagrams did not load, they would be
+    signing something they cannot see, which defeats the point of the attestation.
+
+    **The `file_id in content` check is the whole security of this route.** Scoping to the
+    token's tenant is not enough: without it, any live attestation link becomes a read of
+    every document image in the organisation. Requiring the id to appear in THIS version's
+    frozen content means the link grants exactly what the signer was already shown, and
+    nothing else.
+
+    Read-only, like `sign_page` — looking at a picture must not consume the signature token.
+    """
+    st, files = t("signing_tokens"), t("files")
+    with engine.connect() as conn:
+        tok = conn.execute(select(st).where(st.c.token_hash == _hash(token))).mappings().first()
+        if tok is None:
+            raise HTTPException(404, "This signing link is not valid.")
+        state = _token_state(tok)
+        if state != "LIVE":
+            raise HTTPException(410, _GONE.get(state, "This link is no longer valid."))
+        if tok["purpose"] != "ATTEST":
+            raise HTTPException(400, "This link is not an attestation link.")
+        _sig, ver, _doc, _person = _load_attestation(conn, tok)
+        if ver["status"] != "PUBLISHED":
+            raise HTTPException(410, "This version has been superseded — ask for a fresh "
+                                     "signing link.")
+        if not IMG_SRC_RE.match(f"/api/documents/images/{file_id}"):
+            raise HTTPException(404, "image not found")
+        if f"/api/documents/images/{file_id}" not in (ver["content"] or ""):
+            raise HTTPException(404, "image not found")
+        row = conn.execute(
+            select(files.c.storage_key, files.c.mime_type).where(
+                files.c.id == file_id, files.c.tenant_id == tok["tenant_id"],
+                files.c.purpose == "DOC_IMAGE")).mappings().first()
+    if row is None:
+        raise HTTPException(404, "image not found")
+    path = storage.path_for(row["storage_key"])
+    if not path.exists():
+        raise HTTPException(410, "image missing from storage")
+    # `private`, and short: the token expires, and a shared browser cache must not outlive it.
+    return FileResponse(path, media_type=row["mime_type"] or "image/png",
+                        headers={"Content-Disposition": 'inline; filename="image"',
+                                 "Cache-Control": "private, max-age=300"})
 
 
 class SignIn(StrictModel):

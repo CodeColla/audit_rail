@@ -1,6 +1,9 @@
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/ui";
+import { formatCell } from "../lib/sheetFormat";
+import { fetchBlob } from "../lib/api";
 
 /** 0 -> A, 25 -> Z, 26 -> AA — mirrors `api/render.py`'s `_col_letter`. */
 function colLetter(index: number): string {
@@ -26,6 +29,11 @@ type Worksheet = {
   merges: Record<string, { colspan?: number; rowspan?: number }>;
   /** Per-COLUMN text wrapping — see api/render.py's colWrap note for why it is not per cell. */
   colWrap: boolean[];
+  /** Per-COLUMN number format — "currency:INR" | "percent" | "". Same per-column reasoning,
+   *  plus jspreadsheet only exposes formatting at column level. See lib/sheetFormat.ts. */
+  colFormat: string[];
+  /** Per-CELL reviewer notes (P6-S5b). */
+  comments: Record<string, string>;
 };
 
 /**
@@ -49,6 +57,8 @@ function readSheets(content: string): Worksheet[] {
       style: (s?.style && typeof s.style === "object" ? s.style : {}) as Record<string, CellStyle>,
       merges: (s?.merges && typeof s.merges === "object" ? s.merges : {}),
       colWrap: Array.isArray(s?.colWrap) ? s.colWrap : [],
+      colFormat: Array.isArray(s?.colFormat) ? s.colFormat : [],
+      comments: (s?.comments && typeof s.comments === "object" ? s.comments : {}),
     }));
   }
 
@@ -62,7 +72,7 @@ function readSheets(content: string): Worksheet[] {
     style[addr] = { ...style[addr], align: String(a) };
   }
   return [{ name: "Sheet1", data: Array.isArray(parsed.data) ? parsed.data : [],
-            style, merges: {}, colWrap: [] }];
+            style, merges: {}, colWrap: [], colFormat: [], comments: {} }];
 }
 
 function SheetGrid({ sheet }: { sheet: Worksheet }) {
@@ -90,8 +100,11 @@ function SheetGrid({ sheet }: { sheet: Worksheet }) {
               const addr = `${colLetter(c)}${r + 1}`;
               const s = sheet.style[addr] ?? {};
               const span = sheet.merges[addr];
+              const note = sheet.comments[addr];
               return (
-                <td key={c} className="border border-bd px-2 py-1"
+                <td key={c} title={note || undefined}
+                  className={cn("relative border border-bd px-2 py-1",
+                                note && "doc-sheet-comment")}
                   colSpan={span?.colspan && span.colspan > 1 ? span.colspan : undefined}
                   rowSpan={span?.rowspan && span.rowspan > 1 ? span.rowspan : undefined}
                   style={{
@@ -104,7 +117,9 @@ function SheetGrid({ sheet }: { sheet: Worksheet }) {
                     backgroundColor: s.background || undefined,
                     whiteSpace: sheet.colWrap[c] ? "pre-wrap" : undefined,
                   }}>
-                  {cell == null ? "" : String(cell)}
+                  {/* Formatted for DISPLAY only — the stored cell keeps the raw number, and
+                      `formatCell` leaves non-numeric cells (a column's header) alone. */}
+                  {formatCell(cell == null ? "" : String(cell), sheet.colFormat[c] ?? "")}
                 </td>
               );
             })}
@@ -155,14 +170,57 @@ function SheetTable({ content }: { content: string }) {
  * every write path runs the content through `api/html_sanitize.py` server-side. The editor
  * is not the boundary; the API is. Do not render HTML from anywhere that skips it.
  */
+/** `src="/api/documents/images/…"` -> `data-doc-image="…"`, before the HTML is ever inserted.
+ *
+ *  This has to happen to the STRING, not in an effect afterwards. `dangerouslySetInnerHTML`
+ *  starts the browser fetching every image the instant the markup is parsed — long before any
+ *  `useEffect` could swap the src — and those requests carry no bearer token, so each one is a
+ *  401 in the console. `01-smoke.spec.ts` asserts that no `/api/` response is ever >= 400 on
+ *  any route, and would rightly fail. Stripping the src first means the browser never issues
+ *  a request we know is doomed.
+ *
+ *  Only our own URL shape is touched. The signing page's srcs already point at the
+ *  token-scoped public route, which needs no bearer token and must be left exactly alone. */
+const _SRC_TO_DATA = new RegExp(
+  'src="/api/documents/images/'
+  + "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\"", "g");
+
+const deferImages = (html: string) => html.replace(_SRC_TO_DATA, 'data-doc-image="$1"');
+
+/** Fetch each deferred image with the bearer token and fill in an object URL. */
+function useDeferredImages(ref: React.RefObject<HTMLDivElement | null>, content: string) {
+  useEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    let live = true;
+    const revokers: Array<() => void> = [];
+    root.querySelectorAll<HTMLImageElement>("img[data-doc-image]").forEach((img) => {
+      const id = img.dataset.docImage;
+      if (!id) return;
+      fetchBlob(`/documents/images/${id}`)
+        .then((got) => {
+          if (!live) { got.revoke(); return; }
+          revokers.push(got.revoke);
+          img.src = got.objectUrl;
+        })
+        .catch(() => { if (live) img.alt = img.alt || "image unavailable"; });
+    });
+    return () => { live = false; revokers.forEach((r) => r()); };
+  }, [ref, content]);
+}
+
 export function DocBody({ content, format, className }: {
   content: string;
   format?: "MARKDOWN" | "HTML" | "SHEET" | null;
   className?: string;
 }) {
+  const htmlRef = useRef<HTMLDivElement>(null);
+  useDeferredImages(htmlRef, format === "HTML" ? content : "");
+
   // `doc-md` on ALL branches — it is the stylesheet hook and the e2e selector
   if (format === "HTML") {
-    return <div className={cn("doc-md", className)} dangerouslySetInnerHTML={{ __html: content }} />;
+    return <div ref={htmlRef} className={cn("doc-md", className)}
+      dangerouslySetInnerHTML={{ __html: deferImages(content) }} />;
   }
   if (format === "SHEET") {
     return <div className={cn("doc-md", className)}><SheetTable content={content} /></div>;

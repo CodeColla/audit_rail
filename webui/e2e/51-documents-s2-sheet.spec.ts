@@ -273,6 +273,151 @@ test.describe("wrap text and filters (P5-S2c)", () => {
   });
 });
 
+// ────────────────────────────────────────────── P6-S4: column number formats
+
+/** The format picker is a jSuites `type: "select"` toolbar item: a `.jpicker-header` showing
+ *  the current option, and `.jpicker-item` rows revealed when it is clicked. Addressed by role
+ *  because the stock toolbar has four other pickers (font, size, align, vertical align) — and
+ *  its accessible name exists only because SheetEditor sets it after mount: jspreadsheet
+ *  renames `tooltip` to `title` and jSuites applies that to icon items only, so a select ships
+ *  as an unnamed combobox. */
+const formatPicker = (page: import("@playwright/test").Page) =>
+  page.getByRole("combobox", { name: "Number format for this column" });
+
+async function setColumnFormat(page: import("@playwright/test").Page, label: string) {
+  await formatPicker(page).click();
+  await formatPicker(page).locator(".jpicker-item").filter({ hasText: label }).first().click();
+}
+
+/** The stored workbook as the server has it — the only honest check that what the grid
+ *  displays is not what got saved. */
+async function storedSheet(page: import("@playwright/test").Page) {
+  const token = await page.evaluate(() => localStorage.getItem("ar_token"));
+  const id = page.url().split("/documents/")[1];
+  const detail = await page.request.get(`/api/documents/${id}`,
+    { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  // A brand-new document's `content` is "" until the first autosave lands, and JSON.parse("")
+  // throws — which escapes `expect.poll`'s callback and fails the run outright instead of
+  // simply retrying. "Nothing saved yet" is a legitimate answer to this question.
+  try {
+    return JSON.parse(detail.open_version.content).sheets[0];
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The stored workbook, once `ready` holds.
+ *
+ * `saved(page)` is not enough here. Autosave debounces, so `data-save-state` still reads
+ * "saved" from the PREVIOUS cycle while the next write is queued — the assertion passes
+ * instantly and the fetch that follows reads the document as it was one edit ago. That is a
+ * spec trap, not a product one, and it only bites where a test makes two changes in a row.
+ */
+async function storedSheetOnce(page: import("@playwright/test").Page,
+                               ready: (sheet: any) => boolean) {
+  let sheet: any = null;
+  await expect.poll(async () => { sheet = await storedSheet(page); return ready(sheet); },
+    { message: "the change never reached the server", timeout: 15_000 }).toBe(true);
+  return sheet;
+}
+
+test.describe("column number formats (P6-S4)", () => {
+  test("a currency column formats figures, leaves its header alone, and stores raw numbers",
+    async ({ page }) => {
+      // Formatting is DISPLAY; `data` keeps the number. That split is what lets the .xlsx
+      // export write a sortable number, lets the column be re-read in another currency, and
+      // keeps the version diff about values rather than about symbols.
+      await newSheet(page, `E2E Sheet Currency ${uniq()}`);
+
+      await cell(page, 0, 0).click();
+      await page.keyboard.type("Annual cost"); await page.keyboard.press("Enter");
+      await page.keyboard.type("1234.5678"); await page.keyboard.press("Enter");
+      await page.keyboard.type("=A2*2"); await page.keyboard.press("Enter");
+      await expect(cell(page, 0, 2)).toHaveText("2469.1356");
+
+      await cell(page, 0, 1).click();
+      await setColumnFormat(page, "₹ Rupee");
+
+      // The header is in the same column as the figures. jspreadsheet's own `mask` option
+      // renders it as a bare "₹" (verified against jsuites' mask.render), which is why the
+      // formatting goes through the `render` hook and skips non-numeric cells instead.
+      await expect(cell(page, 0, 0), "a header must survive its column being formatted")
+        .toHaveText("Annual cost");
+      await expect(cell(page, 0, 1)).toHaveText("₹1,234.57");
+      await expect(cell(page, 0, 2)).toHaveText("₹2,469.14");
+
+      // Per COLUMN, and applied through `render`, so editing a cell cannot undo it — the
+      // same property that made wrap per-column in P5-S2c.
+      await cell(page, 0, 1).click();
+      await page.keyboard.type("99.5"); await page.keyboard.press("Enter");
+      await expect(cell(page, 0, 1), "the format must survive an edit").toHaveText("₹99.50");
+      await expect(cell(page, 0, 2)).toHaveText("₹199.00");
+
+      const sheet = await storedSheetOnce(page,
+        (s) => s.colFormat?.[0] === "currency:INR" && s.data?.[1]?.[0] !== "1234.5678");
+      expect(sheet.data[0][0]).toBe("Annual cost");
+      expect(sheet.data[1][0], "the typed number, not what the cell displays").toBe("99.5");
+      // The heart of it: `getData(processed)` reads innerHTML, which now carries OUR
+      // rendering. A formula's computed value would have been stored as the rounded
+      // "₹199.00" — the raw value is stashed on the cell before it is overwritten.
+      expect(sheet.data[2][0], "a formula's value keeps full precision").toBe("199");
+      expect(sheet.formulas.A3).toBe("=A2*2");
+    });
+
+  test("percent reads the stored number as a ratio, and clearing the format restores it",
+    async ({ page }) => {
+      // Excel's convention, and not a free choice: the exported .xlsx uses Excel's `0.00%`,
+      // which multiplies by 100 whatever we do — so any other reading would make the
+      // workbook disagree with the PDF.
+      await newSheet(page, `E2E Sheet Percent ${uniq()}`);
+      await cell(page, 0, 0).click();
+      await page.keyboard.type("0.15"); await page.keyboard.press("Enter");
+
+      await cell(page, 0, 0).click();
+      await setColumnFormat(page, "% Percent");
+      await expect(cell(page, 0, 0)).toHaveText("15.00%");
+      const formatted = await storedSheetOnce(page, (s) => s.colFormat?.[0] === "percent");
+      expect(formatted.data[0][0], "the ratio, not the rendered percentage").toBe("0.15");
+
+      // Clearing must give the number back rather than leaving "15.00%" behind as text —
+      // the cell's raw value was stashed, not discarded.
+      await setColumnFormat(page, "Plain");
+      await expect(cell(page, 0, 0)).toHaveText("0.15");
+      const sheet = await storedSheetOnce(page, (s) => (s.colFormat ?? []).length === 0);
+      expect(sheet.data[0][0]).toBe("0.15");
+    });
+
+  test("the picker shows the format of the column actually selected", async ({ page }) => {
+    // A control that cannot show the current state is a control that lies — the same defect
+    // class as the search box that didn't search. This is the `updateState` path, which is
+    // invisible in markup and silently does nothing if the picker is built with `content`.
+    await newSheet(page, `E2E Sheet Picker ${uniq()}`);
+
+    await cell(page, 0, 0).click();
+    await page.keyboard.type("100"); await page.keyboard.press("Enter");
+    await cell(page, 1, 0).click();
+    await page.keyboard.type("0.5"); await page.keyboard.press("Enter");
+
+    await cell(page, 0, 0).click();
+    await setColumnFormat(page, "$ Dollar");
+    await cell(page, 1, 0).click();
+    await setColumnFormat(page, "% Percent");
+
+    await expect(cell(page, 0, 0)).toHaveText("$100.00");
+    await expect(cell(page, 1, 0)).toHaveText("50.00%");
+
+    const header = formatPicker(page).locator(".jpicker-header");
+    await cell(page, 0, 0).click();
+    await expect(header).toHaveText("$ Dollar");
+    await cell(page, 1, 0).click();
+    await expect(header).toHaveText("% Percent");
+
+    const sheet = await storedSheetOnce(page, (s) => (s.colFormat ?? []).length === 2);
+    expect(sheet.colFormat).toEqual(["currency:USD", "percent"]);
+  });
+});
+
 // ────────────────────────────────────────────── P5-S2b: the v2 workbook format
 
 test.describe("formulas and the v2 format", () => {
@@ -644,5 +789,52 @@ test.describe("the list toolkit (DataTable) on Documents", () => {
     await page.getByRole("checkbox", { name: "Show archived" }).check();
     await expect(page.locator("tbody tr")).toHaveCount(2);
     await expect(page.getByText("Archived").first()).toBeVisible();
+  });
+});
+
+// ────────────────────────────────────────────── P6-S5b: cell comments
+
+test.describe("cell comments (P6-S5b)", () => {
+  test("a comment survives a reload, is findable in the panel, and reaches the diff",
+    async ({ page }) => {
+      // Comments were offered by jspreadsheet's context menu long before any of this worked:
+      // the note became a native `title` tooltip, `emit` never read it back, and it was gone
+      // on the next save. Findable only by hovering the exact cell that had one.
+      await newSheet(page, `E2E Comment ${uniq()}`);
+      await cell(page, 0, 0).click();
+      await page.keyboard.type("1200"); await page.keyboard.press("Enter");
+
+      // the context menu writes the comment through a window.prompt
+      page.once("dialog", (d) => d.accept("Board approved this exception"));
+      await cell(page, 0, 0).click({ button: "right" });
+      await page.getByText(/Add comments/i).click();
+
+      // the marker class is what makes a commented cell findable without hovering
+      await expect(cell(page, 0, 0)).toHaveClass(/jss_comments/);
+
+      const sheet = await storedSheetOnce(page, (s) => Boolean(s.comments?.A1));
+      expect(sheet.comments.A1).toBe("Board approved this exception");
+      expect(sheet.data[0][0], "the cell VALUE must be untouched").toBe("1200");
+
+      // the panel — the part that did not exist at all
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      const panel = page.getByRole("region", { name: "Cell comments" });
+      await expect(panel).toContainText("A1");
+      await expect(panel).toContainText("Board approved this exception");
+
+      // and it survives a reload, which is what "persisted" actually means
+      await page.reload();
+      await page.locator("table.jss_worksheet").waitFor();
+      await expect(cell(page, 0, 0)).toHaveClass(/jss_comments/);
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      await expect(page.getByRole("region", { name: "Cell comments" }))
+        .toContainText("Board approved this exception");
+    });
+
+  test("the Comments button counts them, and says so when there are none", async ({ page }) => {
+    await newSheet(page, `E2E CommentEmpty ${uniq()}`);
+    await page.getByRole("button", { name: "Comments", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Cell comments" }))
+      .toContainText(/No comments yet/);
   });
 });

@@ -289,3 +289,182 @@ test.describe("lifecycle", () => {
     await expect(page.getByText(/unsaved changes/i)).toHaveCount(0);
   });
 });
+
+// ────────────────────────────────────────────── P6-S5: images in a policy
+
+/** The stored version body, as the server has it — the only honest check that what the
+ *  editor DISPLAYS is not what got saved. */
+async function storedContent(page: Page) {
+  const token = await page.evaluate(() => localStorage.getItem("ar_token"));
+  const id = page.url().split("/documents/")[1].split("/")[0];
+  const detail = await page.request.get(`/api/documents/${id}`,
+    { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+  return detail.open_version.content as string;
+}
+
+/**
+ * The stored body, once `ready` holds.
+ *
+ * `saved(page)` alone is not enough whenever a test makes two changes in a row. Autosave
+ * debounces, so `data-save-state` still reads "saved" from the PREVIOUS cycle while the next
+ * write is queued — the assertion passes instantly and the fetch that follows reads the
+ * document as it was one edit ago. Exactly the trap that bit the P6-S4 sheet specs.
+ */
+async function storedContentOnce(page: Page, ready: (html: string) => boolean) {
+  let html = "";
+  await expect.poll(async () => { html = await storedContent(page); return ready(html); },
+    { message: "the edit never reached the server", timeout: 15_000 }).toBe(true);
+  return html;
+}
+
+test.describe("inline images (P6-S5)", () => {
+  test("an uploaded image survives a reload, and a blob URL never reaches storage",
+    async ({ page }) => {
+      // THE assertion of this feature. The image is displayed from an object URL, because a
+      // bare <img src="/api/…"> cannot send a bearer token. If that object URL ever reached
+      // `content`, autosave would PATCH `blob:http://localhost/8f3a-…` into a column whose
+      // hash backs an electronic signature — meaningless in any other tab, and permanent.
+      // `DocImage` stores a file id instead, so this is structurally impossible; the test is
+      // here because "structurally impossible" is a claim that has to keep being true.
+      await newDoc(page, `E2E Image ${uniq()}`);
+      await openEditor(page);
+      await page.keyboard.type("Network diagram follows.");
+
+      await page.setInputFiles('input[aria-label="Insert image"]', "e2e/fixtures/diagram.png");
+      const img = page.locator(".ProseMirror img[data-file-id]");
+      await expect(img).toBeVisible();
+      // it really rendered — a broken image has naturalWidth 0
+      await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
+        .toBeGreaterThan(0);
+      const content = await storedContentOnce(page, (h) => h.includes("<img"));
+      expect(content, "the canonical route URL is what gets stored")
+        .toMatch(/src="\/api\/documents\/images\/[0-9a-f-]{36}"/);
+      expect(content, "a blob URL must never reach a hashed, signed column")
+        .not.toContain("blob:");
+      expect(content, "the bytes must not be inlined either").not.toContain("data:image");
+
+      await page.reload();
+      await openEditor(page);
+      const again = page.locator(".ProseMirror img[data-file-id]");
+      await expect(again).toBeVisible();
+      await expect.poll(() => again.evaluate((el: HTMLImageElement) => el.naturalWidth))
+        .toBeGreaterThan(0);
+    });
+
+  test("no image request is ever made without authentication", async ({ page }) => {
+    // `01-smoke.spec.ts` forbids any /api/ response >= 400 app-wide. An <img src="/api/…">
+    // inserted into the DOM fetches immediately, with no bearer token, and 401s — which is
+    // why DocBody strips the src to `data-doc-image` in the HTML STRING rather than swapping
+    // it in an effect that runs too late.
+    const unauthorised: string[] = [];
+    page.on("response", (r) => {
+      if (r.url().includes("/api/documents/images/") && r.status() >= 400) {
+        unauthorised.push(`${r.status()} ${r.url()}`);
+      }
+    });
+
+    await newDoc(page, `E2E ImageAuth ${uniq()}`);
+    await openEditor(page);
+    await page.setInputFiles('input[aria-label="Insert image"]', "e2e/fixtures/diagram.png");
+    await expect(page.locator(".ProseMirror img[data-file-id]")).toBeVisible();
+    await saved(page);
+    await page.reload();
+    await openEditor(page);
+    await expect(page.locator(".ProseMirror img[data-file-id]")).toBeVisible();
+
+    expect(unauthorised, "an image was requested without a token").toEqual([]);
+  });
+
+  test("a pasted image uploads instead of vanishing", async ({ page }) => {
+    // Nobody uses a file picker to put a screenshot in a policy. Before this, ProseMirror
+    // silently dropped the paste because no image node existed in the schema.
+    await newDoc(page, `E2E ImagePaste ${uniq()}`);
+    await openEditor(page);
+
+    // Build a real PNG in the page and paste it through a DataTransfer.
+    await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 40; canvas.height = 30;
+      const ctx = canvas.getContext("2d")!;
+      ctx.fillStyle = "#f97316"; ctx.fillRect(0, 0, 40, 30);
+      return new Promise<void>((resolve) => canvas.toBlob((blob) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([blob!], "pasted.png", { type: "image/png" }));
+        document.querySelector(".ProseMirror")!
+          .dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true,
+                                                       cancelable: true }));
+        resolve();
+      }, "image/png"));
+    });
+
+    await expect(page.locator(".ProseMirror img[data-file-id]")).toBeVisible();
+    expect(await storedContentOnce(page, (h) => h.includes("<img")))
+      .toMatch(/src="\/api\/documents\/images\//);
+  });
+
+  test("a published policy shows its images in the read view and exports them",
+    async ({ page }) => {
+      await newDoc(page, `E2E ImagePub ${uniq()}`);
+      await openEditor(page);
+      await page.keyboard.type("See the diagram.");
+      await page.setInputFiles('input[aria-label="Insert image"]', "e2e/fixtures/diagram.png");
+      await expect(page.locator(".ProseMirror img[data-file-id]")).toBeVisible();
+      await saved(page);
+
+      const docId = page.url().split("/documents/")[1].split("/")[0];
+      const token = await page.evaluate(() => localStorage.getItem("ar_token"));
+      const auth = { Authorization: `Bearer ${token}` };
+      const detail = await page.request.get(`/api/documents/${docId}`, { headers: auth })
+        .then((r) => r.json());
+      const verId = detail.open_version.id;
+
+      const pdf = await page.request.get(
+        `/api/documents/${docId}/versions/${verId}/render.pdf`, { headers: auth });
+      expect(pdf.status()).toBe(200);
+      const bytes = await pdf.body();
+      expect(bytes.subarray(0, 4).toString()).toBe("%PDF");
+      // `/Subtype /Image`, not bare `/Image`: every reportlab PDF already contains the
+      // latter three times over in its ProcSet array `[/PDF /Text /ImageB /ImageC /ImageI]`,
+      // so that assertion passes on a document with no picture in it. Nor a byte size — a
+      // 459-byte fixture moves the file by under a kilobyte. See tests/test_document_images.py.
+      expect(bytes.includes(Buffer.from("/Subtype /Image")),
+        "the image did not reach the PDF").toBe(true);
+    });
+});
+
+test.describe("import a Word policy (P6-S5)", () => {
+  test("a .docx arrives as real structure, with its pictures", async ({ page }) => {
+    // The prose equivalent of the spreadsheet's "Import .xlsx". The point of using mammoth
+    // rather than the already-installed docx-preview is that headings and lists arrive as
+    // headings and lists — docx-preview emits <div>/<span> soup that our sanitiser would
+    // flatten into an unstructured wall of text.
+    await newDoc(page, `E2E Docx ${uniq()}`);
+    await openEditor(page);
+    await page.keyboard.type("This text is about to be replaced.");
+
+    page.once("dialog", (d) => d.accept());          // import replaces the draft, so it asks
+    await page.setInputFiles('input[aria-label="Import .docx"]',
+                             "e2e/fixtures/legacy-policy.docx");
+
+    const editor = page.locator(".ProseMirror");
+    await expect(editor.locator("h1")).toContainText("Acceptable Use Policy");
+    await expect(editor.locator("h2").first()).toContainText("Scope");
+    await expect(editor.locator("ul li").first()).toContainText("Lock your screen");
+    await expect(editor.locator("strong")).toContainText("security@example.com");
+    await expect(editor).not.toContainText("This text is about to be replaced");
+
+    // the embedded picture went through the image store rather than arriving as a data: URI
+    // that the sanitiser would silently strip on the first save
+    await expect(editor.locator("img[data-file-id]")).toBeVisible();
+
+    // and the losses are stated up front, not discovered after approval
+    await expect(page.getByRole("status", { name: "Import notes" }))
+      .toContainText(/Not imported/);
+
+    const content = await storedContentOnce(page, (h) => h.includes("Acceptable Use Policy"));
+    expect(content).toMatch(/<h2>|<h2 /);
+    expect(content).toMatch(/src="\/api\/documents\/images\//);
+    expect(content, "a data: URI would be stripped on save, losing the picture")
+      .not.toContain("data:image");
+  });
+});

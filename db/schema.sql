@@ -256,6 +256,18 @@ CREATE TABLE people (
 CREATE UNIQUE INDEX uq_people_user ON people (tenant_id, user_id) WHERE user_id IS NOT NULL;
 
 -- Shared blob vault. sha256 feeds the evidence pack and the e-signature chain.
+--
+-- `purpose` (P6-S5) exists for one reason, and it is a security one. This table is shared by
+-- evidence uploads, policy files, asset photos, contracts, templates, published PDFs and org
+-- logos — and most of those routes store `file.content_type`, the value the BROWSER claimed
+-- (see evidence.py, registers.py, templates.py). So a route that authorises "any image in my
+-- tenant" by looking at `mime_type` is a cross-module read: upload a confidential contract
+-- declaring `Content-Type: image/png` with `evidence.add`, and anyone holding `documents.view`
+-- can fetch it back through the document-image route without ever holding `evidence.view`.
+--
+-- Authorising on `purpose` instead means a route can only ever reach rows that its own
+-- sniffing upload path created. Adding a value here is therefore a deliberate act: it widens
+-- what some route can serve.
 CREATE TABLE files (
     id                    text PRIMARY KEY DEFAULT gen_random_uuid()::text,
     tenant_id             text NOT NULL REFERENCES tenants(id),
@@ -264,6 +276,8 @@ CREATE TABLE files (
     mime_type             text,
     size_bytes            integer,
     sha256                text,
+    purpose               text NOT NULL DEFAULT 'GENERIC'
+                          CHECK (purpose IN ('GENERIC', 'DOC_IMAGE')),
     uploaded_by_member_id text REFERENCES tenant_members(id),
     created_at            iso_ts NOT NULL DEFAULT now_iso(),
     UNIQUE (id, tenant_id)

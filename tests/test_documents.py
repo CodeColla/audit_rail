@@ -895,3 +895,55 @@ def test_wrapped_column_reaches_the_xlsx_export(app_client):
     ws = load_workbook(io.BytesIO(r.content))["Register"]
     assert ws["A1"].alignment.wrap_text is True
     assert not ws["B1"].alignment.wrap_text        # untouched column stays unwrapped
+
+
+# ────────────────────────────────────────────────── P6-S4: number formats
+
+
+def test_a_formatted_column_exports_as_numbers_carrying_an_excel_number_format(app_client):
+    """The point of storing the format beside the raw value: Excel gets a real number it can
+    sort and compute with, plus the format to display it. Exporting "₹1,234.50" as text would
+    look identical and be useless — which is what the import path used to produce."""
+    from openpyxl import load_workbook
+    h, owner, approvers = _setup(app_client)
+    body = json.dumps({"version": 2, "sheets": [{
+        "name": "Register",
+        "data": [["Annual cost", "Uptime"], ["1234.5", "0.999"], ["=B2*2", "n/a"]],
+        "formulas": {"A3": "=B2*2"},
+        "colFormat": ["currency:INR", "percent"]}]})
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=body)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.xlsx", headers=h)
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content))["Register"]
+    assert ws["A2"].value == 1234.5                     # a number, not "₹1,234.50"
+    assert ws["A2"].number_format == '"₹"#,##0.00'
+    # `0.00%` multiplies by 100 in Excel, which is exactly why we store the ratio
+    assert ws["B2"].value == 0.999 and ws["B2"].number_format == "0.00%"
+    assert ws["A3"].value == "=B2*2" and ws["A3"].number_format == '"₹"#,##0.00'
+    # text in a formatted column carries no number format — same rule as the renderer, so
+    # the header does not arrive in Excel pretending to be a currency
+    assert ws["A1"].value == "Annual cost" and ws["A1"].number_format == "General"
+    assert ws["B3"].value == "n/a" and ws["B3"].number_format == "General"
+
+
+def test_a_cell_comment_reaches_the_xlsx_as_a_real_excel_comment(app_client):
+    """P6-S5b. A note pasted onto the end of the cell's VALUE would corrupt the data; a real
+    comment is what Excel itself uses, so the register still sorts and computes."""
+    from openpyxl import load_workbook
+    h, owner, approvers = _setup(app_client)
+    body = json.dumps({"version": 2, "sheets": [{
+        "name": "Register",
+        "data": [["Vendor", "Annual cost"], ["Acme", "1200"]],
+        "comments": {"B2": "Board approved this exception on 12 March"}}]})
+    doc_id, ver_id = _new_sheet(app_client, h, owner, content=body)
+    _publish(app_client, h, approvers, doc_id, ver_id)
+
+    r = app_client.get(f"/api/documents/{doc_id}/versions/{ver_id}/render.xlsx", headers=h)
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content))["Register"]
+    assert ws["B2"].value == 1200                       # the value is untouched
+    assert ws["B2"].comment is not None
+    assert "Board approved" in ws["B2"].comment.text
+    assert ws["A2"].comment is None

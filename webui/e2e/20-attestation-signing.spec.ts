@@ -90,3 +90,66 @@ test("an invalid signing token is refused, not crashed", async ({ browser }) => 
   await expect(p.locator("body")).toContainText(/can’t be used|not valid/i);
   await anon.close();
 });
+
+test("a logged-out signer sees the policy's images (P6-S5)", async ({ page, browser }) => {
+  // The signing page is deliberately unauthenticated — bare `fetch`, no axios, no bearer
+  // token — so a field engineer with no account can read what they are attesting to. That
+  // makes images a real problem: the app's normal image path is a blob fetch through the
+  // axios instance, whose 401 interceptor would bounce the signer to /login and destroy the
+  // flow. The server therefore rewrites each src to the token-scoped public route, so this
+  // page needs no image code at all and a plain <img> just works.
+  const title = `E2E SignImage ${Math.random().toString(36).slice(2, 7)}`;
+  await page.goto("/documents");
+  await page.getByRole("button", { name: /New document/ }).click();
+  await page.getByPlaceholder("Information Security Policy").fill(title);
+  await page.getByLabel("Owner *").selectOption({ label: "E2E Owner" });
+  await page.getByRole("button", { name: /Create & write/ }).click();
+  await expect(page.locator(".ProseMirror")).toBeVisible();
+  await page.locator(".ProseMirror").click();
+  await page.keyboard.type("Read the network diagram before signing.");
+  await page.setInputFiles('input[aria-label="Insert image"]', "e2e/fixtures/diagram.png");
+  await expect(page.locator(".ProseMirror img[data-file-id]")).toBeVisible();
+  await expect(page.locator("[data-save-state]"))
+    .toHaveAttribute("data-save-state", "saved", { timeout: 15_000 });
+
+  // publish it, target the seeded Field Ops audience, issue a link
+  const docId = page.url().split("/documents/")[1].split("/")[0];
+  const token = await page.evaluate(() => localStorage.getItem("ar_token"));
+  const auth = { Authorization: `Bearer ${token}` };
+  const detail = await page.request.get(`/api/documents/${docId}`, { headers: auth })
+    .then((r) => r.json());
+  const verId = detail.open_version.id;
+  const owner = detail.owner.id;
+  await page.request.post(`/api/documents/${docId}/versions/${verId}/submit`,
+    { headers: auth, data: { threshold_required: 1, approver_person_ids: [owner] } });
+  const appr = await page.request.get(`/api/documents/${docId}`, { headers: auth })
+    .then((r) => r.json());
+  await page.request.post(`/api/documents/approvals/${appr.approval.id}/decide`,
+    { headers: auth, data: { approver_person_id: owner, state: "APPROVED" } });
+  await page.request.post(`/api/documents/${docId}/versions/${verId}/publish`, { headers: auth });
+  await page.request.post(`/api/documents/${docId}/audiences`,
+    { headers: auth, data: { rules: [{ rule: "DEPARTMENT", value: "Field Ops" }] } });
+  const camp = await page.request.post(`/api/documents/${docId}/attestation-campaign`,
+    { headers: auth, data: {} }).then((r) => r.json());
+  const raw = camp.issued[0].token;
+
+  // ---- a completely clean browser: no token, no user, nothing ----
+  const anon = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+  const anonPage = await anon.newPage();
+  const failures: string[] = [];
+  anonPage.on("response", (r) => {
+    if (r.url().includes("/api/") && r.status() >= 400) failures.push(`${r.status()} ${r.url()}`);
+  });
+  await anonPage.goto(`/sign/${raw}`);
+
+  const img = anonPage.locator(".doc-md img");
+  await expect(img).toBeVisible();
+  // the picture really decoded — a 401 or a stripped src leaves naturalWidth at 0
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
+    .toBeGreaterThan(0);
+  // …through the token-scoped route, never the authenticated one
+  await expect(img).toHaveAttribute("src", new RegExp(`/api/sign/${raw}/images/`));
+  expect(failures, "the signing page must make no failing API calls").toEqual([]);
+
+  await anon.close();
+});

@@ -180,3 +180,18 @@ table {
 .file-preview h4 { @apply mb-1 mt-4 text-[13px] font-semibold text-txt2 first:mt-0; }
 .file-preview p { @apply my-1.5 text-[13px] leading-relaxed; }
 .file-preview img { @apply max-w-full; }
+
+/* P6-S5b: a cell carrying a reviewer's note.
+   The read view is not the editor — jspreadsheet paints its own corner marker in the grid
+   (`.jss_comments`, a base64 PNG triangle), but `DocBody` renders a plain table, so the
+   published register needs its own. A corner wedge in the accent colour, plus the note as a
+   native `title`, so a comment is discoverable without hovering every cell hoping. */
+.doc-md .doc-sheet-comment::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-width: 0 6px 6px 0;
+  border-style: solid;
+  border-color: transparent theme("colors.accent") transparent transparent;
+}

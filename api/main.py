@@ -30,6 +30,44 @@ def _preflight() -> None:
             "PostgreSQL is up but the schema is missing.\n"
             "  Run:  .venv/bin/python scripts/init_db.py --force"
         )
+    _check_schema_drift()
+
+
+#: Columns this codebase reads or writes that arrived AFTER a table first existed, and the
+#: hand-run SQL that adds each one. There is no Alembic here — `db/schema.sql` is the source of
+#: truth and long-lived databases are migrated by hand (see docs/phase6) — so a dev or staging
+#: database silently runs a schema older than the code.
+#:
+#: The failure mode without this check is genuinely bad: SQLAlchemy reflects the LIVE schema at
+#: startup, so a missing column is not noticed at boot. It surfaces later as
+#: `CompileError: Unconsumed column names: purpose` — a 500 on one route, in a stack trace that
+#: names SQLAlchemy's compiler and not the actual problem. P6-S5 shipped exactly that.
+#:
+#: Add a line here in the same commit as any `ALTER TABLE` in the docs.
+_REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
+    ("tenants", "logo_file_id",
+     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_file_id text;"),
+    ("files", "purpose",
+     "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
+]
+
+
+def _check_schema_drift() -> None:
+    """Refuse to start against a database older than the code, and say how to fix it."""
+    with engine.connect() as conn:
+        present = {(r[0], r[1]) for r in conn.execute(text(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema='public'"))}
+    missing = [(tbl, col, sql) for tbl, col, sql in _REQUIRED_COLUMNS
+               if (tbl, col) not in present]
+    if missing:
+        lines = "\n".join(f"  {sql}" for _t, _c, sql in missing)
+        cols = ", ".join(f"{tbl}.{col}" for tbl, col, _s in missing)
+        raise RuntimeError(
+            f"The database is missing columns this build needs: {cols}.\n"
+            f"Apply them (psql, or scripts/init_db.py --force to rebuild from scratch):\n"
+            f"{lines}"
+        )
 
 
 @asynccontextmanager
