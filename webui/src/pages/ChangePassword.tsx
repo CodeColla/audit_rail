@@ -2,6 +2,7 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, errText } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { AuthLayout } from "../components/AuthLayout";
 
 /**
  * Change password — also the forced-change screen.
@@ -39,8 +40,7 @@ export default function ChangePassword() {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-canvas px-4">
-      <div className="w-full max-w-sm">
+    <Wrap forced={forced}>
         <div className="card p-6">
           <div className="eyebrow">Account</div>
           <h1 className="mb-1 mt-1 text-title font-semibold">
@@ -79,10 +79,21 @@ export default function ChangePassword() {
             </button>
           </form>
         </div>
-        <button onClick={logout} className="mt-3 w-full text-center text-label text-txt3 hover:text-ink">
+        <button onClick={logout} className="mt-3 w-full text-center text-label text-txt2 hover:text-ink">
           Sign out instead
         </button>
-      </div>
+    </Wrap>
+  );
+}
+
+/** The forced-expiry screen is a signed-out surface and gets the auth backdrop; the same
+ *  component also renders at /account/password INSIDE `Shell`, where a full-screen brand
+ *  backdrop nested in the app chrome would be plainly wrong. Hence the branch. */
+function Wrap({ forced, children }: { forced: boolean; children: React.ReactNode }) {
+  if (forced) return <AuthLayout>{children}</AuthLayout>;
+  return (
+    <div className="grid min-h-screen place-items-center bg-canvas px-4">
+      <div className="w-full max-w-sm">{children}</div>
     </div>
   );
 }

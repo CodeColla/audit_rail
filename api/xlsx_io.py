@@ -355,7 +355,7 @@ def build_sheet_workbook(title: str, content: str) -> bytes:
                 note = (sheet.get("comments") or {}).get(
                     f"{render._col_letter(c - 1)}{r}")
                 if note:
-                    cell.comment = Comment(note, "audit_rail")
+                    cell.comment = Comment(note, "Audit Rail")
 
         for addr, span in sheet["merges"].items():
             m = re.match(r"^([A-Z]+)(\d+)$", addr)

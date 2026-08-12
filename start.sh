@@ -18,7 +18,7 @@ echo "[start] API  -> http://127.0.0.1:${API_PORT:-5007}"
   --host "${API_HOST:-127.0.0.1}" --port "${API_PORT:-5007}" --reload &
 
 if [ -d webui/node_modules ]; then
-  echo "[start] UI   -> http://127.0.0.1:3002  (login is prefilled, password 'audit_rail')"
+  echo "[start] UI   -> http://127.0.0.1:3002"
   (cd webui && npm run dev) &
 else
   echo "[start] web UI deps missing — run: cd webui && npm install"

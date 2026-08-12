@@ -195,3 +195,41 @@ table {
   border-style: solid;
   border-color: transparent theme("colors.accent") transparent transparent;
 }
+
+/* ── The signed-out surface (P6-S6) ─────────────────────────────────────────────────────
+   /login, /signup, /auditor and the forced password change are the only screens in the
+   product with no data on them, so the background is the only thing available to carry the
+   brand. Before this they were a flat #F4F5F6 rectangle with a card dropped on it.
+
+   Pure CSS on purpose — no image, no request, nothing async, so it is structurally incapable
+   of shifting layout or delaying first paint, and `e2e/60-typography-s1.spec.ts` (which
+   forbids any font-CDN fetch) cannot be tripped by construction. Nothing animates, so
+   prefers-reduced-motion has nothing to switch off. Every colour is an existing token. */
+.auth-surface {
+  background-color: theme("colors.canvas");
+  background-image:
+    radial-gradient(38rem 30rem at 6% -14%, rgba(249, 115, 22, 0.10), transparent 62%),
+    radial-gradient(44rem 34rem at 106% 112%, rgba(14, 26, 43, 0.09), transparent 62%);
+  background-repeat: no-repeat;
+}
+
+/* The rail: a hairline grid that reads as measurement rather than as texture — the product
+   is called Audit Rail. Masked to a soft ellipse so it is ABSENT behind the card: the card
+   must read as paper on a surface, never as paper on a pattern, and masking is what keeps
+   the form legible without dimming anything or touching a single contrast ratio.
+   `transparent` at the centre of a mask means "hide what is underneath there". */
+.auth-rails {
+  background-image:
+    repeating-linear-gradient(90deg, rgba(14, 26, 43, 0.035) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(0deg,  rgba(14, 26, 43, 0.028) 0 1px, transparent 1px 96px);
+  -webkit-mask-image: radial-gradient(68% 64% at 50% 48%, transparent 0%, #000 88%);
+          mask-image: radial-gradient(68% 64% at 50% 48%, transparent 0%, #000 88%);
+}
+
+/* The same rails inverted, for the ink panel on /login. No mask — nothing sits on top of
+   them there, and the panel wants the texture edge to edge. */
+.auth-rails-dark {
+  background-image:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(0deg,  rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 96px);
+}

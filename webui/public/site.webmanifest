@@ -1,6 +1,6 @@
 {
-  "name": "audit_rail — SR",
-  "short_name": "audit_rail",
+  "name": "Audit Rail",
+  "short_name": "Audit Rail",
   "description": "Bank-audit compliance workspace: answer once, reuse across every audit.",
   "start_url": "/",
   "display": "standalone",

@@ -1,0 +1,40 @@
+# Build context excludes. Both images build from the REPO ROOT (see _docker/build.sh), so
+# this file is what keeps a ~600 MB context down to a few MB — and, more importantly, keeps
+# secrets and customer data out of the layers.
+
+# Secrets and local state — never in an image.
+.env
+.env.*
+!.env.example
+data/                       # the blob vault: every tenant's uploaded evidence
+*.log
+
+# Local toolchains — reinstalled inside the image.
+.venv/
+node_modules/
+webui/node_modules/
+webui/dist/                 # rebuilt in the UI image's build stage
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# History and tooling.
+.git/
+.github/
+.claude/
+.idea/
+.vscode/
+
+# Not needed at runtime. `data/extracted/all_controls.json` is only read by
+# scripts/init_db.py's seeding path, which a container never takes — deployments use
+# _docker/host.sql instead. `init_db.py --blank` still works without it.
+tests/
+webui/e2e/
+webui/test-results/
+webui/playwright-report/
+docs/
+
+# Emitted by the build itself.
+_docker/host.sql

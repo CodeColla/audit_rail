@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
+import { AuthLayout } from "../components/AuthLayout";
 
 export default function AuditorEntry() {
   const [params] = useSearchParams();
@@ -22,15 +23,17 @@ export default function AuditorEntry() {
   }, []);
 
   return (
-    <div className="grid min-h-screen place-items-center bg-canvas text-center">
-      {err ? (
-        <div className="max-w-sm">
-          <div className="text-body font-semibold text-bad">This auditor link is invalid or expired.</div>
-          <p className="mt-2 text-sm text-txt3">Ask your contact at the vendor to send a fresh invitation.</p>
-        </div>
-      ) : (
-        <div className="text-body text-txt2">Entering auditor review…</div>
-      )}
-    </div>
+    <AuthLayout>
+      <div className="card p-6 text-center">
+        {err ? (
+          <>
+            <div className="text-body font-semibold text-bad">This auditor link is invalid or expired.</div>
+            <p className="mt-2 text-sm text-txt2">Ask your contact at the vendor to send a fresh invitation.</p>
+          </>
+        ) : (
+          <div className="text-body text-txt2">Entering auditor review…</div>
+        )}
+      </div>
+    </AuthLayout>
   );
 }

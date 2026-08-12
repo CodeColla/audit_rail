@@ -5,6 +5,7 @@ import { api, get } from "../lib/api";
 import { AttachmentLink } from "./AttachmentLink";
 import { useAuth } from "../lib/auth";
 import { Card, cn, Drawer, inputCls, Loading, Pill, Table, Td } from "../lib/ui";
+import { Wordmark } from "./Brand";
 
 type Detail = { id: string; title: string; bank_name: string; status: string; total_questions: number; answered: number };
 type Row = {
@@ -125,8 +126,7 @@ export function AuditorApp() {
   return (
     <div className="min-h-screen bg-canvas">
       <div className="flex items-center gap-4 bg-ink px-8 py-4 text-white">
-        <span className="text-title font-bold tracking-[-0.04em]">SR</span>
-        <span className="mb-2 h-2 w-2 rounded-[2px] bg-accent" />
+        <Wordmark size="md" tone="dark" />
         <span className="rounded-full bg-accent px-2.5 py-[3px] text-caption font-semibold text-ink">AUDITOR ACCESS</span>
         <div className="ml-auto text-right">
           <div className="text-sm font-medium">{user!.full_name}</div>

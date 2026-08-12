@@ -1,0 +1,53 @@
+# Audit Rail — the deployed stack.
+#
+#   cd _docker && TAG=v1.2.0-20260812 docker compose up -d
+#
+# The UI and the API are separate services on purpose: you run them on different servers, so
+# on each one bring up only what belongs there —
+#
+#   docker compose up -d api     # the API server
+#   docker compose up -d ui      # the UI server
+#
+# There is deliberately NO database service here. Postgres is yours, already running in your
+# infrastructure; point DATABASE_URL at it and apply _docker/host.sql once. (The Postgres in
+# the repo-root docker-compose.yml is the LOCAL dev database and is unrelated to this file.)
+
+services:
+  api:
+    image: ${REGISTRY:-}${REGISTRY:+/}${API_IMAGE:-audit-rail-api}:${TAG:?set TAG, e.g. TAG=v1.2.0-20260812}
+    container_name: audit-rail-api
+    restart: unless-stopped
+    env_file: [env/api.env]
+    volumes:
+      # THE IMPORTANT LINE. The vault holds every uploaded file — evidence, policy documents,
+      # asset photos, signed PDFs, org logos. A named volume keeps it alive across redeploys;
+      # without it, `docker compose pull && up -d` destroys every file while leaving the
+      # database rows behind, and the UI lists evidence that 410s when you click it.
+      # Swap for a host path (e.g. /srv/audit-rail/vault:/data/vault) if your backups want one.
+      - audit_rail_vault:/data/vault
+    ports:
+      # Bound to loopback: your nginx reaches it over localhost, nothing else can. Drop the
+      # 127.0.0.1 only if nginx runs on a different host, and firewall it if you do.
+      - "127.0.0.1:5007:5007"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5007/', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  ui:
+    image: ${REGISTRY:-}${REGISTRY:+/}${UI_IMAGE:-audit-rail-ui}:${TAG:?set TAG, e.g. TAG=v1.2.0-20260812}
+    container_name: audit-rail-ui
+    restart: unless-stopped
+    env_file: [env/ui.env]
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  audit_rail_vault:

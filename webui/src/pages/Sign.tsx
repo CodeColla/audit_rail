@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { DocBody } from "../components/DocBody";
+import { Wordmark } from "../components/Brand";
 import { inputCls } from "../lib/ui";
 
 /**
@@ -20,9 +21,11 @@ function Frame({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-canvas">
       <header className="border-b border-bd bg-paper px-4 py-3">
-        <div className="mx-auto flex max-w-2xl items-center gap-2 text-body font-semibold text-ink">
-          <span className="grid h-6 w-6 place-items-center rounded bg-accent text-label text-[#231205]">✓</span>
-          audit_rail · Policy attestation
+        {/* The one page a customer's own employee sees, usually on a phone, from an
+            emailed link — so it carries the real wordmark rather than an improvised tile. */}
+        <div className="mx-auto flex max-w-2xl items-center gap-2">
+          <Wordmark size="sm" />
+          <span className="text-body text-txt2">· Policy attestation</span>
         </div>
       </header>
       <main className="mx-auto max-w-2xl px-4 py-6">{children}</main>

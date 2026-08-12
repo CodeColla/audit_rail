@@ -9,6 +9,7 @@ import { Avatar, OrgLogo } from "./Avatar";
 import { GlobalSearch } from "./GlobalSearch";
 import { useAuth, useCan } from "../lib/auth";
 import { cn } from "../lib/ui";
+import { PoweredBy, Wordmark } from "./Brand";
 
 // `module` is the permission that makes an entry visible (module.view).
 // P4-S3: grouped, because the five registers became separate menus and a flat list of
@@ -189,10 +190,10 @@ export function Shell({ children }: { children: ReactNode }) {
           the pinned Roles/Admin footer) fell below the fold with nothing to scroll — they
           rendered but could not be clicked. */}
       <aside className="sticky top-0 flex h-screen flex-col gap-1 overflow-hidden border-r border-bd bg-paper p-4">
-        <div className="flex shrink-0 items-center gap-2 px-2 pb-4 pt-1.5">
-          <span className="text-title font-bold tracking-[-0.04em] text-ink">SR</span>
-          <span className="mb-3 h-[9px] w-[9px] rounded-[2px] bg-accent" />
-          <span className="ml-0.5 font-mono text-caption font-medium text-txt3">audit_rail</span>
+        <div className="flex shrink-0 items-center px-2 pb-4 pt-1.5">
+          {/* 16px, not the 20px the old "SR" used: the org switcher sits directly beneath,
+              and in-app the identity that matters is the customer's, not ours. */}
+          <Wordmark size="sm" />
         </div>
         <div className="shrink-0"><OrgSwitcher /></div>
         <nav className="-mr-2 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-2">
@@ -239,6 +240,10 @@ export function Shell({ children }: { children: ReactNode }) {
               <Settings size={16} strokeWidth={1.7} /> Admin
             </NavLink>
           )}
+          {/* Unconditional, and that fixes a latent bug: both links above are permission
+              gated, so a user with neither `roles.view` nor `users.view` used to get a bare
+              hairline anchored to the bottom of the sidebar with nothing under it. */}
+          <PoweredBy className="px-3 pb-0.5 pt-2.5" />
         </div>
       </aside>
 

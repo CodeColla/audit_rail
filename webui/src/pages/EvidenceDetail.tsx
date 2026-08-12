@@ -221,7 +221,7 @@ export default function EvidenceDetail() {
           {isLink ? (
             <>
               <p className="mb-2 text-label text-txt2">
-                Held outside the vault. audit_rail records that it exists and when it expires;
+                Held outside the vault. Audit Rail records that it exists and when it expires;
                 the bytes live at:</p>
               <a href={ev.external_url ?? "#"} target="_blank" rel="noopener noreferrer"
                 className="break-all text-label font-medium text-accent hover:underline">

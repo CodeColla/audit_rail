@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { AuthLayout } from "../components/AuthLayout";
 import { useAuth } from "../lib/auth";
 import { errText } from "../lib/api";
 
@@ -39,13 +40,7 @@ export default function Signup() {
   const ready = f.full_name && f.email && f.password && f.organisation_name;
 
   return (
-    <div className="grid min-h-screen place-items-center bg-canvas px-4 py-10">
-      <div className="w-full max-w-md">
-        <div className="mb-6 flex items-center gap-2">
-          <span className="text-display font-bold tracking-[-0.04em] text-ink">SR</span>
-          <span className="mb-3.5 h-[11px] w-[11px] rounded-[2px] bg-accent" />
-          <span className="ml-1 font-mono text-sm text-txt3">audit_rail</span>
-        </div>
+    <AuthLayout width="md">
         <div className="card p-6">
           <div className="eyebrow">Get started</div>
           <h1 className="mb-1 mt-1 text-title font-semibold">Create your organisation</h1>
@@ -96,10 +91,9 @@ export default function Signup() {
             </button>
           </form>
         </div>
-        <p className="mt-3 text-center text-label text-txt3">
+        <p className="mt-3 text-center text-label text-txt2">
           Already have an account? <Link to="/login" className="underline">Sign in</Link>
         </p>
-      </div>
-    </div>
+    </AuthLayout>
   );
 }
