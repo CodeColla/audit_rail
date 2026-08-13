@@ -1,0 +1,50 @@
+# Audit Rail — API service.
+#
+#   ./_docker/scripts/service_ctl.sh up 1
+#   # or directly:
+#   TAG=v1.0.0-20260813 docker compose -f _docker/compose/audit-rail-api.compose.yml up -d
+#
+# The API and the UI are SEPARATE compose files on purpose: they are routinely deployed to
+# different servers, so on each one you bring up only what belongs there. There is deliberately
+# no database service here — Postgres is yours, already running; point DATABASE_URL at it and
+# apply _docker/host.sql once. (audit-rail-postgres.compose.yml is the LOCAL DEV database and
+# is a different thing entirely.)
+services:
+  audit-rail-api:
+    build:
+      # Context is the REPO ROOT: the image needs api/, db/ and scripts/. .dockerignore is
+      # what keeps that context small.
+      context: ../..
+      dockerfile: _docker/dockerfile/audit-rail-api.Dockerfile
+    image: ${REGISTRY:-}${REGISTRY:+/}${API_IMAGE:-audit-rail-api}:${TAG:-latest}
+    container_name: audit-rail-api
+    restart: unless-stopped
+    env_file: [../env/api.env]
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+    volumes:
+      # THE IMPORTANT LINE. The vault holds every uploaded file — evidence, policy documents,
+      # asset photos, signed PDFs, org logos. A named volume keeps it alive across redeploys;
+      # without it, `docker compose pull && up -d` destroys every file while leaving the
+      # database rows behind, and the UI lists evidence that 410s when you click it.
+      # Swap for a host path (e.g. /srv/audit-rail/vault:/data/vault) if your backups want one.
+      - audit_rail_vault:/data/vault
+    ports:
+      # Bound to loopback: your nginx reaches it over localhost, nothing else can. Drop the
+      # 127.0.0.1 only if nginx runs on a different host, and firewall it if you do.
+      - "127.0.0.1:5007:5007"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5007/', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [audit-rail]
+
+volumes:
+  audit_rail_vault:
+
+networks:
+  audit-rail:
+    driver: bridge

@@ -1,4 +1,11 @@
-# audit_rail infrastructure.  Start:  docker compose up -d
+# Audit Rail — the LOCAL DEVELOPMENT database. Not part of a deployment.
+#
+#   ./_docker/scripts/service_ctl.sh up 3
+#   # or directly:
+#   docker compose -f _docker/compose/audit-rail-postgres.compose.yml up -d
+#
+# `setup.sh` brings this up for you. A hosted deployment does NOT use this file — Postgres is
+# yours there; see _docker/README.md.
 #
 # NOTE ON THE PORT: host 5434. Two other stacks on this machine already take the obvious
 # ports — Probo's postgres holds 5432, and emp_erp_mcp holds 5433 (it also runs MinIO on

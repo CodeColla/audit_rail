@@ -1,7 +1,7 @@
 # Audit Rail — UI image. Builds the SPA, then serves the static output with nginx.
 #
 # Build from the REPO ROOT:
-#     docker build -f _docker/Dockerfile.ui -t audit-rail-ui:TAG .
+#     docker build -f _docker/dockerfile/audit-rail-ui.Dockerfile -t audit-rail-ui:TAG .
 #
 # The SPA is a static bundle — there is no Node process at runtime. The `API_URL` env var is
 # read at CONTAINER START by an entrypoint script, not baked in at build time, so the same

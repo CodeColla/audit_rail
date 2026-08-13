@@ -1,8 +1,8 @@
 # Audit Rail — API image.
 #
 # Build from the REPO ROOT, not from this directory:
-#     docker build -f _docker/Dockerfile.api -t audit-rail-api:TAG .
-# (_docker/build.sh does this for you and works out the tag.)
+#     docker build -f _docker/dockerfile/audit-rail-api.Dockerfile -t audit-rail-api:TAG .
+# (_docker/scripts/service_ctl.sh build 1 does this for you and works out the tag.)
 #
 # `python:3.12-slim`, not alpine, on purpose: Pillow, psycopg[binary], reportlab and lxml all
 # publish manylinux wheels and no musl ones, so alpine would compile them from source — a much
