@@ -38,7 +38,7 @@ def _h(client, who="admin@kiam.example", pw="secret1"):
 
 
 def _setup(app_client):
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     ppl = []
@@ -116,7 +116,7 @@ def test_an_svg_is_refused_with_a_reason(app_client):
 
 
 def test_non_images_and_oversize_uploads_are_refused(app_client):
-    from api import imagefile
+    from api.rendering import imagefile
 
     h, _tid, owner, _ = _setup(app_client)
     doc_id, _v = _doc(app_client, h, owner)
@@ -253,7 +253,7 @@ def test_another_tenants_image_id_never_reaches_the_pdf(app_client):
         "full_name": "Victim", "email": f"victim-{uuid.uuid4().hex[:6]}@example.com",
         "password": "Passw0rdOne", "organisation_name": "Victim Org"}).json()
     oh = {"Authorization": f"Bearer {other['access_token']}"}
-    from api.database import engine
+    from api.core.database import engine
     vpid = str(uuid.uuid4())
     with engine.begin() as c:
         c.execute(sqltext("INSERT INTO people (id,tenant_id,full_name,email) "
@@ -268,7 +268,7 @@ def test_another_tenants_image_id_never_reaches_the_pdf(app_client):
         "content": f"![x](/api/documents/images/{victim_image})",
         "content_format": "MARKDOWN"})
 
-    from api import branding, render
+    from api.rendering import branding, render
     from api.routers.documents import image_resolver
     with engine.connect() as conn:
         tid = conn.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
@@ -284,7 +284,7 @@ def test_another_tenants_image_id_never_reaches_the_pdf(app_client):
 def test_an_unresolvable_image_still_produces_a_document(app_client):
     """A vault object can go missing. The export degrades to a document without that picture;
     it does not 500 and it does not fall back to the placeholder PDF."""
-    from api import render
+    from api.rendering import render
 
     html_body = f'<p><img src="/api/documents/images/{uuid.uuid4()}"></p><p>Text survives.</p>'
     pdf, engine_name = render.render_pdf(
@@ -314,7 +314,7 @@ def test_a_remote_image_is_still_impossible_end_to_end(app_client):
 def _audience(client, h):
     """A fresh department with one person in it — a campaign targets an audience, and an
     audience with nobody in it issues no links."""
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     dept = f"SIGNERS-{uuid.uuid4().hex[:6]}"

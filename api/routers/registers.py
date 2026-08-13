@@ -22,12 +22,14 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, importer, register_imports, storage, vocabularies, xlsx_io
-from api.config import settings
-from api.auth import Principal, get_current_user
-from api.permissions import MODULE_LABELS, load_permissions, require
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, now_iso, risk_band
+from api.core import activity, storage
+from api.domain import importer, register_imports, vocabularies
+from api.rendering import xlsx_io
+from api.core.config import settings
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import MODULE_LABELS, load_permissions, require
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, now_iso, risk_band
 
 router = APIRouter(tags=["registers"])
 
@@ -809,7 +811,7 @@ def create_third_party(body: ThirdPartyIn, user: Principal = Depends(require("th
 
 @router.get("/third-parties/{tp_id}")
 def third_party_detail(tp_id: str, user: Principal = Depends(require("third_parties", "view")), conn=Depends(get_conn)):
-    from api.util import evidence_status, today_iso
+    from api.core.util import evidence_status, today_iso
     tp = _get(conn, "third_parties", user.tenant_id, tp_id, "third party")
     today = today_iso()
     ag = t("third_party_agreements")

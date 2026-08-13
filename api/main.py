@@ -5,8 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from api.config import settings
-from api.database import engine, reflect_schema
+from api.core.config import settings
+from api.core.database import engine, reflect_schema
 from api.routers import (assessments, auth, dashboard, documents, evidence, frameworks,
                          library, lookups, notifications, org, people, policies, registers,
                          roles, signing, tasks, templates)
@@ -82,7 +82,7 @@ async def lifespan(app: FastAPI):
     scheduler = None
     if settings.scheduler_enabled:
         from apscheduler.schedulers.background import BackgroundScheduler
-        from api.tasks_engine import run_maintenance
+        from api.domain.tasks_engine import run_maintenance
         run_maintenance()  # catch up on boot
         scheduler = BackgroundScheduler(daemon=True)
         scheduler.add_job(run_maintenance, "interval",

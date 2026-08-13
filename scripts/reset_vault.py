@@ -36,7 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from api.config import settings  # noqa: E402
+from api.core.config import settings  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 #: A server vault may legitimately live outside the checkout (`/srv/audit_rail/vault`),

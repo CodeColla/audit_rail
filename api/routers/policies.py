@@ -8,11 +8,11 @@ from fastapi import (APIRouter, Depends, File, Form, HTTPException, UploadFile)
 from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, insert, select
 
-from api import activity, storage
-from api.auth import Principal, get_current_user
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, add_months, now_iso, review_status, today_iso
+from api.core import activity, storage
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, add_months, now_iso, review_status, today_iso
 
 router = APIRouter(prefix="/policies", tags=["policies"])
 

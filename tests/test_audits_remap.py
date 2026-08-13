@@ -34,7 +34,7 @@ def _assessment(app_client, h, tpl, title="Remap audit"):
 
 def test_confirm_proposals_rejects_unknown_control_id(app_client):
     """Was an unhandled 500 from the composite FK; must be a readable 400."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-cp1")
     r = app_client.post(f"/api/templates/{ids['tpl']}/proposals/confirm", headers=h, json={
@@ -46,7 +46,7 @@ def test_confirm_proposals_rejects_unknown_control_id(app_client):
 
 def test_confirm_proposals_accepts_a_same_tenant_control_id(app_client):
     """The remap path itself works — this is what the Import review screen now sends."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-cp2")
     r = app_client.post(f"/api/templates/{ids['tpl']}/proposals/confirm", headers=h, json={
@@ -62,7 +62,7 @@ def test_confirm_proposals_accepts_a_same_tenant_control_id(app_client):
 # ---------------------------------------------------------------- PATCH .../mapping
 
 def test_remap_points_a_question_at_a_different_control(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-rm1")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -82,7 +82,7 @@ def test_remap_reports_but_does_not_rewrite_a_prefilled_answer(app_client):
     """Same "report, don't silently rewrite" rule as PATCHing a control's stock_response:
     response_revisions is an audit trail and a bank auditor may already have read the old
     answer, so the caller is told what is now stale instead of it changing under them."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-rm2")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -100,7 +100,7 @@ def test_remap_reports_but_does_not_rewrite_a_prefilled_answer(app_client):
 
 
 def test_remap_of_a_handwritten_answer_is_not_flagged_as_prefilled(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-rm3")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -112,7 +112,7 @@ def test_remap_of_a_handwritten_answer_is_not_flagged_as_prefilled(app_client):
 
 
 def test_remap_rejects_unknown_control_and_foreign_question(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-rm4")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -129,7 +129,7 @@ def test_remap_rejects_unknown_control_and_foreign_question(app_client):
 def test_remap_is_member_only(app_client):
     """An auditor guest can read the audit but must never rewrite the control library's
     relationship to it."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-rm5")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -153,7 +153,7 @@ def test_remap_requires_auth(app_client):
 def test_control_evidence_is_inherited_by_its_mapped_questions(app_client):
     """P4-S5 let evidence attach to a CONTROL; P4-S6 surfaces it on every audit question
     mapped to that control — as a separate list, never merged into the question's own."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-inh")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -176,7 +176,7 @@ def test_control_evidence_is_inherited_by_its_mapped_questions(app_client):
 
 
 def test_remapping_changes_which_evidence_is_inherited(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-inh2")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -200,7 +200,7 @@ def test_remapping_changes_which_evidence_is_inherited(app_client):
 def test_grid_carries_the_mapped_control_statement(app_client):
     """The grid showed only the control CODE; the statement is what tells a reviewer
     whether the mapping is actually right."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-grid")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -211,7 +211,7 @@ def test_grid_carries_the_mapped_control_statement(app_client):
 
 
 def test_export_names_the_evidence_file_not_just_its_title(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-exp")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -239,7 +239,7 @@ def test_export_is_scoped_to_this_assessment(app_client):
     """The evidence query used to have no WHERE at all — it walked every
     response_evidence row in the database. A second assessment's evidence must not
     appear in this one's export."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     a_ids = _seed(engine, _tid(engine), suffix="-sc1")
     b_ids = _seed(engine, _tid(engine), suffix="-sc2")
@@ -266,7 +266,7 @@ def test_export_is_scoped_to_this_assessment(app_client):
 def test_export_survives_an_assessment_with_no_responses(app_client):
     """The `if resp_ids:` guard — an empty IN () is a SQL error in some dialects and an
     always-false predicate in others; either way the export must not crash."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-empty")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -282,7 +282,7 @@ def test_remap_supersedes_the_previous_mapping(app_client):
     ranks confirmed rows by confidence — keeps preferring the importer's original (which
     has a real confidence score) over the human's hand-picked one (which has none). The
     remap would appear to succeed and change nothing."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-sup")
     aid = _assessment(app_client, h, ids["tpl"])
@@ -306,7 +306,7 @@ def test_remap_supersedes_the_previous_mapping(app_client):
 def test_remapping_back_to_the_original_control_works(app_client):
     """Remap A->B->A. The A row is 'rejected' by the first remap, so the second must
     revive it rather than leaving the question with no live mapping at all."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     ids = _seed(engine, _tid(engine), suffix="-back")
     aid = _assessment(app_client, h, ids["tpl"])

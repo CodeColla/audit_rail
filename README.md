@@ -77,18 +77,19 @@ seeded with its own roles, vocabularies, domains, controls and frameworks.
 audit_rail/
 ├── api/                    FastAPI backend
 │   ├── main.py             app assembly, startup preflight, schema-drift check
-│   ├── routers/            18 routers — one per module, all mounted under /api
-│   ├── auth.py             JWT, signup, invites; permissions.py holds the RBAC matrix
-│   ├── render.py           SHEET/HTML/markdown → HTML → PDF, and the letterhead
-│   ├── docx_export.py      HTML → Word, hand-written walker over the sanitiser's tag set
-│   ├── html_sanitize.py    the security boundary for all authored HTML
-│   ├── storage.py          the blob vault — every uploaded file goes through here
-│   └── control_library.py  the 95 canonical controls, seeded per organisation
+│   ├── routers/            19 routers — one per module, all mounted under /api
+│   ├── core/               config, database, auth, permissions, storage, util, activity
+│   │                       — the plumbing every router leans on
+│   ├── domain/             control_library (the 95 seeded controls), domains, frameworks,
+│   │                       vocabularies, importer, scoring, tasks_engine, passwords…
+│   └── rendering/          render.py (SHEET/HTML/markdown → HTML → PDF), docx_export,
+│                           xlsx_io, html_sanitize (the security boundary), imagefile, branding
 ├── webui/                  React SPA
-│   ├── src/pages/          28 screens, one file each
-│   ├── src/components/     Shell, editors, DataTable, FilePreview, Brand
+│   ├── src/pages/          screens, grouped by feature —
+│   │                       documents · controls · registers · audits · people · admin · auth
+│   ├── src/components/     Shell, editors, DataTable, FilePreview, Avatar — shared across features
 │   ├── src/lib/            api client, auth context, shared UI helpers
-│   └── e2e/                26 Playwright specs
+│   └── e2e/                Playwright specs
 ├── db/
 │   └── schema.sql          70 tables + 11 views, triggers, RLS — the source of truth
 ├── scripts/
@@ -96,7 +97,7 @@ audit_rail/
 │   ├── reset_vault.py      empty the file vault (dry run by default)
 │   └── seed_e2e.py         build the isolated end-to-end database
 ├── tests/                  31 pytest modules, 545 tests
-├── _docker/                images, compose stack and host.sql for deployment
+├── _docker/                dockerfile/ · compose/ · scripts/service_ctl.sh · host.sql
 ├── setup.sh                one-time local setup
 └── start.sh                run API + UI locally
 ```
@@ -173,13 +174,16 @@ createdb -E UTF8 audit_rail
 psql -h <host> -U <user> -d audit_rail -f _docker/host.sql
 
 # 2. Build. Tag is <git tag or commit>-<date>, e.g. v1.0.0-20260813.
-./_docker/build.sh
-REGISTRY=registry.example.com/you ./_docker/build.sh --push
+#    IDs: 0 all · 1 api · 2 ui · 3 postgres (local dev only)
+./_docker/scripts/service_ctl.sh build 0
+REGISTRY=registry.example.com/you ./_docker/scripts/service_ctl.sh push 0
 
-# 3. Configure and run.
+# 3. Configure and run — the API and the UI are separate compose files, so on each
+#    server bring up only what belongs there.
 cp _docker/env/api.env.example _docker/env/api.env   # DATABASE_URL, JWT_SECRET
 cp _docker/env/ui.env.example  _docker/env/ui.env
-cd _docker && TAG=v1.0.0-20260813 docker compose up -d
+TAG=v1.0.0-20260813 ./_docker/scripts/service_ctl.sh up 1    # API server
+TAG=v1.0.0-20260813 ./_docker/scripts/service_ctl.sh up 2    # UI server
 ```
 
 Four things that fail quietly if you skip them — all covered in `_docker/README.md`:

@@ -11,11 +11,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, insert, select, update
 
-from api import vocabularies
-from api.auth import Principal, get_current_user
-from api.database import engine, get_conn, t
-from api.permissions import require
-from api.util import StrictModel, now_iso
+from api.domain import vocabularies
+from api.core.auth import Principal, get_current_user
+from api.core.database import engine, get_conn, t
+from api.core.permissions import require
+from api.core.util import StrictModel, now_iso
 
 router = APIRouter(prefix="/lookups", tags=["lookups"])
 

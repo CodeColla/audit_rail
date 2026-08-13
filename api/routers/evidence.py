@@ -11,12 +11,12 @@ from fastapi.responses import FileResponse
 from sqlalchemy import delete as sqldelete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, storage
-from api.auth import Principal, get_current_user
-from api.permissions import require
-from api.config import settings
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, evidence_status, now_iso, today_iso
+from api.core import activity, storage
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import require
+from api.core.config import settings
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, evidence_status, now_iso, today_iso
 
 router = APIRouter(prefix="/evidence", tags=["evidence"])
 

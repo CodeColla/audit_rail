@@ -36,7 +36,7 @@ def _seed_controls(engine, tenant_id):
 
 
 def test_import_proposals_scoring_export(app_client):
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     _seed_controls(engine, tid)

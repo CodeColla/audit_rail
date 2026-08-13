@@ -52,7 +52,7 @@ def test_thread_does_not_leak_across_unanswered_questions(app_client):
     `response_id == None` renders as `IS NULL`, which is the schema's marker for an
     assessment-level message. And posting from an unanswered question filed the message
     at assessment level, where every other unanswered question would then show it."""
-    from api.database import engine
+    from api.core.database import engine
     tid = _tid(engine)
     ids = _seed_template(engine, tid)
     h = _h(app_client)
@@ -83,7 +83,7 @@ def test_thread_does_not_leak_across_unanswered_questions(app_client):
 def test_deleting_referenced_evidence_is_409_not_500(app_client):
     """task_runs.evidence_id is NO ACTION on purpose — the proof behind a completed
     obligation must not vanish. That used to surface as an uncaught IntegrityError (500)."""
-    from api.database import engine
+    from api.core.database import engine
     tid, h = _tid(engine), _h(app_client)
     ev_id, task_id, run_id = (str(uuid.uuid4()) for _ in range(3))
     with engine.begin() as c:
@@ -119,7 +119,7 @@ def test_unknown_fields_are_rejected_not_silently_dropped(app_client):
     compliance product a silently-dropped date is an integrity problem — it must 422.
 
     (Both of these are real mistakes made against this API in a single session.)"""
-    from api.database import engine
+    from api.core.database import engine
     tid, h = _tid(engine), _h(app_client)
 
     tp = app_client.post("/api/third-parties", headers=h, json={"name": "Strict Vendor"})
@@ -154,7 +154,7 @@ def test_template_sub_resources_are_tenant_scoped(app_client):
     off the path id — so a member holding another tenant's template UUID could read that
     bank's questions and control mappings. RLS is inert (the app connects as the table
     owner), so this app-level check IS the boundary."""
-    from api.database import engine
+    from api.core.database import engine
     other_tenant, other_tpl, sec, q = (str(uuid.uuid4()) for _ in range(4))
     with engine.begin() as c:
         c.execute(sqltext("INSERT INTO tenants (id,name,slug,status) "
@@ -193,7 +193,7 @@ REAL_XLSX = sorted((REPO / "data").glob("*.xlsx"))
 def test_every_committed_bank_workbook_parses_into_real_questions(path):
     """All three shipped workbooks used to fail: the VRA file 400'd (its active sheet is an
     empty 'Sheet2'), and the other two imported 'S.No.' / 'Yes' as the question text."""
-    from api.xlsx_io import parse_checklist
+    from api.rendering.xlsx_io import parse_checklist
     meta, rows = parse_checklist(path.read_bytes())
     assert len(rows) > 50, f"{path.name}: only {len(rows)} rows"
     sample = [r["text"] for r in rows[:10] if r["text"]]
@@ -206,7 +206,7 @@ def test_every_committed_bank_workbook_parses_into_real_questions(path):
 def test_csv_checklists_are_supported():
     """The picker has always advertised `accept=".xlsx,.csv"`; CSV used to die on
     openpyxl with an opaque BadZipFile."""
-    from api.xlsx_io import parse_checklist
+    from api.rendering.xlsx_io import parse_checklist
     csv_bytes = (b"S.No,Domain,Question\n"
                  b"1,Governance,Do you maintain a documented information security policy?\n"
                  b"2,Access,Do you enforce multi-factor authentication for admins?\n")
@@ -217,7 +217,7 @@ def test_csv_checklists_are_supported():
 
 def test_unknown_sheet_name_is_a_clear_error_not_silent_wrong_data():
     """A typo'd sheet used to fall through to the active sheet and import the wrong tab."""
-    from api.xlsx_io import parse_checklist
+    from api.rendering.xlsx_io import parse_checklist
     csv_bytes = b"Question\nDo you have a documented policy in place for reviews?\n"
     with pytest.raises(ValueError, match="no sheet named"):
         parse_checklist(csv_bytes, sheet="NotARealSheet")
@@ -229,7 +229,7 @@ def test_dashboard_surfaces_documents_not_just_legacy_policies(app_client):
     """The review queue read the legacy `policies` table, so no post-pivot Document could
     ever appear in it however overdue. It now reads documents (and any legacy policy that
     has not been migrated), without double-counting migrated ones."""
-    from api.database import engine
+    from api.core.database import engine
     tid, h = _tid(engine), _h(app_client)
     pid, did = str(uuid.uuid4()), str(uuid.uuid4())
     with engine.begin() as c:

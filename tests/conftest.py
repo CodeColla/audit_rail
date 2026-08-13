@@ -32,7 +32,7 @@ TEST_URL = os.environ.get(
 # This must happen here, not inside the fixture. pytest imports conftest before any test
 # module, but test modules are imported at COLLECTION time — before fixtures run. So a test
 # file with a module-level `from api.x import ...` would construct api.config.settings (and
-# therefore api.database.engine) while DATABASE_URL still pointed at the DEV database, and
+# therefore api.core.database.engine) while DATABASE_URL still pointed at the DEV database, and
 # the whole session would then run against dev data: seeded logins would 401 and seeds would
 # collide. Setting it here makes module-level api imports safe.
 os.environ["DATABASE_URL"] = TEST_URL
@@ -71,7 +71,7 @@ def app_client():
         reset_schema(conn)
         apply_schema(conn)
 
-        from api.auth import hash_password  # noqa: E402
+        from api.core.auth import hash_password  # noqa: E402
 
         tid, admin_id, member_id = (str(uuid.uuid4()) for _ in range(3))
         conn.execute(text("INSERT INTO tenants (id,name,slug,status,created_at) "

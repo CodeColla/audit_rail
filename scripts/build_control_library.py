@@ -33,8 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlalchemy import text as sql  # noqa: E402  (aliased: `text` is a local var below)
 
 from _db import get_engine  # noqa: E402
-from api.control_library import F  # noqa: E402  (single source of truth — P5-S9)
-from api.mapping import classify, overlap, toks  # noqa: E402
+from api.domain.control_library import F  # noqa: E402  (single source of truth — P5-S9)
+from api.domain.mapping import classify, overlap, toks  # noqa: E402
 
 NOW = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 

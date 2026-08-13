@@ -8,11 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, insert, select, update
 
-from api import activity, tasks_engine
-from api.auth import Principal, get_current_user
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, now_iso, today_iso
+from api.core import activity
+from api.domain import tasks_engine
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, now_iso, today_iso
 
 FREQUENCIES = ("DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY")
 

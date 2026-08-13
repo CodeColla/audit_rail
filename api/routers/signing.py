@@ -23,10 +23,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import insert, select, text, update
 
-from api import storage
-from api.database import engine, t
-from api.html_sanitize import IMG_SRC_RE
-from api.util import StrictModel, now_iso
+from api.core import storage
+from api.core.database import engine, t
+from api.rendering.html_sanitize import IMG_SRC_RE
+from api.core.util import StrictModel, now_iso
 
 router = APIRouter(prefix="/sign", tags=["signing"])
 

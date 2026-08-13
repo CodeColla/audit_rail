@@ -17,12 +17,13 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, scoring, storage
-from api.auth import Principal, create_guest_token, get_caller, get_current_user
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, now_iso, today_iso
-from api.xlsx_io import build_answers_workbook
+from api.core import activity, storage
+from api.domain import scoring
+from api.core.auth import Principal, create_guest_token, get_caller, get_current_user
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, now_iso, today_iso
+from api.rendering.xlsx_io import build_answers_workbook
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
 

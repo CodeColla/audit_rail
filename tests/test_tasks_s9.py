@@ -17,11 +17,11 @@ from sqlalchemy import text as sqltext
 from tests.conftest import token
 from tests.test_registers import _h, _person, _tid
 from tests.test_identity import uniq_gst
-from api import tasks_engine
+from api.domain import tasks_engine
 
 
 def engine_conn():
-    from api.database import engine
+    from api.core.database import engine
     return engine.connect()
 
 TODAY = dt.date.today()
@@ -133,7 +133,7 @@ def test_blank_title_is_400_not_500(app_client):
 # ---------------------------------------------------------------- dormant links wired
 
 def test_assignee_person_and_document_and_risk_are_settable(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tid_org = _tid(engine)
     pid = _person(engine, tid_org, "Reviewer")
@@ -151,7 +151,7 @@ def test_assignee_person_and_document_and_risk_are_settable(app_client):
 def test_a_cross_tenant_link_is_400_not_500(app_client):
     """ADVERSARIAL. Every one of these FKs is composite (col, tenant_id) — a foreign id
     would otherwise reach the database as an uncaught IntegrityError."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     _otid, oh = _other_org(app_client)
     foreign_risk = _risk(app_client, oh)
@@ -280,7 +280,7 @@ def test_a_paused_tasks_overdue_run_does_not_flip_or_notify(app_client):
     status entirely, so a paused task's stale run still flipped to overdue and still
     queued a notification every maintenance pass — pausing a task did not actually
     silence it."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tid = _tid(engine)
     member = None

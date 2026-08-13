@@ -16,10 +16,14 @@ $PY -m venv .venv
 .venv/bin/pip install -r api/requirements.txt -q
 
 echo "[2] Starting PostgreSQL (docker compose — host port 5434)..."
-if docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null; then
+# issue #4: the compose files moved into _docker/compose/, one per service, so this names the
+# file explicitly instead of relying on a docker-compose.yml at the repo root.
+PG_COMPOSE="_docker/compose/audit-rail-postgres.compose.yml"
+if docker compose -f "$PG_COMPOSE" up -d 2>/dev/null \
+   || docker-compose -f "$PG_COMPOSE" up -d 2>/dev/null; then
   # wait for the healthcheck rather than racing it
   for i in $(seq 1 30); do
-    if docker compose exec -T postgres pg_isready -U audit -d audit_rail >/dev/null 2>&1; then
+    if docker compose -f "$PG_COMPOSE" exec -T postgres pg_isready -U audit -d audit_rail >/dev/null 2>&1; then
       echo "    postgres ready on 127.0.0.1:5434"
       break
     fi

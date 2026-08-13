@@ -37,8 +37,8 @@ def _new_org(client, tag):
 
 
 def _letterhead(tenant_id):
-    from api import branding
-    from api.database import engine
+    from api.rendering import branding
+    from api.core.database import engine
 
     with engine.connect() as conn:
         return branding.letterhead(conn, tenant_id)
@@ -80,8 +80,8 @@ def test_a_logo_whose_bytes_have_vanished_degrades_instead_of_raising(app_client
     """A vault object can go missing — a restore, a botched migration, a full disk. Publishing
     a policy is not the moment to discover it, and a document with no logo is still a valid
     document. The alternative is a 500 on export for every document in the tenant."""
-    from api import storage
-    from api.database import engine
+    from api.core import storage
+    from api.core.database import engine
 
     org, h = _new_org(app_client, f"gone{uuid.uuid4().hex[:6]}")
     app_client.put("/api/org/logo", headers=h, files={"file": ("m.png", PNG, "image/png")})
@@ -106,7 +106,7 @@ def test_an_unknown_tenant_falls_back_rather_than_crashing():
 
 def _a_published_document(client, h):
     """A tenant's own document, published, so both export routes are reachable."""
-    from api.database import engine
+    from api.core.database import engine
 
     me = client.get("/api/auth/me", headers=h).json()
     tid = me.get("tenant_id") or me["organisations"][0]["tenant_id"]
@@ -164,7 +164,7 @@ def test_the_logo_reaches_the_word_header_as_a_picture(app_client):
 def test_a_corrupt_logo_never_fails_an_export(app_client):
     """Fail-soft, deliberately: a policy export must not 500 because the logo was odd. The
     magic-byte sniffer makes this hard to reach through the API, so it is forced here."""
-    from api import docx_export, render
+    from api.rendering import docx_export, render
 
     meta_args = dict(title="T", body_html="<p>x</p>", classification="INTERNAL",
                      version_label="1.0", org="Acme Ltd")

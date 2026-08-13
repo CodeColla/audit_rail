@@ -49,7 +49,7 @@ def _incident(app_client, h, **over):
 # ---------------------------------------------------------------- risks: person refs
 
 def test_risk_carries_reporter_and_reviewer(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     reporter, reviewer = _person(engine, tid, "Reporter"), _person(engine, tid, "Reviewer")
     rid = app_client.post("/api/risks", headers=h, json={
@@ -194,7 +194,7 @@ def test_contract_uploads_downloads_and_shows_on_the_vendor(app_client):
 
 
 def test_replacing_a_contract_sweeps_the_old_file_row(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tp = _tp(app_client, h)
     ag = _agreement(app_client, h, tp)
@@ -208,7 +208,7 @@ def test_replacing_a_contract_sweeps_the_old_file_row(app_client):
 
 
 def test_deleting_an_agreement_sweeps_its_file(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tp = _tp(app_client, h)
     ag = _agreement(app_client, h, tp)
@@ -288,7 +288,7 @@ def test_risk_evidence_attaches_detaches_and_dedupes(app_client):
 def test_risk_evidence_tenant_id_comes_from_the_trigger(app_client):
     """These three join tables omit tenant_id on INSERT and rely on inherit_tenant. If the
     trigger is missing the write fails NOT NULL as an opaque 500."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     rid = app_client.post("/api/risks", headers=h, json={"title": "Trigger check"}).json()["id"]
     ev = _evidence(app_client, h)
@@ -348,7 +348,7 @@ def test_incident_event_rejects_a_bad_type_and_an_empty_body(app_client):
 def test_incident_events_are_immutable_but_the_incident_still_deletes(app_client):
     """deny_update, NOT deny_change: the timeline is tamper-evident, but denying DELETE too
     would make an incident permanently undeletable — the M6 mistake this schema documents."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     iid = _incident(app_client, h)
     eid = app_client.post(f"/api/incidents/{iid}/events", headers=h,
@@ -439,7 +439,7 @@ def test_asset_photo_rejects_a_non_image(app_client):
 
 
 def test_replacing_an_asset_photo_sweeps_the_old_file_row(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     a = _asset(app_client, h)
     first = app_client.post(f"/api/assets/{a}/photo", headers=h,
@@ -454,7 +454,7 @@ def test_replacing_an_asset_photo_sweeps_the_old_file_row(app_client):
 def test_deleting_an_asset_with_a_photo_does_not_500(app_client):
     """assets.photo_file_id is a RESTRICT foreign key, so a naive DELETE on an asset that
     has a photo would raise an IntegrityError. Same trap as the agreement contract."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     a = _asset(app_client, h)
     fid = app_client.post(f"/api/assets/{a}/photo", headers=h,
@@ -484,7 +484,7 @@ def test_photo_endpoints_are_tenant_scoped(app_client):
     `tenant_id` predicate. A missed one is a silent cross-tenant read of a photograph of
     someone else's server room.
     """
-    from api.gstin import checksum
+    from api.domain.gstin import checksum
     h = _h(app_client)
     a = _asset(app_client, h)
     app_client.post(f"/api/assets/{a}/photo", headers=h,
@@ -558,7 +558,7 @@ def test_deleting_a_risk_cited_by_a_finding_is_409_not_500(app_client):
     because a bulk run over a register holding one cited risk would otherwise emit a wall of
     500s with nothing legible to report per row.
     """
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tid = _tid(engine)
     risk_id = app_client.post("/api/risks", headers=h,

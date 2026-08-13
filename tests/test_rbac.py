@@ -23,8 +23,8 @@ def _signup(client):
 
 def _member_with_role(client, tenant_id: str, role_name: str | None):
     """Add a NON-super-admin login to the org, holding `role_name` (or no role at all)."""
-    from api.database import engine
-    from api.passwords import set_password
+    from api.core.database import engine
+    from api.domain.passwords import set_password
     email = f"{(role_name or 'norole').lower()}-{uuid.uuid4().hex[:8]}@example.com"
     with engine.begin() as c:
         uid = str(uuid.uuid4())
@@ -92,7 +92,7 @@ def test_a_role_with_no_permissions_can_do_nothing(app_client):
 
     (A membership with role_id NULL is a different case — it falls back to the legacy role
     map so pre-P4 rows keep working; that path is covered by the suites at large.)"""
-    from api.database import engine
+    from api.core.database import engine
     org, _ = _signup(app_client)
     h, uid = _member_with_role(app_client, org["tenant_id"], "Viewer")
     with engine.begin() as c:
@@ -108,7 +108,7 @@ def test_a_role_with_no_permissions_can_do_nothing(app_client):
 def test_legacy_membership_still_resolves(app_client):
     """Pre-P4 rows have role_id NULL. They must keep working via LEGACY_ROLE_MAP, or every
     fixture and every existing customer would be locked out on upgrade."""
-    from api.database import engine
+    from api.core.database import engine
     org, _ = _signup(app_client)
     h, uid = _member_with_role(app_client, org["tenant_id"], "Editor")
     with engine.begin() as c:
@@ -124,7 +124,7 @@ def test_legacy_membership_still_resolves(app_client):
 
 def test_super_admin_bypasses_every_check(app_client):
     """The org owner can always act in their own organisation, whatever roles say."""
-    from api.database import engine
+    from api.core.database import engine
     org, _ = _signup(app_client)
     h = {"Authorization": f"Bearer {org['access_token']}"}
     # strip every permission from every role in the org
@@ -139,7 +139,7 @@ def test_super_admin_bypasses_every_check(app_client):
 def test_permission_changes_take_effect_without_re_login(app_client):
     """Permissions are read from the DB per request — a demotion must bite immediately,
     not when the 12h token happens to expire."""
-    from api.database import engine
+    from api.core.database import engine
     org, _ = _signup(app_client)
     h, uid = _member_with_role(app_client, org["tenant_id"], "Editor")
 
@@ -161,13 +161,13 @@ def test_permission_changes_take_effect_without_re_login(app_client):
 
 def test_permissions_do_not_leak_across_organisations(app_client):
     """An Admin in org A holds nothing in org B."""
-    from api.database import engine
+    from api.core.database import engine
     a, _ = _signup(app_client)
     b, _ = _signup(app_client)
     h, uid = _member_with_role(app_client, a["tenant_id"], "Admin")
 
     # forge a token scoped to org B for this user (they are not a member there)
-    from api.auth import create_access_token
+    from api.core.auth import create_access_token
     stolen = create_access_token(user_id=uid, tenant_id=b["tenant_id"], role="admin")
     hb = {"Authorization": f"Bearer {stolen}"}
     assert app_client.get("/api/risks", headers=hb).status_code == 403

@@ -16,12 +16,12 @@ from sqlalchemy.exc import IntegrityError
 
 # NB: `gstin` is intentionally NOT imported any more. It still exists, still works
 # and is still tested — signup just no longer validates against it (P5-S6).
-from api import (activity, control_library, domains, frameworks, passwords,
-                 permissions, vocabularies)
-from api.auth import (Principal, authenticate, create_access_token, get_caller,
+from api.core import activity, permissions
+from api.domain import control_library, domains, frameworks, passwords, vocabularies
+from api.core.auth import (Principal, authenticate, create_access_token, get_caller,
                       get_current_user, memberships)
-from api.database import engine, t
-from api.util import StrictModel, now_iso, now_plus_days
+from api.core.database import engine, t
+from api.core.util import StrictModel, now_iso, now_plus_days
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -234,7 +234,7 @@ def change_password(body: ChangePasswordIn, user: Principal = Depends(get_curren
     with engine.begin() as conn:
         row = conn.execute(select(users.c.password_hash).where(
             users.c.id == user.user_id)).mappings().first()
-        from api.auth import verify_password
+        from api.core.auth import verify_password
         if not verify_password(body.current_password, row["password_hash"]):
             raise HTTPException(400, "your current password is not correct")
         try:

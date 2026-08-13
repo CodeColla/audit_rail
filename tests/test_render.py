@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from api.render import (DEFAULT_ORG, SheetFormatError, build_html, parse_sheet, render_pdf,
+from api.rendering.render import (DEFAULT_ORG, SheetFormatError, build_html, parse_sheet, render_pdf,
                         sheet_json_to_html)
 
 V1 = json.dumps({"data": [["Name", "Score"], ["Alice", 9], [None, "n/a"]],
@@ -317,7 +317,7 @@ def test_only_real_numbers_are_formatted_so_the_grid_and_the_pdf_agree():
 def test_a_column_format_change_is_visible_in_the_version_diff():
     """A currency->percent flip changes every figure an approver reads while leaving `data`
     byte-identical, so without a diff line it would present as "no change"."""
-    from api.render import sheet_diff_lines
+    from api.rendering.render import sheet_diff_lines
 
     before = sheet_diff_lines(_v2(data=[["1200"]], colFormat=["currency:INR"]))
     after = sheet_diff_lines(_v2(data=[["1200"]], colFormat=["percent"]))
@@ -543,7 +543,7 @@ def test_a_comment_shows_up_in_the_version_diff():
     """A reviewer's note is content: "why is this figure an exception" is exactly what an
     approver is being asked to sign off. Without this, a note could be added, reworded or
     deleted between versions and the diff would report no change at all."""
-    from api.render import sheet_diff_lines
+    from api.rendering.render import sheet_diff_lines
 
     before = sheet_diff_lines(_v2(data=[["1200"]]))
     after = sheet_diff_lines(_v2(data=[["1200"]], comments={"A1": "Board approved"}))
@@ -557,7 +557,7 @@ def test_a_comment_shows_up_in_the_version_diff():
 def test_a_comment_on_an_empty_cell_still_reaches_the_diff():
     """The editor trims trailing blank rows and columns, so a note on an otherwise-empty cell
     sits outside `data` entirely — and would be stored but invisible to an approver."""
-    from api.render import sheet_diff_lines
+    from api.rendering.render import sheet_diff_lines
 
     lines = sheet_diff_lines(_v2(data=[["x"]], comments={"D9": "chase the vendor"}))
     assert any("D9" in ln and "chase the vendor" in ln for ln in lines)

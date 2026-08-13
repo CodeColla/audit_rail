@@ -1,0 +1,33 @@
+# Audit Rail — UI service (static SPA served by nginx).
+#
+#   ./_docker/scripts/service_ctl.sh up 2
+#   # or directly:
+#   TAG=v1.0.0-20260813 docker compose -f _docker/compose/audit-rail-ui.compose.yml up -d
+#
+# The image carries no Node process. `API_URL` in env/ui.env is read at CONTAINER START by
+# _docker/ui/20-api-proxy.sh, not baked in at build time — so the same image works against any
+# backend: stop it, change the value, start it again.
+services:
+  audit-rail-ui:
+    build:
+      context: ../..
+      dockerfile: _docker/dockerfile/audit-rail-ui.Dockerfile
+    image: ${REGISTRY:-}${REGISTRY:+/}${UI_IMAGE:-audit-rail-ui}:${TAG:-latest}
+    container_name: audit-rail-ui
+    restart: unless-stopped
+    env_file: [../env/ui.env]
+    logging:
+      driver: "json-file"
+      options: { max-size: "10m", max-file: "3" }
+    ports:
+      - "127.0.0.1:8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [audit-rail]
+
+networks:
+  audit-rail:
+    driver: bridge

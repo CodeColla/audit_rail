@@ -55,7 +55,7 @@ def _seed(engine, tenant_id, suffix=""):
 
 
 def test_full_workspace_roundtrip(app_client):
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     ids = _seed(engine, tid)
@@ -150,7 +150,7 @@ def test_a_rejected_mapping_never_prefills_or_shows_as_the_control(app_client):
     that control in the grid and prefilled its stock answer, putting an answer the reviewer
     had explicitly refused in front of a bank auditor.
     """
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     ids = _seed(engine, tid, suffix="-rej")

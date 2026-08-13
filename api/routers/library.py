@@ -12,11 +12,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity
-from api.auth import Principal
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import StrictModel, evidence_status, now_iso, today_iso
+from api.core import activity
+from api.core.auth import Principal
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import StrictModel, evidence_status, now_iso, today_iso
 
 router = APIRouter(prefix="/library", tags=["library"])
 

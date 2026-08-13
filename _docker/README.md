@@ -6,16 +6,41 @@ workflow and are unaffected.
 
 ```
 _docker/
-  Dockerfile.api        python:3.12-slim + uvicorn
-  Dockerfile.ui         node build stage -> nginx:alpine serving the static SPA
-  build.sh              builds both, tags them, regenerates host.sql
-  docker-compose.yml    the deployed stack (no database — yours is external)
-  host.sql              GENERATED from db/schema.sql; apply once to your database
-  ui/nginx.conf         the UI container's server block
-  ui/20-api-proxy.sh    optional runtime /api forwarding, driven by API_URL
-  env/api.env.example   copy to api.env and fill in
-  env/ui.env.example    copy to ui.env
+  dockerfile/  audit-rail-api.Dockerfile        python:3.12-slim + uvicorn
+               audit-rail-ui.Dockerfile         node build -> nginx:alpine serving the SPA
+  compose/     audit-rail-api.compose.yml       API service
+               audit-rail-ui.compose.yml        UI service
+               audit-rail-postgres.compose.yml  LOCAL DEV database only — not a deployment
+  scripts/     service_ctl.sh                   build / up / down / logs / push, by numeric id
+  ui/          nginx.conf                       the UI container's server block
+               20-api-proxy.sh                  optional runtime /api forwarding, via API_URL
+  env/         api.env.example                  copy to api.env and fill in
+               ui.env.example                   copy to ui.env
+  host.sql     GENERATED from db/schema.sql; apply once to your database
 ```
+
+**One file per service** (issue #4, convention borrowed from the GINTI repo). The API and the
+UI have separate compose files because they are routinely deployed to *different servers* — on
+each one you bring up only what belongs there.
+
+| ID | Component | Description | Port |
+| -- | --------- | ----------- | ---- |
+| 0  | all       | api + ui (never postgres) | — |
+| 1  | api       | FastAPI backend | 5007 |
+| 2  | ui        | SPA served by nginx | 8080 |
+| 3  | postgres  | **Local dev database only** | 5434 |
+
+```bash
+./_docker/scripts/service_ctl.sh build 0     # build both images, tag derived from git
+./_docker/scripts/service_ctl.sh up 1        # start the API
+./_docker/scripts/service_ctl.sh logs 2      # follow the UI logs
+REGISTRY=registry.example.com/you ./_docker/scripts/service_ctl.sh push 0
+```
+
+The tag is `<version>-<YYYYMMDD>`, where `<version>` is the git tag on HEAD if there is one and
+the short sha otherwise. `-dirty` is appended when the working tree has uncommitted changes,
+and `push` refuses such a build outright — an image built from unsaved work must never be
+mistaken for a reproducible one.
 
 ## The shape this assumes
 
@@ -50,8 +75,8 @@ are imported at **Audits → Import**.
 **2. Build.**
 
 ```bash
-./_docker/build.sh                                   # both images
-REGISTRY=registry.example.com/iesg ./_docker/build.sh --push
+./_docker/scripts/service_ctl.sh build 0                                   # both images
+REGISTRY=registry.example.com/iesg ./_docker/scripts/service_ctl.sh push 0
 ```
 
 Tag is `<version>-<YYYYMMDD>`, where version is the git tag on HEAD if there is one, else the
@@ -63,9 +88,8 @@ build.
 ```bash
 cp _docker/env/api.env.example _docker/env/api.env    # fill in DATABASE_URL + JWT_SECRET
 cp _docker/env/ui.env.example  _docker/env/ui.env
-cd _docker
-TAG=v1.0.0-20260812 docker compose up -d api          # on the API server
-TAG=v1.0.0-20260812 docker compose up -d ui           # on the UI server
+TAG=v1.0.0-20260812 ./_docker/scripts/service_ctl.sh up 1    # on the API server
+TAG=v1.0.0-20260812 ./_docker/scripts/service_ctl.sh up 2    # on the UI server
 ```
 
 **4. Your nginx.** The rules that matter, whatever syntax you express them in:
@@ -123,7 +147,8 @@ rule in your config. `docker logs audit-rail-ui` prints which mode it started in
 **The vault volume is not optional.** Every uploaded file — evidence, policy documents, asset
 photos, published PDFs, org logos — lives on disk under `VAULT_DIR`. Its default is inside the
 source tree, which in a container is the image layer, so without the volume in
-`docker-compose.yml` a redeploy destroys every file while leaving the `files` rows behind: the
+`compose/audit-rail-api.compose.yml` a redeploy destroys every file while leaving the `files`
+rows behind: the
 UI keeps listing evidence that 410s when you click it. Back this volume up.
 
 **`CORS_ORIGINS` is parsed as JSON.** `CORS_ORIGINS=https://ar.iam-kiam.com` will not start the
@@ -147,8 +172,9 @@ HSTS behind it.
 ## Upgrading
 
 ```bash
-./_docker/build.sh --push
-cd _docker && TAG=<new tag> docker compose up -d
+./_docker/scripts/service_ctl.sh build 0
+./_docker/scripts/service_ctl.sh push 0
+TAG=<new tag> ./_docker/scripts/service_ctl.sh up 0
 ```
 
 Rebuild and re-apply `host.sql` only when the schema changes — and note there is no migration

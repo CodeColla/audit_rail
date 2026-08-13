@@ -23,12 +23,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from fastapi.responses import FileResponse
 from sqlalchemy import insert, select, update
 
-from api import activity, imagefile, storage
-from api.auth import Principal, get_current_user
-from api.database import engine, get_conn, t
-from api.imagefile import MAX_LOGO_MB
-from api.permissions import require
-from api.util import now_iso
+from api.core import activity, storage
+from api.rendering import imagefile
+from api.core.auth import Principal, get_current_user
+from api.core.database import engine, get_conn, t
+from api.rendering.imagefile import MAX_LOGO_MB
+from api.core.permissions import require
+from api.core.util import now_iso
 
 router = APIRouter(prefix="/org", tags=["org"])
 

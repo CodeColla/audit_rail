@@ -29,7 +29,7 @@ def _recurring_control(engine, tenant_id, code):
 
 
 def test_generate_complete_and_dashboard(app_client):
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     _recurring_control(engine, tid, "TSK 1.a")
@@ -61,7 +61,7 @@ def test_generate_complete_and_dashboard(app_client):
 
 def test_overdue_and_dashboard_queue(app_client):
     """A backdated run must surface as overdue in the dashboard."""
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
         member = c.execute(sqltext(

@@ -15,11 +15,11 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, func, insert, select, update
 
-from api import activity
-from api.auth import Principal
-from api.database import engine, get_conn, t
-from api.permissions import MODULE_LABELS, MODULES, require
-from api.util import StrictModel, now_iso
+from api.core import activity
+from api.core.auth import Principal
+from api.core.database import engine, get_conn, t
+from api.core.permissions import MODULE_LABELS, MODULES, require
+from api.core.util import StrictModel, now_iso
 
 router = APIRouter(prefix="/roles", tags=["roles"])
 
