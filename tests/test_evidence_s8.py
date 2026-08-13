@@ -34,7 +34,7 @@ def _a_control(app_client, h, **over):
     library comes from scripts/build_control_library.py, which only init_db/seed_e2e run.
     Every control a test needs must therefore be created through the API."""
     tid = app_client.get("/api/auth/me", headers=h).json()["tenant_id"]
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         dom = c.execute(sqltext("SELECT id FROM domains WHERE tenant_id=:t "
                                 "ORDER BY sort_order LIMIT 1"), {"t": tid}).scalar()
@@ -107,7 +107,7 @@ def test_patch_cannot_repoint_the_artifact_at_other_bytes(app_client):
     row's blob — and `document_version_id` / `requirement_id` would reach composite FKs."""
     h = _h(app_client)
     a, b = _ev(app_client, h), _ev(app_client, h)
-    with __import__("api.database", fromlist=["engine"]).engine.connect() as c:
+    with __import__("api.core.database", fromlist=["engine"]).engine.connect() as c:
         other_file = c.execute(sqltext("SELECT file_id FROM evidence WHERE id=:i"),
                                {"i": b}).scalar()
     for field, value in (("file_id", other_file), ("document_version_id", str(uuid.uuid4())),
@@ -253,7 +253,7 @@ def test_the_link_row_carries_the_right_tenant(app_client):
     e, c = _ev(app_client, h), _a_control(app_client, h)
     app_client.post(f"/api/evidence/{e}/controls", headers=h, json={"control_id": c})
     tid = app_client.get("/api/auth/me", headers=h).json()["tenant_id"]
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as conn:
         got = conn.execute(sqltext("SELECT tenant_id FROM evidence_controls "
                                    "WHERE evidence_id=:e AND control_id=:c"),
@@ -281,7 +281,7 @@ def test_link_evidence_survives_the_files_join(app_client):
     h = _h(app_client)
     tid = app_client.get("/api/auth/me", headers=h).json()["tenant_id"]
     lid = str(uuid.uuid4())
-    from api.database import engine
+    from api.core.database import engine
     with engine.begin() as c:
         c.execute(sqltext(
             "INSERT INTO evidence (id,tenant_id,title,evidence_type,medium,state,"
@@ -302,7 +302,7 @@ def test_the_files_join_does_not_clobber_the_evidence_id(app_client):
     h = _h(app_client)
     e = _ev(app_client, h)
     row = next(r for r in app_client.get("/api/evidence", headers=h).json() if r["id"] == e)
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         fid = c.execute(sqltext("SELECT file_id FROM evidence WHERE id=:i"), {"i": e}).scalar()
     assert row["id"] == e and row["id"] != fid
@@ -327,7 +327,7 @@ def test_search_matches_notes_and_survives_a_null_notes_row(app_client):
     tag = uuid.uuid4().hex[:6]
     plain = _ev(app_client, h, title=f"Zeta {tag}")            # no notes at all
     noted = _ev(app_client, h, title=f"Unrelated {tag}")
-    from api.database import engine
+    from api.core.database import engine
     with engine.begin() as c:
         c.execute(sqltext("UPDATE evidence SET notes=:n WHERE id=:i"),
                   {"n": f"mentions zeta {tag}", "i": noted})

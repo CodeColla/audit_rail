@@ -8,7 +8,7 @@ import uuid
 import pytest
 from sqlalchemy import text as sqltext
 
-from api.gstin import checksum
+from api.domain.gstin import checksum
 from tests.conftest import token
 
 
@@ -46,7 +46,7 @@ def _signup(client, **over):
 # ---------------------------------------------------------------- signup + org
 
 def test_signup_creates_account_and_organisation(app_client):
-    from api.database import engine
+    from api.core.database import engine
     r, body = _signup(app_client)
     assert r.status_code == 201, r.text
     out = r.json()
@@ -146,7 +146,7 @@ def test_wrong_current_password_is_rejected(app_client):
 
 
 def test_password_expires_after_30_days(app_client):
-    from api.database import engine
+    from api.core.database import engine
     r, body = _signup(app_client)
     tok = r.json()
     assert tok["must_change_password"] is False
@@ -222,7 +222,7 @@ def test_login_picks_a_deterministic_org_not_an_arbitrary_one(app_client):
 # ---------------------------------------------------------------- invites
 
 def test_invite_lets_a_user_set_their_own_password(app_client):
-    from api.database import engine
+    from api.core.database import engine
     from api.routers.auth import issue_invite
     r, _ = _signup(app_client)
     tid = r.json()["tenant_id"]
@@ -255,7 +255,7 @@ def test_invite_lets_a_user_set_their_own_password(app_client):
 
 
 def test_invite_token_is_single_use_and_hash_only(app_client):
-    from api.database import engine
+    from api.core.database import engine
     from api.routers.auth import issue_invite
     r, _ = _signup(app_client)
     tid = r.json()["tenant_id"]

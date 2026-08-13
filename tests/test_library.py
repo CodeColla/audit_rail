@@ -52,7 +52,7 @@ def _seed_library(engine, tenant_id):
 
 
 def test_controls_and_crosswalk(app_client):
-    from api.database import engine, t
+    from api.core.database import engine, t
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     am_ctl, cs_ctl = _seed_library(engine, tid)
@@ -100,7 +100,7 @@ def test_the_unreviewed_mapping_backlog_is_visible_on_the_template_list(app_clie
     control, and that control's stock answer still prefills the audit response. The backlog is
     unverified answers. Surfacing the count is what makes it a visible piece of work.
     """
-    from api.database import engine
+    from api.core.database import engine
     from sqlalchemy import text as sqltext
 
     tok = token(app_client, "admin@kiam.example", "secret1")

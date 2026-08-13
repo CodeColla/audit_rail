@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text  # noqa: E402
 
 from _db import get_engine  # noqa: E402
-from api.util import now_iso  # noqa: E402
+from api.core.util import now_iso  # noqa: E402
 
 
 def uid() -> str:

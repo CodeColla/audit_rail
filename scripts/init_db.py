@@ -50,7 +50,7 @@ NOW = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # Canonical 16-domain framework — moved to api/domains.py (P4-S5), which
 # api.routers.auth also seeds at open signup; a fresh organisation used to get zero
 # domains, and controls.domain_id (NOT NULL) made "Add control" a dead end.
-# Imported lazily where used, below — api.database reflects the schema at import time,
+# Imported lazily where used, below — api.core.database reflects the schema at import time,
 # which must happen AFTER apply_schema(), not at module load.
 
 TEMPLATE_META = {
@@ -96,7 +96,7 @@ def seed_kiam(conn) -> None:
     # ── tenant + users ───────────────────────────────────────────────────
     tenant_id = uid()
     # P4: an organisation is keyed by its GSTIN, and owned by a Super Admin.
-    from api.gstin import checksum  # noqa: E402
+    from api.domain.gstin import checksum  # noqa: E402
     gst = "27AAPFU0939F1Z" + checksum("27AAPFU0939F1Z")
     conn.execute(text(
         "INSERT INTO tenants (id,name,slug,gst_number,status,created_at) "
@@ -126,7 +126,7 @@ def seed_kiam(conn) -> None:
     # Raw SQL on purpose. seed_roles() goes through the reflected metadata, and
     # metadata.reflect() opens a SECOND connection — which blocks forever behind the
     # schema locks this very transaction is still holding (DROP/CREATE SCHEMA above).
-    from api.permissions import LEGACY_ROLE_MAP, SYSTEM_ROLES  # noqa: E402
+    from api.core.permissions import LEGACY_ROLE_MAP, SYSTEM_ROLES  # noqa: E402
     by_name = {}
     for role_name, spec in SYSTEM_ROLES.items():
         rid = uid()
@@ -145,7 +145,7 @@ def seed_kiam(conn) -> None:
                      {"r": by_name[role_name], "t": tenant_id, "legacy": legacy})
 
     # P4-S3: starting dropdown vocabularies (raw SQL, same reflection caveat as above).
-    from api.vocabularies import KINDS  # noqa: E402
+    from api.domain.vocabularies import KINDS  # noqa: E402
     for kind, (_label, defaults) in KINDS.items():
         for i, value in enumerate(defaults):
             conn.execute(text("INSERT INTO lookup_values (id,tenant_id,kind,value,"
@@ -155,7 +155,7 @@ def seed_kiam(conn) -> None:
                           "o": i, "c": NOW})
 
     # ── unified domains ──────────────────────────────────────────────────
-    from api.domains import UNIFIED_DOMAINS  # noqa: E402
+    from api.domain.domains import UNIFIED_DOMAINS  # noqa: E402
     for i, (code, name) in enumerate(UNIFIED_DOMAINS):
         conn.execute(text(
             "INSERT INTO domains (id,tenant_id,code,name,sort_order) "
@@ -165,7 +165,7 @@ def seed_kiam(conn) -> None:
     # ── certification frameworks + their clauses (P5-S9) ─────────────────
     # Raw SQL like everything else in this function: the reflected metadata is not
     # available while the schema is still being built in this same transaction.
-    from api.frameworks import BASELINE  # noqa: E402
+    from api.domain.frameworks import BASELINE  # noqa: E402
     for code, (fname, version, clauses) in BASELINE.items():
         fid = uid()
         conn.execute(text(

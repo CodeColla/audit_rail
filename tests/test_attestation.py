@@ -75,7 +75,7 @@ def _sign(app_client, raw, name="Field Eng", **headers):
 def test_coverage_is_computed_live(app_client):
     """DoD #4: DEPARTMENT of 5, 3 sign → 60%; a 6th person drops it to 50% — coverage
     is a live count against the audience, never a stored number."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     dept = f"FieldOps-{uuid.uuid4().hex[:8]}"
     doc_id, vid, tokens = _campaign(app_client, h, engine, tid, dept, n=5)
@@ -97,7 +97,7 @@ def test_coverage_is_computed_live(app_client):
 
 def test_signing_page_renders_for_a_person_with_no_login(app_client):
     """DoD #5: the whole point — people have user_id NULL and still sign."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     dept = f"NoLogin-{uuid.uuid4().hex[:8]}"
     doc_id, vid, tokens = _campaign(app_client, h, engine, tid, dept, n=1)
@@ -116,7 +116,7 @@ def test_signing_page_renders_for_a_person_with_no_login(app_client):
 
 def test_token_is_single_use(app_client):
     """DoD #1: a second redemption of the same link → 410."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Once-{uuid.uuid4().hex[:8]}", n=1)
     raw = next(iter(tokens.values()))
@@ -127,7 +127,7 @@ def test_token_is_single_use(app_client):
 
 def test_expired_token_is_gone(app_client):
     """DoD #1: expiry → 410 (forced by ageing the row)."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Exp-{uuid.uuid4().hex[:8]}", n=1)
     raw = next(iter(tokens.values()))
@@ -143,7 +143,7 @@ def test_expired_token_is_gone(app_client):
 def test_recampaign_revokes_the_old_link(app_client):
     """DoD #1: revoked → 410. Re-running a campaign reissues one live link per person and
     revokes the prior one, so an old copied link stops working."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     doc_id, _, tokens = _campaign(app_client, h, engine, tid, f"Rev-{uuid.uuid4().hex[:8]}", n=1)
     old = next(iter(tokens.values()))
@@ -165,7 +165,7 @@ def test_unknown_token_is_404(app_client):
 
 def test_only_the_hash_is_stored(app_client):
     """DoD #2: the raw token appears nowhere in the DB; token_hash == sha256(raw)."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Hash-{uuid.uuid4().hex[:8]}", n=1)
     raw = next(iter(tokens.values()))
@@ -186,7 +186,7 @@ def test_only_the_hash_is_stored(app_client):
 
 def test_signature_captures_the_evidence_chain(app_client):
     """DoD #3: consent_text, signer_ip, signer_user_agent, file_sha256, signed_at."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     doc_id, vid, tokens = _campaign(app_client, h, engine, tid, f"Chain-{uuid.uuid4().hex[:8]}", n=1)
     pid, raw = next(iter(tokens.items()))
@@ -211,7 +211,7 @@ def test_signature_captures_the_evidence_chain(app_client):
 def test_a_bad_ip_does_not_500(app_client):
     """Starlette's TestClient reports host 'testclient' (not an inet). Storing None
     beats a 500 on the inet column — the signature still records."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Ip-{uuid.uuid4().hex[:8]}", n=1)
     raw = next(iter(tokens.values()))
@@ -222,7 +222,7 @@ def test_a_bad_ip_does_not_500(app_client):
 # ---------------------------------------------------------------- guards
 
 def test_sign_requires_name_and_agreement_without_burning_the_token(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Guard-{uuid.uuid4().hex[:8]}", n=1)
     raw = next(iter(tokens.values()))
@@ -235,7 +235,7 @@ def test_sign_requires_name_and_agreement_without_burning_the_token(app_client):
 
 
 def test_campaign_needs_a_published_version_and_an_audience(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     owner = _person(engine, tid, "Owner")
     # unpublished draft → no campaign
@@ -250,7 +250,7 @@ def test_campaign_needs_a_published_version_and_an_audience(app_client):
 
 
 def test_audience_shape_is_validated(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     owner = _person(engine, tid, "Owner")
     doc_id, _ = _publish_doc(app_client, h, owner, title="Shape Doc")
@@ -264,7 +264,7 @@ def test_audience_shape_is_validated(app_client):
 
 
 def test_recampaign_skips_the_already_signed(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     doc_id, vid, tokens = _campaign(app_client, h, engine, tid, f"Skip-{uuid.uuid4().hex[:8]}", n=3)
     for raw in tokens.values():
@@ -283,7 +283,7 @@ def test_cannot_sign_a_superseded_version(app_client):
     signer would attest to stale bytes. Publishing a new version now revokes the old links,
     and the signing route refuses any non-PUBLISHED version as a backstop."""
     import hashlib
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     owner = _person(engine, tid, "Owner")
     dept = f"Sup-{uuid.uuid4().hex[:8]}"
@@ -316,7 +316,7 @@ def test_cannot_sign_a_superseded_version(app_client):
 def test_exempt_person_leaves_the_coverage_denominator(app_client):
     """CONFIRMED (review): v_document_coverage counted EXEMPT people as expected-but-unsigned,
     so an exemption could never reach 100%. An exemption must excuse, not penalise."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     dept = f"Exempt-{uuid.uuid4().hex[:8]}"
     doc_id, vid, tokens = _campaign(app_client, h, engine, tid, dept, n=3)
@@ -335,7 +335,7 @@ def test_exempt_person_leaves_the_coverage_denominator(app_client):
 def test_hostile_signer_name_does_not_crash(app_client):
     """CONFIRMED (review): a signer_name with a NUL byte crashed the inet-free public route
     (Postgres text can't store NUL). Control chars are stripped; printable unicode survives."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     _, _, tokens = _campaign(app_client, h, engine, tid, f"Nul-{uuid.uuid4().hex[:8]}", n=1)
     pid, raw = next(iter(tokens.items()))

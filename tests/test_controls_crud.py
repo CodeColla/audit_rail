@@ -40,7 +40,7 @@ def _create(client, h, domain_id, **overrides):
 # ---------------------------------------------------------------- create / validate
 
 def test_create_control_minimal(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom)
@@ -49,7 +49,7 @@ def test_create_control_minimal(app_client):
 
 
 def test_recurring_without_months_is_400_not_500(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     r = app_client.post("/api/library/controls", headers=h, json={
@@ -60,7 +60,7 @@ def test_recurring_without_months_is_400_not_500(app_client):
 
 
 def test_not_applicable_without_justification_is_400(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     r = app_client.post("/api/library/controls", headers=h, json={
@@ -71,7 +71,7 @@ def test_not_applicable_without_justification_is_400(app_client):
 
 
 def test_bad_recurrence_months_is_400(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     r = app_client.post("/api/library/controls", headers=h, json={
@@ -86,7 +86,7 @@ def test_cross_tenant_domain_and_owner_are_400(app_client):
         "domain_id": str(uuid.uuid4()), "code": "X 1", "statement": "x"})
     assert r.status_code == 400 and "domain" in r.json()["detail"]
 
-    from api.database import engine
+    from api.core.database import engine
     dom = _domain(engine, _tid(engine))
     r2 = app_client.post("/api/library/controls", headers=h, json={
         "domain_id": dom, "code": "X 2", "statement": "x",
@@ -97,7 +97,7 @@ def test_cross_tenant_domain_and_owner_are_400(app_client):
 def test_owner_member_id_and_status_are_rejected_on_the_wire(app_client):
     """StrictModel: fields that must never be settable by a caller (owner_member_id has no
     tenant leg on its FK; status is server-controlled) 422 rather than silently ignoring."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     r = app_client.post("/api/library/controls", headers=h, json={
@@ -109,7 +109,7 @@ def test_owner_member_id_and_status_are_rejected_on_the_wire(app_client):
 
 
 def test_duplicate_code_is_409(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     code = f"T {uuid.uuid4().hex[:6]}"
@@ -120,7 +120,7 @@ def test_duplicate_code_is_409(app_client):
 
 
 def test_duplicate_code_against_a_retired_control_names_it(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     code = f"T {uuid.uuid4().hex[:6]}"
@@ -136,7 +136,7 @@ def test_duplicate_code_against_a_retired_control_names_it(app_client):
 def test_patch_validates_the_merged_row(app_client):
     """PATCH {lifecycle: recurring} on a row with no stored recurrence_months must 400 —
     the CHECK is row-level, evaluated after the merge, not on the submitted patch alone."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom, lifecycle="one_time")
@@ -147,7 +147,7 @@ def test_patch_validates_the_merged_row(app_client):
 
 def test_patch_sets_updated_at(app_client):
     """controls has no set_updated_at trigger — this must happen in the app."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom)
@@ -160,7 +160,7 @@ def test_patch_sets_updated_at(app_client):
 
 
 def test_leaving_recurring_clears_recurrence_months(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom, lifecycle="recurring", recurrence_months=6)
@@ -173,7 +173,7 @@ def test_patch_stock_response_reports_stale_prefilled_assessments(app_client):
     """Editing the stock answer does not retro-write already-prefilled responses —
     response_revisions is append-only and a bank auditor may already have read it — but
     the caller must be told what is now stale."""
-    from api.database import engine
+    from api.core.database import engine
     tid = _tid(engine)
     dom = _domain(engine, tid)
     h = _h(app_client)
@@ -211,7 +211,7 @@ def test_patch_stock_response_reports_stale_prefilled_assessments(app_client):
 # ---------------------------------------------------------------- retire / restore
 
 def test_retire_hides_from_list_but_detail_and_restore_still_work(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom)
@@ -238,7 +238,7 @@ def test_retire_hides_from_list_but_detail_and_restore_still_work(app_client):
 
 
 def test_retiring_pauses_its_active_recurring_task_and_restoring_resumes_it(app_client):
-    from api.database import engine
+    from api.core.database import engine
     tid = _tid(engine)
     h = _h(app_client)
     dom = _domain(engine, tid)
@@ -265,7 +265,7 @@ def test_retiring_pauses_its_active_recurring_task_and_restoring_resumes_it(app_
 
 
 def test_retired_control_does_not_prefill_or_show_as_mapped(app_client):
-    from api.database import engine
+    from api.core.database import engine
     tid = _tid(engine)
     h = _h(app_client)
     dom = _domain(engine, tid)
@@ -305,7 +305,7 @@ def _evidence(app_client, h, title="Test evidence"):
 
 
 def test_evidence_links_both_ways_and_rejects_duplicates(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom)
@@ -334,7 +334,7 @@ def test_evidence_links_both_ways_and_rejects_duplicates(app_client):
 
 
 def test_unknown_or_cross_tenant_evidence_is_400(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     dom = _domain(engine, _tid(engine))
     cid = _create(app_client, h, dom)
@@ -346,7 +346,7 @@ def test_unknown_or_cross_tenant_evidence_is_400(app_client):
 def test_document_links_both_ways_and_survives_archiving(app_client):
     """No lifecycle filter on linked_documents — a control silently losing its policy the
     moment someone archives it is exactly the failure the control page exists to catch."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     tid = _tid(engine)
     dom = _domain(engine, tid)
@@ -393,7 +393,7 @@ def _fresh_org(app_client):
 
 
 def test_viewer_cannot_write_controls(app_client):
-    from api.database import engine
+    from api.core.database import engine
     tid, admin_h = _fresh_org(app_client)
     dom = _domain(engine, tid)
     assert dom, "a fresh org must have the 16-domain framework seeded at signup"
@@ -406,7 +406,7 @@ def test_viewer_cannot_write_controls(app_client):
 def test_editor_can_edit_but_not_retire(app_client):
     """Editor holds every action except delete on this codebase's permission model — retire
     IS gated on controls.delete, so an Editor must be refused (pins the model, not a bug)."""
-    from api.database import engine
+    from api.core.database import engine
     tid, admin_h = _fresh_org(app_client)
     dom = _domain(engine, tid)
     cid = _create(app_client, admin_h, dom)

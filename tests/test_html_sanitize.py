@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from api.html_sanitize import sanitize_document_html as clean
+from api.rendering.html_sanitize import sanitize_document_html as clean
 
 #: Real TipTap v3 output: aligned heading, every mark, nested + ordered lists, quote,
 #: code block with a language class, rule, and a table with colgroup/colspan/rowspan.
@@ -140,7 +140,7 @@ def test_url_schemes_must_not_be_widened_for_images():
     """The obvious wrong fix, asserted against directly: images are admitted by an anchored
     src match, never by teaching the sanitiser a new scheme. `data:` in URL_SCHEMES would
     also apply to `<a href>`, which is a stored-XSS vector."""
-    from api.html_sanitize import URL_SCHEMES
+    from api.rendering.html_sanitize import URL_SCHEMES
 
     assert URL_SCHEMES == {"http", "https", "mailto"}
 

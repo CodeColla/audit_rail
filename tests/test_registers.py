@@ -45,7 +45,7 @@ def _control(engine, tid, statement="Access to the CMS is controlled."):
 # ---------------------------------------------------------------- DoD #1
 
 def test_scores_and_bands_autocompute(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     r = app_client.post("/api/risks", headers=h, json={
         "title": "Unauthorised access to bank CMS",
@@ -69,7 +69,7 @@ def test_score_range_is_validated(app_client):
 # ---------------------------------------------------------------- DoD #2 (reverse nav)
 
 def test_risk_links_to_control_and_shows_on_control(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     cid, code = _control(engine, tid)
     rid = app_client.post("/api/risks", headers=h, json={
@@ -90,7 +90,7 @@ def test_risk_links_to_control_and_shows_on_control(app_client):
 
 
 def test_link_guards(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     cid, _ = _control(engine, tid)
     rid = app_client.post("/api/risks", headers=h, json={"title": "r"}).json()["id"]
@@ -108,7 +108,7 @@ def test_link_guards(app_client):
 
 
 def test_delete_risk_cascades_its_links(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     cid, _ = _control(engine, tid)
     rid = app_client.post("/api/risks", headers=h, json={"title": "temp"}).json()["id"]
@@ -123,7 +123,7 @@ def test_delete_risk_cascades_its_links(app_client):
 # ---------------------------------------------------------------- DoD #3 (person owner)
 
 def test_owner_must_be_a_person(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     assert app_client.post("/api/risks", headers=h,
                            json={"title": "x", "owner_person_id": str(uuid.uuid4())}).status_code == 400
@@ -135,7 +135,7 @@ def test_owner_must_be_a_person(app_client):
 # ---------------------------------------------------------------- assets + data
 
 def test_asset_criticality_and_data_classification(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     dname = f"Bank customer data {uuid.uuid4().hex[:5]}"
     app_client.post("/api/data-items", headers=h,
@@ -157,7 +157,7 @@ def test_asset_validation(app_client):
 
 
 def test_data_item_crud_and_classification(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     pid = _person(engine, tid, "DataOwner")
     did = app_client.post("/api/data-items", headers=h, json={
@@ -219,7 +219,7 @@ def test_reference_collision_on_patch_is_409_not_500(app_client):
 def test_duplicate_link_is_blocked_by_the_db(app_client):
     """CONFIRMED (review): the app dedupe was racy with no backing constraint. uq_risk_link_target
     now makes a duplicate (risk, target) impossible even if two requests slip past the pre-check."""
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     cid, _ = _control(engine, tid)
     rid = app_client.post("/api/risks", headers=h, json={"title": "dup"}).json()["id"]

@@ -20,7 +20,7 @@ sys.path.insert(0, str(REPO))
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from api.config import settings  # noqa: E402
+from api.core.config import settings  # noqa: E402
 
 SCHEMA_PATH = REPO / "db" / "schema.sql"
 

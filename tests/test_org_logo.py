@@ -118,7 +118,7 @@ def test_a_logo_never_leaks_between_organisations(app_client):
     # and the composite FK physically refuses the cross-tenant assignment
     from sqlalchemy import text as sql
 
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         fid = c.execute(sql("SELECT logo_file_id FROM tenants WHERE id = :t"),
                         {"t": a["tenant_id"]}).scalar()

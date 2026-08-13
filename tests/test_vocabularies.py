@@ -4,7 +4,7 @@ import uuid
 
 from sqlalchemy import text as sqltext
 
-from api.vocabularies import KINDS
+from api.domain.vocabularies import KINDS
 from tests.test_identity import uniq_gst
 from tests.test_rbac import _member_with_role
 
@@ -92,7 +92,7 @@ def test_vocabularies_do_not_leak_between_organisations(app_client):
 
 def test_files_can_be_served_inline_for_preview(app_client):
     """FilePreview needs `disposition=inline`; downloads must stay `attachment` by default."""
-    from api.database import engine
+    from api.core.database import engine
     org, h = _org(app_client)
     # a person to own the document, then a published version with a rendered PDF
     with engine.begin() as c:
@@ -163,8 +163,8 @@ def test_register_enums_match_the_live_check_constraints(app_client):
 
     from sqlalchemy import text as sql
 
-    from api import vocabularies as v
-    from api.database import engine
+    from api.domain import vocabularies as v
+    from api.core.database import engine
 
     # constant -> the CHECK constraint it mirrors
     PAIRS = {

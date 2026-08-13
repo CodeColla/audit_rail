@@ -76,7 +76,7 @@ def _url(aid, eid):
 # ---------------------------------------------------------------- the happy path
 
 def test_guest_downloads_evidence_attached_to_their_response(app_client):
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g1")
     gh, _ = _guest(app_client, ah, aid)
 
@@ -90,7 +90,7 @@ def test_the_download_is_always_an_attachment(app_client):
     """No `disposition` parameter exists on this route. `inline` is what feeds FilePreview,
     whose xlsx branch renders workbook content through innerHTML — not a surface to open
     to an outside auditor, whatever the member route allows."""
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g2")
     gh, _ = _guest(app_client, ah, aid)
 
@@ -106,7 +106,7 @@ def test_guest_cannot_download_evidence_from_another_assessment_in_the_same_tena
     PwC's engagement from Deloitte's — only `responses.assessment_id` does. An authorisation
     rule filtered on tenant alone passes every other test in this file and fails this one.
     """
-    from api.database import engine
+    from api.core.database import engine
     aid_a, _q, eid_a, _mh, ah = _assessment_with_evidence(app_client, engine, "-g3a")
     aid_b, _q2, eid_b, _mh2, _ah2 = _assessment_with_evidence(app_client, engine, "-g3b")
     gh, _ = _guest(app_client, ah, aid_a)
@@ -122,7 +122,7 @@ def test_guest_cannot_download_evidence_from_another_assessment_in_the_same_tena
 def test_guest_cannot_download_unattached_vault_evidence(app_client):
     """An artifact that exists in the vendor's vault but is attached to no response of this
     assessment — an HR file, another bank's VAPT report — must be unreachable."""
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, _eid, mh, ah = _assessment_with_evidence(app_client, engine, "-g4")
     loose = _evidence(app_client, mh, title="Payroll register")
     gh, _ = _guest(app_client, ah, aid)
@@ -138,7 +138,7 @@ def test_guest_cannot_download_control_inherited_evidence(app_client):
     visible from every assessment mapped to X, including a different bank's. Titles already
     travel that way (a pre-existing decision). Bytes must not.
     """
-    from api.database import engine
+    from api.core.database import engine
     mh, ah = _member_h(app_client), _admin_h(app_client)
     ids = _seed(engine, _kiam_tid(engine), suffix="-g5")
     aid = app_client.post("/api/assessments", headers=mh, json={
@@ -161,7 +161,7 @@ def test_guest_cannot_download_control_inherited_evidence(app_client):
 def test_revoked_guest_cannot_download(app_client):
     """Guest JWTs last up to 30 days, so the grant has to be re-read from the database on
     every request rather than trusted from the token."""
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g6")
     gh, gid = _guest(app_client, ah, aid)
     assert app_client.get(_url(aid, eid), headers=gh).status_code == 200
@@ -172,7 +172,7 @@ def test_revoked_guest_cannot_download(app_client):
 
 
 def test_expired_guest_grant_cannot_download(app_client):
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g7")
     gh, gid = _guest(app_client, ah, aid)
     with engine.begin() as c:
@@ -182,7 +182,7 @@ def test_expired_guest_grant_cannot_download(app_client):
 
 
 def test_guest_token_for_one_assessment_cannot_address_another(app_client):
-    from api.database import engine
+    from api.core.database import engine
     aid_a, _q, _e, _mh, ah = _assessment_with_evidence(app_client, engine, "-g8a")
     aid_b, _q2, eid_b, _mh2, _ah2 = _assessment_with_evidence(app_client, engine, "-g8b")
     gh, _ = _guest(app_client, ah, aid_a)
@@ -192,7 +192,7 @@ def test_guest_token_for_one_assessment_cannot_address_another(app_client):
 def test_a_miss_is_404_never_403(app_client):
     """A 403 on a join miss would confirm that an id exists, handing a guest a
     vault-enumeration oracle they can probe all day."""
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, _eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g9")
     gh, _ = _guest(app_client, ah, aid)
     assert app_client.get(_url(aid, str(uuid.uuid4())), headers=gh).status_code == 404
@@ -201,7 +201,7 @@ def test_a_miss_is_404_never_403(app_client):
 def test_link_evidence_with_no_file_is_404_not_500(app_client):
     """Every artifact scripts/seed_demo.py creates is medium='LINK' with file_id NULL.
     The join simply misses; it must not raise."""
-    from api.database import engine
+    from api.core.database import engine
     aid, q1, _eid, mh, ah = _assessment_with_evidence(app_client, engine, "-g10")
     tid = _kiam_tid(engine)
     link_id = str(uuid.uuid4())
@@ -217,8 +217,8 @@ def test_link_evidence_with_no_file_is_404_not_500(app_client):
 
 
 def test_missing_blob_is_410(app_client):
-    from api.database import engine
-    from api import storage
+    from api.core.database import engine
+    from api.core import storage
     aid, _q, eid, mh, ah = _assessment_with_evidence(app_client, engine, "-g11")
     with engine.connect() as c:
         key = c.execute(sqltext(
@@ -232,15 +232,15 @@ def test_missing_blob_is_410(app_client):
 # ---------------------------------------------------------------- members, and the old route
 
 def test_a_member_can_use_the_assessment_scoped_route_too(app_client):
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, mh, _ah = _assessment_with_evidence(app_client, engine, "-g12")
     r = app_client.get(_url(aid, eid), headers=mh)
     assert r.status_code == 200 and r.content == PDF
 
 
 def test_a_member_of_another_tenant_gets_404(app_client):
-    from api.database import engine
-    from api.gstin import checksum
+    from api.core.database import engine
+    from api.domain.gstin import checksum
     aid, _q, eid, _mh, _ah = _assessment_with_evidence(app_client, engine, "-g13")
     base = f"27AAPFU{uuid.uuid4().int % 10000:04d}F1Z"
     other = app_client.post("/api/auth/signup", json={
@@ -257,7 +257,7 @@ def test_the_whole_evidence_router_stays_member_only(app_client):
     router — including the three P4-S8 added — must still refuse a guest, or a future
     shared helper quietly inherits a guest branch onto the tenant's entire vault.
     """
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, eid, mh, ah = _assessment_with_evidence(app_client, engine, "-g14")
     gh, _ = _guest(app_client, ah, aid)
 
@@ -289,7 +289,7 @@ def test_guest_cannot_upload_evidence(app_client):
     existing `POST /evidence`. The auditor portal deliberately gains no such affordance —
     but the UI is not the boundary, so pin the API: a guest token must be refused outright,
     not merely lack a button."""
-    from api.database import engine
+    from api.core.database import engine
     aid, _q, _eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g-up")
     gh, _gid = _guest(app_client, ah, aid)
 
@@ -302,7 +302,7 @@ def test_guest_cannot_upload_evidence(app_client):
 def test_guest_cannot_link_evidence_to_a_response(app_client):
     """The other half of the same boundary: a guest may read the evidence behind an answer,
     never attach to it."""
-    from api.database import engine
+    from api.core.database import engine
     aid, qid, eid, _mh, ah = _assessment_with_evidence(app_client, engine, "-g-link")
     gh, _gid = _guest(app_client, ah, aid)
 
@@ -315,7 +315,7 @@ def test_member_upload_then_link_is_the_s3_flow(app_client):
     """S3 attaches proof with two calls the API already had — upload, then link — rather
     than a multipart variant of the link route. This pins that both halves still work
     together, since the UI now depends on the pair."""
-    from api.database import engine
+    from api.core.database import engine
     aid, qid, _eid, mh, _ah = _assessment_with_evidence(app_client, engine, "-s3")
 
     up = app_client.post("/api/evidence", headers=mh,

@@ -17,9 +17,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 
-from api.auth import Principal, get_current_user
-from api.database import engine
-from api.util import StrictModel
+from api.core.auth import Principal, get_current_user
+from api.core.database import engine
+from api.core.util import StrictModel
 
 router = APIRouter(prefix="/e2e", tags=["e2e-hooks"])
 
@@ -49,7 +49,7 @@ def make_member(body: MakeMemberIn, user: Principal = Depends(get_current_user))
     Stands in for the People invite UI, which lands in a later sprint — without it a browser
     test cannot produce a non-admin session to check permission gating against.
     """
-    from api.passwords import set_password
+    from api.domain.passwords import set_password
 
     with engine.begin() as conn:
         rid = conn.execute(text("SELECT id FROM roles WHERE tenant_id=:t AND name=:n"),

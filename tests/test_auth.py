@@ -54,7 +54,7 @@ def test_me_reflects_principal(app_client):
 
 def test_login_writes_activity_log(app_client):
     from sqlalchemy import select
-    from api.database import engine, t
+    from api.core.database import engine, t
     token(app_client, "admin@kiam.example", "secret1")
     with engine.connect() as conn:
         rows = conn.execute(

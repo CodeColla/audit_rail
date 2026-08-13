@@ -19,11 +19,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, field_validator
 from sqlalchemy import func, insert, select, text, update
 
-from api import activity, importer, passwords, xlsx_io
-from api.auth import Principal, get_current_user
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import IsoDate, StrictModel, now_iso
+from api.core import activity
+from api.domain import importer, passwords
+from api.rendering import xlsx_io
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import IsoDate, StrictModel, now_iso
 
 router = APIRouter(prefix="/people", tags=["people"])
 
@@ -79,7 +81,7 @@ def list_people(
     user: Principal = Depends(require("people", "view")),
     conn=Depends(get_conn),
 ):
-    from api.util import today_iso
+    from api.core.util import today_iso
     p = t("people")
     stmt = select(p).where(p.c.tenant_id == user.tenant_id).order_by(p.c.full_name)
     if department:
@@ -112,7 +114,7 @@ def list_departments(user: Principal = Depends(require("people", "view")), conn=
 @router.get("/org-chart")
 def org_chart(user: Principal = Depends(require("people", "view")), conn=Depends(get_conn)):
     """Manager tree — VRA #3.1 ('organizational charts')."""
-    from api.util import today_iso
+    from api.core.util import today_iso
     p = t("people")
     rows = [dict(r) for r in conn.execute(
         select(p.c.id, p.c.full_name, p.c.position, p.c.department, p.c.manager_id,
@@ -131,7 +133,7 @@ def org_chart(user: Principal = Depends(require("people", "view")), conn=Depends
 @router.get("/{person_id}")
 def person_detail(person_id: str, user: Principal = Depends(require("people", "view")),
                   conn=Depends(get_conn)):
-    from api.util import today_iso
+    from api.core.util import today_iso
     p = t("people")
     row = conn.execute(select(p).where(
         p.c.id == person_id, p.c.tenant_id == user.tenant_id)).mappings().first()

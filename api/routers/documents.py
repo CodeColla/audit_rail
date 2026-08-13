@@ -31,13 +31,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete, func, insert, select, text, update
 
-from api import (activity, branding, docx_export, imagefile, render, storage,
-                 vocabularies, xlsx_io)
-from api.auth import Principal
-from api.html_sanitize import sanitize_document_html
-from api.permissions import require
-from api.database import engine, get_conn, t
-from api.util import (IsoDate, StrictModel, add_months, now_iso, now_plus_days,
+from api.core import activity, storage
+from api.rendering import branding, docx_export, imagefile, render, xlsx_io
+from api.domain import vocabularies
+from api.core.auth import Principal
+from api.rendering.html_sanitize import sanitize_document_html
+from api.core.permissions import require
+from api.core.database import engine, get_conn, t
+from api.core.util import (IsoDate, StrictModel, add_months, now_iso, now_plus_days,
                       review_status, today_iso)
 
 router = APIRouter(prefix="/documents", tags=["documents"])

@@ -19,12 +19,14 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from api import activity, importer, xlsx_io
-from api.config import settings
-from api.auth import Principal
-from api.database import engine, get_conn, t
-from api.permissions import require
-from api.util import StrictModel, evidence_status, now_iso, today_iso
+from api.core import activity
+from api.domain import importer
+from api.rendering import xlsx_io
+from api.core.config import settings
+from api.core.auth import Principal
+from api.core.database import engine, get_conn, t
+from api.core.permissions import require
+from api.core.util import StrictModel, evidence_status, now_iso, today_iso
 
 router = APIRouter(prefix="/frameworks", tags=["frameworks"])
 

@@ -144,7 +144,7 @@ def _walk(nodes):
 
 def test_cross_tenant_manager_rejected(app_client):
     """The composite FK (manager_id, tenant_id) must stop cross-tenant links."""
-    from api.database import engine
+    from api.core.database import engine
     h = _h(app_client)
     other_tenant, other_person = str(uuid.uuid4()), str(uuid.uuid4())
     with engine.begin() as c:

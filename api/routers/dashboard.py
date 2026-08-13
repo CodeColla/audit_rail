@@ -5,10 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 
-from api.auth import Principal, get_current_user
-from api.permissions import require
-from api.database import get_conn, t
-from api.util import evidence_status, review_status, today_iso
+from api.core.auth import Principal, get_current_user
+from api.core.permissions import require
+from api.core.database import get_conn, t
+from api.core.util import evidence_status, review_status, today_iso
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 

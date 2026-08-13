@@ -29,7 +29,7 @@ def _person(engine, tenant_id, name, email):
 
 
 def _setup(app_client):
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     owner = _person(engine, tid, "Doc Owner", f"owner-{uuid.uuid4().hex[:6]}@kiam.example")
@@ -175,7 +175,7 @@ def test_single_draft_invariant(app_client):
 
 def test_published_content_is_frozen(app_client):
     """M5 — the schema must reject editing a PUBLISHED version's bytes."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id = _publish_v1(app_client, h, owner, approvers)
     d = app_client.get(f"/api/documents/{doc_id}", headers=h).json()
@@ -225,7 +225,7 @@ def test_reject_then_resubmit_publishes_cleanly(app_client):
     same-second opened_at tie it could shadow the fresh round — permanently blocking a
     legitimately-approved publish (spurious 409), or crashing it (guard/trigger disagree).
     Submit now cancels the prior round, so exactly one round governs the version."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id, ver_id = _new_doc(app_client, h, owner)
     # round 1 → REJECTED → version back to DRAFT
@@ -297,8 +297,8 @@ def test_invalid_document_type_is_400_not_500(app_client):
 def test_types_endpoint_matches_the_database_constraint(app_client):
     """The UI renders this list. If it ever drifts from the CHECK, users get 500s — which
     is exactly how STANDARD happened. Compare against the live constraint, not a copy."""
-    from api.database import engine
-    from api import vocabularies
+    from api.core.database import engine
+    from api.domain import vocabularies
     h = _h(app_client)
     served = {row["value"] for row in app_client.get("/api/documents/types", headers=h).json()}
     assert served == set(vocabularies.DOCUMENT_TYPES)
@@ -361,7 +361,7 @@ def test_new_version_inherits_the_format(app_client):
 def test_published_html_version_cannot_have_its_format_flipped(app_client):
     """content_sha256 covers `content` alone, so flipping the format on a signed version
     would change how the signed bytes render while the hash still matches."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id, ver_id = _new_doc(app_client, h, owner)
     _publish(app_client, h, approvers, doc_id, ver_id)
@@ -474,7 +474,7 @@ def test_bad_document_status_is_rejected(app_client):
 def test_sign_page_reports_the_content_format(app_client):
     """The public attestation page renders content too; without the format an HTML policy
     would show its tags as literal text on the screen someone legally signs."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id, ver_id = _new_doc(app_client, h, owner)
     app_client.patch(f"/api/documents/{doc_id}/versions/{ver_id}", headers=h,
@@ -548,7 +548,7 @@ def test_markdown_images_never_reach_the_pdf_renderer(app_client):
     with a server-side urlopen() at publish time — but markdown is stored unsanitised and
     python-markdown turns ![](url) into an <img> and passes raw HTML through. The
     mitigation only covered the HTML branch; the default branch was wide open."""
-    from api import render
+    from api.rendering import render
     md = 'Policy.\n\n![d](https://evil.test/x.png)\n\n<img src="https://evil.test/y.png">'
     html = render.build_html(title="T", body_md=md, classification="INTERNAL",
                              version_label="1.0")
@@ -635,7 +635,7 @@ def test_patch_document_validates_owner_tenancy(app_client):
 def test_document_types_requires_documents_permission(app_client):
     """Was gated on bare authentication, so a member with no documents permission at all
     still got a 200 listing the type vocabulary."""
-    from api.database import engine
+    from api.core.database import engine
     with engine.connect() as c:
         tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
     # a Viewer-equivalent still holds documents.view under the legacy role map, so this
@@ -667,7 +667,7 @@ def test_rejection_comment_survives_in_the_activity_log(app_client):
     """document_approvals -> document_approval_decisions CASCADE from document_versions,
     so discarding a rejected draft destroys the comment explaining why it was rejected —
     unless the append-only activity_log (never touched by that cascade) captured it."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id, ver_id = _new_doc(app_client, h, owner)
     sub = app_client.post(f"/api/documents/{doc_id}/versions/{ver_id}/submit", headers=h,
@@ -756,7 +756,7 @@ def test_sheet_content_is_validated_on_edit(app_client):
 def test_published_sheet_version_is_frozen(app_client):
     """Same guarantee as MARKDOWN/HTML (test_published_content_is_frozen) — a spreadsheet's
     approved, signed bytes must be exactly as immutable as any other format."""
-    from api.database import engine
+    from api.core.database import engine
     h, owner, approvers = _setup(app_client)
     doc_id, ver_id = _new_sheet(app_client, h, owner)
     _publish(app_client, h, approvers, doc_id, ver_id)

@@ -8,8 +8,8 @@ first install, so every org created through open signup opened Controls to nothi
 
 import uuid
 
-from api import control_library
-from api.control_library import F
+from api.domain import control_library
+from api.domain.control_library import F
 
 
 def _new_org(client, tag):
@@ -50,7 +50,7 @@ def test_seeding_twice_adds_nothing_and_destroys_nothing(app_client):
     """The seed runs at signup, and the backfill re-runs it for existing tenants — so it has
     to be safely repeatable. Controls become real editable data the moment someone answers
     one, so a seed that cleared first would delete work it never created."""
-    from api.database import engine
+    from api.core.database import engine
 
     org, h = _new_org(app_client, f"idem{uuid.uuid4().hex[:6]}")
     tid = org["tenant_id"]
@@ -73,7 +73,7 @@ def test_seeding_twice_adds_nothing_and_destroys_nothing(app_client):
 def test_every_curated_control_names_a_real_domain(app_client):
     """The library is keyed by domain CODE and `controls.domain_id` is NOT NULL behind a
     composite FK — a typo'd code would be an IntegrityError in the middle of signup."""
-    from api.domains import UNIFIED_DOMAINS
+    from api.domain.domains import UNIFIED_DOMAINS
 
     known = {code for code, _name in UNIFIED_DOMAINS}
     assert set(F) <= known, f"unknown domain codes: {set(F) - known}"

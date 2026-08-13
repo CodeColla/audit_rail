@@ -132,7 +132,7 @@ def test_incident_reference_unique(app_client):
 # ---------------------------------------------------------------- DoD #4 (obligation ↔ control)
 
 def test_obligation_links_to_a_control_both_ways(app_client):
-    from api.database import engine
+    from api.core.database import engine
     h, tid = _h(app_client), _tid(engine)
     cid, code = _control(engine, tid)
     oid = app_client.post("/api/obligations", headers=h, json={

@@ -20,7 +20,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Mm
 
-from api.docx_export import _STYLES, render_docx
+from api.rendering.docx_export import _STYLES, render_docx
 
 
 def _doc(html: str, fmt: str = "HTML") -> Document:

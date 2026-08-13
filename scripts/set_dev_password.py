@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text  # noqa: E402
 
 from _db import get_engine  # noqa: E402
-from api.auth import hash_password  # noqa: E402
+from api.core.auth import hash_password  # noqa: E402
 
 PASSWORD = sys.argv[1] if len(sys.argv) > 1 else "audit_rail"
 
