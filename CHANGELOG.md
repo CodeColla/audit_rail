@@ -21,7 +21,27 @@ Component IDs for the control script: **0** all · **1** api · **2** ui · **3*
 prints the table.
 
 `setup.sh` was updated in the same commit and needs nothing from you. Env files
-(`_docker/env/*.env`), `host.sql` and the nginx assets did not move.
+(`_docker/env/*.env`) and `host.sql` did not move.
+
+**Three further deployment changes**, made after the restructure to bring the compose files
+onto GINTI's shape:
+
+1. **No more `TAG=` on `up`.** The compose files now name the image bare (`audit-rail-api`), so
+   `build` tags `:latest` alongside the versioned tag. `push` still ships the versioned one.
+2. **The `audit-rail` network is external.** `service_ctl.sh up` creates it; by hand it is
+   `docker network create audit-rail`. This is what lets `API_URL=http://audit-rail-api:5007`
+   resolve from the UI container.
+3. **You must supply vault storage yourself.** The API compose file no longer declares a
+   volume, so `/data/vault` lands in an *anonymous* one and the next container recreate starts
+   empty while the `files` rows survive — the UI then lists evidence that 410s. Uncomment a
+   named volume or a host path in `audit-rail-api.compose.yml` before real data goes in.
+
+`_docker/ui/20-api-proxy.sh` became `_docker/ui/entrypoint.sh` (same job, GINTI's shape: write
+config, then `exec nginx`). `API_URL` behaves exactly as before — a runtime nginx upstream, read
+at container start, so changing it in Portainer and restarting is enough. It is deliberately
+**not** a base URL handed to the frontend: `document_versions.content_sha256` is
+`GENERATED ALWAYS` over stored HTML that contains literal `/api/documents/images/<uuid>` srcs
+and is frozen on publish, so a second origin could never be migrated away from.
 
 ### Changed
 

@@ -13,7 +13,8 @@ _docker/
                audit-rail-postgres.compose.yml  LOCAL DEV database only — not a deployment
   scripts/     service_ctl.sh                   build / up / down / logs / push, by numeric id
   ui/          nginx.conf                       the UI container's server block
-               20-api-proxy.sh                  optional runtime /api forwarding, via API_URL
+               entrypoint.sh                    writes the /api forwarding block from API_URL,
+                                                then execs nginx
   env/         api.env.example                  copy to api.env and fill in
                ui.env.example                   copy to ui.env
   host.sql     GENERATED from db/schema.sql; apply once to your database
@@ -87,10 +88,24 @@ build.
 
 ```bash
 cp _docker/env/api.env.example _docker/env/api.env    # fill in DATABASE_URL + JWT_SECRET
-cp _docker/env/ui.env.example  _docker/env/ui.env
-TAG=v1.0.0-20260812 ./_docker/scripts/service_ctl.sh up 1    # on the API server
-TAG=v1.0.0-20260812 ./_docker/scripts/service_ctl.sh up 2    # on the UI server
+cp _docker/env/ui.env.example  _docker/env/ui.env    # API_URL: see the two modes in the file
+./_docker/scripts/service_ctl.sh up 1                # on the API server
+./_docker/scripts/service_ctl.sh up 2                # on the UI server
 ```
+
+`up` resolves the image bare (`audit-rail-api`, i.e. `:latest`), which `build` tags alongside
+the versioned one — so there is no `TAG=` to remember. It also creates the shared `audit-rail`
+network on first run; the compose files declare it `external` so that the UI container can
+reach the API by name when both sit on one host.
+
+**The default deploy model is build-on-host**, which is what a bare `image:` plus a `build:`
+section means: `up` builds when the image is absent. `push` still works and now ships both
+tags, but the compose files never reference `${REGISTRY}` — to deploy from a registry, pull and
+retag on the host first (`docker pull <registry>/audit-rail-api:latest && docker tag … audit-rail-api:latest`).
+
+**Before the second deploy, add vault storage.** The compose files ship without a volume, so
+`/data/vault` lands in an *anonymous* one and the next container recreate starts empty — see
+"The vault" below. Uncomment one of the two lines in `audit-rail-api.compose.yml`.
 
 **4. Your nginx.** The rules that matter, whatever syntax you express them in:
 
@@ -142,14 +157,27 @@ If you would rather point your nginx at **one** upstream, set `API_URL` in `ui.e
 whole domain to the UI container — its nginx then forwards `/api` onward. Same result, one less
 rule in your config. `docker logs audit-rail-ui` prints which mode it started in.
 
+`API_URL` is read at container start by `_docker/ui/entrypoint.sh`, which writes the `/api`
+block and then execs nginx — so it is a **runtime** setting. Change it in Portainer on a
+running container, restart, and it takes effect; nothing is baked into the bundle.
+
+It is worth saying plainly what `API_URL` is *not*, because the obvious-looking alternative is
+what the GINTI webui does and it cannot work here: it is an **nginx upstream**, never a base
+URL handed to the frontend. Writing `window.__env__` and letting axios hold an absolute origin
+would break the first two items above and permanently corrupt the third — `content_sha256` is
+`GENERATED ALWAYS` over the stored HTML and frozen on publish, so those image URLs can never
+be migrated.
+
 ## Things that will bite
 
-**The vault volume is not optional.** Every uploaded file — evidence, policy documents, asset
-photos, published PDFs, org logos — lives on disk under `VAULT_DIR`. Its default is inside the
-source tree, which in a container is the image layer, so without the volume in
-`compose/audit-rail-api.compose.yml` a redeploy destroys every file while leaving the `files`
-rows behind: the
-UI keeps listing evidence that 410s when you click it. Back this volume up.
+**The vault volume is not optional, and the compose file ships without one.** Every uploaded
+file — evidence, policy documents, asset photos, published PDFs, org logos — lives on disk
+under `VAULT_DIR` (`/data/vault` in the image). The API Dockerfile declares
+`VOLUME ["/data/vault"]`, so with nothing named in `compose/audit-rail-api.compose.yml` Docker
+allocates an **anonymous** volume: the next container recreate gets a fresh one, the old is
+orphaned rather than deleted, and the UI keeps listing evidence that 410s when you click it
+because the `files` rows survive. Uncomment a named volume or a host path before real data
+goes in, and back it up.
 
 **`CORS_ORIGINS` is parsed as JSON.** `CORS_ORIGINS=https://ar.iam-kiam.com` will not start the
 app. It must be `["https://ar.iam-kiam.com"]`. (With one origin, CORS is never used — but the
@@ -174,7 +202,7 @@ HSTS behind it.
 ```bash
 ./_docker/scripts/service_ctl.sh build 0
 ./_docker/scripts/service_ctl.sh push 0
-TAG=<new tag> ./_docker/scripts/service_ctl.sh up 0
+./_docker/scripts/service_ctl.sh up 0
 ```
 
 Rebuild and re-apply `host.sql` only when the schema changes — and note there is no migration
