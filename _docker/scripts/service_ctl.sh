@@ -122,9 +122,13 @@ build_one() {
   echo "${CYAN}── building ${svc} ────────────────────────────────────────${NC}"
   # Context is the REPO ROOT for both images: the API needs api/db/scripts, and the UI's build
   # stage needs webui/. .dockerignore is what keeps that context small.
+  # TWO tags, and both are load-bearing. The versioned one is what `push` ships and what makes
+  # a running container identifiable. `:latest` is what the compose files resolve to — they
+  # name the image bare (`image: audit-rail-api`), so without this `up` would find nothing.
   docker build \
     -f "_docker/dockerfile/audit-rail-${svc}.Dockerfile" \
     -t "${PREFIX}${image}:${TAG}" \
+    -t "${PREFIX}${image}:latest" \
     --label "org.opencontainers.image.version=${VERSION}" \
     --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" \
     --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -141,8 +145,8 @@ case "$CMD" in
       [ "$s" = postgres ] && { echo "${DIM}postgres uses a stock image — nothing to build${NC}"; continue; }
       build_one "$s"
     done
-    echo "${GREEN}Done.${NC}  TAG=${TAG}"
-    echo "  Deploy:  TAG=${TAG} $0 up ${TARGET}"
+    echo "${GREEN}Done.${NC}  tagged ${TAG} and latest"
+    echo "  Deploy:  $0 up ${TARGET}"
     ;;
   push)
     derive_tag
@@ -151,9 +155,27 @@ case "$CMD" in
     for s in "${SERVICES[@]}"; do
       [ "$s" = postgres ] && continue
       docker push "${PREFIX}$(image_for "$s"):${TAG}"
+      docker push "${PREFIX}$(image_for "$s"):latest"
     done
+    # Worth knowing before you plan a pull-based deploy: the compose files name the image BARE
+    # (`image: audit-rail-api`), so they never reference ${REGISTRY}. They also carry a
+    # `build:` section, so the intended model — GINTI's — is to build on the deploy host, and
+    # `up` does that by itself when the image is absent. To deploy from the registry instead,
+    # pull and retag on the host first:
+    #
+    #     docker pull  ${PREFIX:-<registry>/}audit-rail-api:latest
+    #     docker tag   ${PREFIX:-<registry>/}audit-rail-api:latest audit-rail-api:latest
+    echo "${DIM}compose resolves the bare image name — see the note in $0 if you deploy by pull${NC}"
     ;;
   up|down|logs)
+    # The API and UI compose files share an EXTERNAL network, which is what lets the UI reach
+    # the API by container name (API_URL=http://audit-rail-api:5007). Compose refuses to start
+    # against a network that does not exist, so create it here rather than making it a step
+    # somebody has to remember from the README.
+    if [ "$CMD" = up ] && ! docker network inspect audit-rail >/dev/null 2>&1; then
+      docker network create audit-rail >/dev/null
+      echo "${DIM}created shared network: audit-rail${NC}"
+    fi
     for s in "${SERVICES[@]}"; do
       f="$(compose_file "$s")"
       [ -f "$f" ] || { echo "${RED}no compose file: $f${NC}" >&2; exit 1; }

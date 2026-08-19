@@ -181,17 +181,23 @@ REGISTRY=registry.example.com/you ./_docker/scripts/service_ctl.sh push 0
 # 3. Configure and run — the API and the UI are separate compose files, so on each
 #    server bring up only what belongs there.
 cp _docker/env/api.env.example _docker/env/api.env   # DATABASE_URL, JWT_SECRET
-cp _docker/env/ui.env.example  _docker/env/ui.env
-TAG=v1.0.0-20260813 ./_docker/scripts/service_ctl.sh up 1    # API server
-TAG=v1.0.0-20260813 ./_docker/scripts/service_ctl.sh up 2    # UI server
+cp _docker/env/ui.env.example  _docker/env/ui.env   # API_URL — an nginx upstream, not a base URL
+./_docker/scripts/service_ctl.sh up 1                # API server
+./_docker/scripts/service_ctl.sh up 2                # UI server
 ```
+
+`build` tags `:latest` alongside the versioned tag and the compose files resolve the image
+bare, so there is no `TAG=` to carry. `up` also creates the shared `audit-rail` network the two
+compose files declare as external.
 
 Four things that fail quietly if you skip them — all covered in `_docker/README.md`:
 
 - **`client_max_body_size 30m`** in your proxy. The nginx default of 1 MB rejects every upload
-  in the product, as an HTML error page the app shows as an opaque failure.
-- **A volume for the file vault.** Without it a redeploy destroys every uploaded file while
-  leaving the database rows behind.
+  in the product, as an HTML error page the app shows as an opaque failure. (The UI container
+  sets this itself on the `/api` block it generates; your own proxy still needs its own.)
+- **A volume for the file vault.** The compose file ships without one, so `/data/vault` lands
+  in an anonymous volume and the next container recreate starts empty while the database rows
+  survive. Uncomment a named volume or host path in `audit-rail-api.compose.yml`.
 - **`JWT_SECRET`.** The default is a public string in this repo and the app only warns.
 - **HTTPS.** `navigator.clipboard` is undefined outside a secure context, so the "copy
   attestation link" buttons silently do nothing on plain HTTP.
