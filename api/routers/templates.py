@@ -96,6 +96,35 @@ def list_questions(template_id: str, limit: int = Query(200, le=1000), offset: i
     return [dict(r) for r in conn.execute(q).mappings()]
 
 
+class QuestionPatch(StrictModel):
+    number: str
+
+
+@router.patch("/{template_id}/questions/{question_id}")
+def update_question_number(template_id: str, question_id: str, body: QuestionPatch,
+                           user: Principal = Depends(require("audits", "edit"))):
+    """P7-S7. The only field an audit point's number ever needed to be: a bank's own
+    numbering, editable after import — the gap the issue named ("if i import an excel
+    without the number column then there is no provision to change the audit check point
+    number"). Stays free text on purpose: real bank checklists number points "3.a" or
+    "1.2.3", not just integers — see api/rendering/xlsx_io.py's parse_checklist, which
+    already accepts exactly that. No CHECK, no numeric coercion; whatever the bank wrote.
+    """
+    number = body.number.strip()
+    if not number:
+        raise HTTPException(400, "a number is required")
+    questions = t("questions")
+    with engine.begin() as conn:
+        _own_template(conn, user.tenant_id, template_id)
+        exists = conn.execute(select(questions.c.id).where(
+            questions.c.id == question_id, questions.c.template_id == template_id)).first()
+        if exists is None:
+            raise HTTPException(404, "question not found")
+        conn.execute(update(questions).where(questions.c.id == question_id)
+                    .values(number=number))
+    return {"ok": True}
+
+
 # --------------------------------------------------------------- import wizard
 
 def _tenant_control_index(conn, tenant_id):
@@ -110,11 +139,8 @@ def _tenant_control_index(conn, tenant_id):
     return idx
 
 
-@router.post("/import", status_code=201)
-async def import_checklist(
-    bank_name: str = Form(...),
-    version_label: str | None = Form(None),
-    title: str | None = Form(None),
+@router.post("/import/preview")
+async def preview_checklist(
     sheet: str | None = Form(None),
     question_col: int | None = Form(None),
     number_col: int | None = Form(None),
@@ -123,6 +149,17 @@ async def import_checklist(
     file: UploadFile = File(...),
     user: Principal = Depends(require("audits", "add")),
 ):
+    """P7-S6b. Parses the file and stops — nothing is written to the database. This is the
+    gap the issue named: today a checklist imported without a Number column silently landed
+    every question unnumbered, with no chance to fix it before it was already live. The
+    frontend renders `rows` as an editable grid; the user fixes anything missing here, and
+    what THEY approved — not a second parse of the file — is what `/import` below commits.
+
+    `meta.number_column_detected` is distinct from a per-row missing number: a bank's sheet
+    might have no Number column at ALL (this flag), or have one that's simply blank on some
+    rows (visible per-row in `rows`, computed client-side from `not row.number.trim()`) —
+    two different failures, both real, worth telling apart in the UI.
+    """
     data = await file.read()
     try:
         meta, rows = parse_checklist(data, sheet, question_col, number_col,
@@ -131,7 +168,41 @@ async def import_checklist(
         raise HTTPException(400, f"could not parse file: {e}")
     if not rows:
         raise HTTPException(400, "no question rows detected")
+    return {"meta": {**meta, "number_column_detected": meta["columns"].get("number") is not None},
+            "rows": rows}
 
+
+@router.post("/import", status_code=201)
+async def import_checklist(
+    bank_name: str = Form(...),
+    version_label: str | None = Form(None),
+    title: str | None = Form(None),
+    # P7-S6b: rows is JSON — the preview above already parsed the file once; committing
+    # what the user reviewed (and possibly hand-fixed a number in) is the whole point, so
+    # this does NOT call parse_checklist again. A second parse could silently disagree with
+    # what was shown on screen if the file's own auto-detection were ever ambiguous.
+    rows: str = Form(...),
+    file: UploadFile = File(...),
+    user: Principal = Depends(require("audits", "add")),
+):
+    import json
+    try:
+        parsed_rows = json.loads(rows)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "rows must be valid JSON")
+    if not isinstance(parsed_rows, list) or not parsed_rows:
+        raise HTTPException(400, "no question rows to import")
+    # The mandate the issue asked for: every row needs a number BEFORE it reaches the
+    # database, not "the UI showed a warning and the user clicked through anyway."
+    missing = [i + 1 for i, r in enumerate(parsed_rows)
+              if not isinstance(r, dict) or not str(r.get("number") or "").strip()]
+    if missing:
+        raise HTTPException(400,
+            f"row(s) {', '.join(map(str, missing))} have no number — fix them before importing")
+    rows = [{"number": str(r["number"]).strip(), "section": str(r.get("section") or "").strip(),
+            "text": str(r["text"]).strip()} for r in parsed_rows]
+
+    data = await file.read()
     tpl_id, file_id, now = str(uuid.uuid4()), str(uuid.uuid4()), now_iso()
     key, sha, size = storage.save(user.tenant_id, data, file.filename or "checklist.xlsx")
     ctl_idx = None
@@ -185,9 +256,9 @@ async def import_checklist(
                 proposals += 1
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="template.imported", entity_type="template", entity_id=tpl_id,
-                 detail={"bank": bank_name, "questions": meta["row_count"]})
+                 detail={"bank": bank_name, "questions": len(rows)})
     return {"template_id": tpl_id, "sections": len(section_ids),
-            "questions": len(rows), "proposals": proposals, "meta": meta}
+            "questions": len(rows), "proposals": proposals}
 
 
 @router.get("/{template_id}/proposals")

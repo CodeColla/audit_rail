@@ -180,3 +180,248 @@ def test_a_rejected_mapping_never_prefills_or_shows_as_the_control(app_client):
     # the live mapping still works
     assert grid["2"]["response_value"] == "no"
     assert grid["2"]["mapped_control"] == ids["code2"]
+
+
+# ─────────────────────────────────────────────────────────── P7-S7
+
+def test_question_number_is_editable_and_stays_free_text(app_client):
+    """The gap the issue named: a question's number could only ever be SET at import, never
+    fixed afterward. Stays free text end to end — "3.a" is a real bank numbering style
+    (see api/rendering/xlsx_io.py's parse_checklist), not something a numeric column could
+    hold."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-num")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+
+    r = app_client.patch(f"/api/templates/{ids['tpl']}/questions/{ids['q1']}",
+                         headers=h, json={"number": "3.a"})
+    assert r.status_code == 200, r.text
+
+    with engine.connect() as c:
+        got = c.execute(sqltext("SELECT number FROM questions WHERE id=:i"),
+                        {"i": ids["q1"]}).scalar()
+    assert got == "3.a"
+
+
+def test_question_number_edit_rejects_blank_and_cross_template_ids(app_client):
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    a = _seed(engine, tid, suffix="-crossA")
+    b = _seed(engine, tid, suffix="-crossB")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+
+    blank = app_client.patch(f"/api/templates/{a['tpl']}/questions/{a['q1']}",
+                             headers=h, json={"number": "   "})
+    assert blank.status_code == 400
+
+    # a's template, but b's question id — must not silently patch across templates
+    mismatched = app_client.patch(f"/api/templates/{a['tpl']}/questions/{b['q1']}",
+                                  headers=h, json={"number": "9"})
+    assert mismatched.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────── P7-S1
+
+def test_document_incident_and_asset_can_be_linked_to_an_audit_point(app_client):
+    """The other three attachment kinds Evidence already had. Same "answer first, then
+    link" gate, same shape in response_detail — a fresh set of lists, never merged into
+    `evidence`."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-s1")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "S1 attach audit"}
+                          ).json()["id"]
+    qid = ids["q1"]
+
+    # linking before an answer exists is refused, same as evidence
+    owner = str(uuid.uuid4())
+    with engine.begin() as c:
+        c.execute(sqltext("INSERT INTO people (id,tenant_id,full_name,email) "
+                          "VALUES (:i,:t,'Doc Owner',:e)"),
+                  {"i": owner, "t": tid, "e": f"o-{uuid.uuid4().hex[:6]}@kiam.example"})
+    doc = app_client.post("/api/documents", headers=h, json={
+        "title": "S1 Linked Policy", "owner_person_id": owner}).json()
+    before_answer = app_client.post(f"/api/assessments/{aid}/responses/{qid}/documents",
+                                    headers=h, json={"document_id": doc["id"]})
+    assert before_answer.status_code == 404
+
+    assert app_client.put(f"/api/assessments/{aid}/responses/{qid}", headers=h,
+                          json={"response_value": "yes"}).status_code == 200
+
+    inc = app_client.post("/api/incidents", headers=h,
+                          json={"title": "S1 Linked Incident"}).json()
+    asset = app_client.post("/api/assets", headers=h,
+                            json={"name": "S1 Linked Asset"}).json()
+
+    assert app_client.post(f"/api/assessments/{aid}/responses/{qid}/documents", headers=h,
+                           json={"document_id": doc["id"]}).status_code == 200
+    assert app_client.post(f"/api/assessments/{aid}/responses/{qid}/incidents", headers=h,
+                           json={"incident_id": inc["id"]}).status_code == 200
+    assert app_client.post(f"/api/assessments/{aid}/responses/{qid}/assets", headers=h,
+                           json={"asset_id": asset["id"]}).status_code == 200
+
+    detail = app_client.get(f"/api/assessments/{aid}/responses/{qid}", headers=h).json()
+    assert [d["id"] for d in detail["documents"]] == [doc["id"]]
+    assert [i["id"] for i in detail["incidents"]] == [inc["id"]]
+    assert [a["id"] for a in detail["assets"]] == [asset["id"]]
+    # evidence stays a separate list — nothing here should have touched it
+    assert detail["evidence"] == []
+
+
+def test_linking_a_record_from_another_tenant_is_404(app_client):
+    """The same cross-tenant guard evidence linking already has: a real id that just
+    doesn't belong to the caller's organisation must read as 'not found', never leak
+    which tenant it belongs to."""
+    from api.core.database import engine
+    from tests.test_identity import uniq_gst
+
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-s1x")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "S1 cross-tenant"}
+                          ).json()["id"]
+    qid = ids["q1"]
+    app_client.put(f"/api/assessments/{aid}/responses/{qid}", headers=h,
+                   json={"response_value": "yes"})
+
+    other = app_client.post("/api/auth/signup", json={
+        "full_name": "Other Org Owner", "email": f"other-{uuid.uuid4().hex[:8]}@example.com",
+        "password": "Passw0rdOne", "organisation_name": f"Other Org {uuid.uuid4().hex[:6]}",
+        "gst_number": uniq_gst()})
+    oh = {"Authorization": f"Bearer {other.json()['access_token']}"}
+    other_asset = app_client.post("/api/assets", headers=oh,
+                                  json={"name": "Not KIAM's asset"}).json()
+
+    r = app_client.post(f"/api/assessments/{aid}/responses/{qid}/assets", headers=h,
+                        json={"asset_id": other_asset["id"]})
+    assert r.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────── P7-S6a
+
+def test_deleting_an_audit_cascades_cleanly(app_client):
+    """There was no route at all before this — not gated, simply absent. The schema was
+    already built expecting it (db/schema.sql's comment on tasks_assessment_fk), so this
+    proves the cascade actually holds: responses, evidence links and the finding all go
+    with it, and the assessment is genuinely gone, not archived."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-del")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "To be deleted"}
+                          ).json()["id"]
+    app_client.put(f"/api/assessments/{aid}/responses/{ids['q1']}", headers=h,
+                   json={"response_value": "yes"})
+    finding = app_client.post(f"/api/assessments/{aid}/findings", headers=h,
+                              json={"title": "Will vanish with the audit"})
+    assert finding.status_code == 201, finding.text
+    fid = finding.json()["id"]
+
+    r = app_client.delete(f"/api/assessments/{aid}", headers=h)
+    assert r.status_code == 204
+
+    assert app_client.get(f"/api/assessments/{aid}", headers=h).status_code == 404
+    with engine.connect() as c:
+        assert c.execute(sqltext("SELECT count(*) FROM responses WHERE assessment_id=:a"),
+                         {"a": aid}).scalar() == 0
+        # the finding itself is a standalone record; only its LINK to this assessment
+        # (finding_assessments) is what cascades — the finding is not silently deleted.
+        assert c.execute(sqltext("SELECT count(*) FROM finding_assessments WHERE assessment_id=:a"),
+                         {"a": aid}).scalar() == 0
+        assert c.execute(sqltext("SELECT count(*) FROM findings WHERE id=:f"),
+                         {"f": fid}).scalar() == 1
+        # Sumit's report: the imported checklist and its crosswalk mappings kept showing up
+        # in Mappings and the Bank crosswalk after the audit that used it was deleted. This
+        # was the ONLY assessment against ids["tpl"], so the template must go with it.
+        assert c.execute(sqltext("SELECT count(*) FROM templates WHERE id=:t"),
+                         {"t": ids["tpl"]}).scalar() == 0
+        assert c.execute(sqltext("SELECT count(*) FROM questions WHERE template_id=:t"),
+                         {"t": ids["tpl"]}).scalar() == 0
+        assert c.execute(sqltext("SELECT count(*) FROM question_control_map WHERE question_id=:q"),
+                         {"q": ids["q1"]}).scalar() == 0
+
+
+def test_deleting_an_audit_keeps_its_template_if_another_audit_still_uses_it(app_client):
+    """The template is only removed when THIS was the last assessment against it — nothing
+    in the product creates a second assessment from an existing template today, but the
+    schema allows it (assessments.template_id has no ON DELETE precisely so a checklist can
+    outlive any one year's audit), and an audit still in progress against a shared checklist
+    must never lose the checklist out from under it."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-delshared")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+
+    a1 = app_client.post("/api/assessments", headers=h,
+                         json={"template_id": ids["tpl"], "title": "2025 audit"}).json()["id"]
+    a2 = app_client.post("/api/assessments", headers=h,
+                         json={"template_id": ids["tpl"], "title": "2026 audit"}).json()["id"]
+
+    assert app_client.delete(f"/api/assessments/{a1}", headers=h).status_code == 204
+    assert app_client.get(f"/api/assessments/{a1}", headers=h).status_code == 404
+    # the template survives — a2 still needs it
+    assert app_client.get(f"/api/templates/{ids['tpl']}/questions", headers=h).status_code == 200
+    assert app_client.get(f"/api/assessments/{a2}", headers=h).status_code == 200
+
+    # deleting the LAST one now removes the template too
+    assert app_client.delete(f"/api/assessments/{a2}", headers=h).status_code == 204
+    with engine.connect() as c:
+        assert c.execute(sqltext("SELECT count(*) FROM templates WHERE id=:t"),
+                         {"t": ids["tpl"]}).scalar() == 0
+
+
+def test_deleted_audits_checklist_disappears_from_mappings_and_crosswalk(app_client):
+    """The two screens Sumit actually saw the stale checklist on."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-delviews")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "Soon deleted"}).json()["id"]
+
+    assert ids["tpl"] in [t["id"] for t in app_client.get("/api/templates", headers=h).json()]
+    xwalk_cols = app_client.get("/api/library/crosswalk", headers=h).json()["columns"]
+    assert ids["tpl"] in [c["id"] for c in xwalk_cols]
+
+    assert app_client.delete(f"/api/assessments/{aid}", headers=h).status_code == 204
+
+    assert ids["tpl"] not in [t["id"] for t in app_client.get("/api/templates", headers=h).json()]
+    xwalk_cols_after = app_client.get("/api/library/crosswalk", headers=h).json()["columns"]
+    assert ids["tpl"] not in [c["id"] for c in xwalk_cols_after]
+
+
+def test_deleting_another_tenants_audit_is_404(app_client):
+    from api.core.database import engine
+    from tests.test_identity import uniq_gst
+
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-delx")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "KIAM's own audit"}
+                          ).json()["id"]
+
+    other = app_client.post("/api/auth/signup", json={
+        "full_name": "Other Org Owner", "email": f"other-{uuid.uuid4().hex[:8]}@example.com",
+        "password": "Passw0rdOne", "organisation_name": f"Other Org {uuid.uuid4().hex[:6]}",
+        "gst_number": uniq_gst()})
+    oh = {"Authorization": f"Bearer {other.json()['access_token']}"}
+
+    assert app_client.delete(f"/api/assessments/{aid}", headers=oh).status_code == 404
+    # still there
+    assert app_client.get(f"/api/assessments/{aid}", headers=h).status_code == 200

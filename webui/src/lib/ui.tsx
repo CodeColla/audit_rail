@@ -24,6 +24,20 @@ const twMerge = extendTailwindMerge({
 
 export const cn = (...a: ClassValue[]) => twMerge(clsx(a));
 
+/**
+ * The Shell header's rendered height (Shell.tsx: `sticky top-0 z-30`, an OrgLogo "md" plus
+ * `py-2.5`). One source of truth for it, because Tailwind's JIT needs a literal arbitrary-value
+ * string at each call site — a JS number can't be interpolated into `top-[Npx]` — so anything
+ * inside the page that ALSO needs to stick (a toolbar, a sub-header) has to offset by this same
+ * number or it sticks to `top: 0` and renders underneath the Shell header instead of below it.
+ * That exact bug (P7-S4) is why this exists: `RichTextEditor`'s toolbar used `top-0` and was
+ * invisible — present in the DOM, painted behind the taller, higher-z-index Shell header.
+ */
+export const SHELL_HEADER_H = 57;
+/** `sticky top-[57px]` as a literal string — see SHELL_HEADER_H. Keep the number in the class
+ *  text in sync with the constant above; Tailwind cannot read the constant itself. */
+export const STICKY_BELOW_HEADER = "sticky top-[57px]";
+
 // status → pill styling. Any unknown value falls back to neutral.
 const PILL: Record<string, string> = {
   ok: "text-ok bg-ok-bg", yes: "text-ok bg-ok-bg", valid: "text-ok bg-ok-bg",

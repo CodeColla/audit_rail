@@ -7,12 +7,20 @@ import { MappingReview } from "../../components/MappingReview";
 import { Card, PageHead, Pill } from "../../lib/ui";
 
 type ImportResult = { template_id: string; sections: number; questions: number; proposals: number };
+type PreviewRow = { number: string; section: string; text: string };
+type PreviewResult = { meta: { number_column_detected: boolean }; rows: PreviewRow[] };
 
 export default function Import() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const can = useCan();
-  const [step, setStep] = useState<"upload" | "review">("upload");
+  // P7-S6b: "fixNumbers" is new. Most imports never see it — a checklist with a proper
+  // Number column and no gaps goes straight from upload to review, exactly as before (and
+  // is what e2e/30-audit-journey.spec.ts's fixture still exercises unchanged). It only
+  // appears when there's something to actually decide: no Number column detected at all,
+  // or individual rows missing one — which used to land silently unnumbered with no way to
+  // fix it after the fact.
+  const [step, setStep] = useState<"upload" | "fixNumbers" | "review">("upload");
   const [bank, setBank] = useState("");
   const [version, setVersion] = useState("");
   const [sheet, setSheet] = useState("");
@@ -25,34 +33,69 @@ export default function Import() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
+  const [numberColDetected, setNumberColDetected] = useState(true);
+
+  const colIdx = (letter: string) => {
+    let n = 0;
+    for (const ch of letter.trim().toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n - 1; // A -> 0
+  };
+
+  /** The `/import/preview` call, shared by the initial submit and by re-parsing after an
+   *  advanced-column change — parses the file WITHOUT writing anything to the database. */
+  async function preview(): Promise<PreviewResult> {
+    const fd = new FormData();
+    if (sheet) fd.append("sheet", sheet);
+    if (advanced) {
+      if (qcol) fd.append("question_col", String(colIdx(qcol)));
+      if (ncol) fd.append("number_col", String(colIdx(ncol)));
+      if (scol) fd.append("section_col", String(colIdx(scol)));
+      if (hrow) fd.append("header_row", hrow);
+    }
+    fd.append("file", file!);
+    const { data } = await api.post<PreviewResult>("/templates/import/preview", fd);
+    return data;
+  }
+
+  /** Commits whatever row set was approved — the preview's own rows on the happy path, or
+   *  the hand-fixed ones from the "fix numbers" step. Never re-parses the file: what the
+   *  user saw on screen is what gets written, not a second parse that could disagree with it. */
+  async function commit(rows: PreviewRow[]) {
+    setBusy(true); setErr("");
+    try {
+      const fd = new FormData();
+      fd.append("bank_name", bank);
+      if (version) fd.append("version_label", version);
+      fd.append("rows", JSON.stringify(rows));
+      fd.append("file", file!);
+      const { data } = await api.post<ImportResult>("/templates/import", fd);
+      setResult(data);
+      setStep("review");
+    } catch (e: any) {
+      setErr(errText(e, "Import failed."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!file || !bank) return;
     setBusy(true); setErr("");
     try {
-      const colIdx = (letter: string) => {
-        let n = 0;
-        for (const ch of letter.trim().toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64);
-        return n - 1; // A -> 0
-      };
-      const fd = new FormData();
-      fd.append("bank_name", bank);
-      if (version) fd.append("version_label", version);
-      if (sheet) fd.append("sheet", sheet);
-      if (advanced) {
-        if (qcol) fd.append("question_col", String(colIdx(qcol)));
-        if (ncol) fd.append("number_col", String(colIdx(ncol)));
-        if (scol) fd.append("section_col", String(colIdx(scol)));
-        if (hrow) fd.append("header_row", hrow);
+      const { meta, rows } = await preview();
+      const allNumbered = rows.length > 0 && rows.every((r) => r.number.trim());
+      setNumberColDetected(meta.number_column_detected);
+      if (meta.number_column_detected && allNumbered) {
+        await commit(rows);
+      } else {
+        setPreviewRows(rows);
+        setStep("fixNumbers");
+        setBusy(false);
       }
-      fd.append("file", file);
-      const { data } = await api.post<ImportResult>("/templates/import", fd);
-      setResult(data);
-      setStep("review");
     } catch (e: any) {
       setErr(errText(e, "Import failed — check the file and column layout."));
-    } finally {
       setBusy(false);
     }
   }
@@ -126,9 +169,70 @@ export default function Import() {
             )}
             {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
             <button disabled={busy || !file || !bank} className="btn btn-primary justify-center disabled:opacity-50">
-              {busy ? "Importing…" : "Import & propose mappings"}
+              {busy ? "Reading…" : "Import & propose mappings"}
             </button>
           </form>
+        </Card>
+      </>
+    );
+  }
+
+  if (step === "fixNumbers") {
+    const missing = previewRows.filter((r) => !r.number.trim()).length;
+    const setRowNumber = (i: number, value: string) =>
+      setPreviewRows((rows) => rows.map((r, idx) => (idx === i ? { ...r, number: value } : r)));
+
+    return (
+      <>
+        <PageHead eyebrow="Audits · Import" title="Check the question numbers"
+          lead="Every question needs a number before this can be imported — that's what lets you find and edit a specific audit point later." />
+        <Card className="max-w-3xl">
+          {!numberColDetected && (
+            <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-label text-warn">
+              No Number column was detected in this file at all. Fill one in below, or go back
+              and set it explicitly under "Column overrides".
+            </div>
+          )}
+          {numberColDetected && missing > 0 && (
+            <div className="mb-3 rounded-md bg-warn-bg px-3 py-2 text-label text-warn">
+              {missing} of {previewRows.length} question{previewRows.length === 1 ? "" : "s"} came
+              in with no number. Fill in the missing ones below to continue.
+            </div>
+          )}
+          <div className="max-h-[52vh] overflow-y-auto rounded-md border border-bd">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-0 bg-canvas text-caption text-txt3">
+                <tr>
+                  <th className="px-3 py-2 font-medium">No.</th>
+                  <th className="px-3 py-2 font-medium">Section</th>
+                  <th className="px-3 py-2 font-medium">Question</th>
+                </tr>
+              </thead>
+              <tbody>
+                {previewRows.map((r, i) => (
+                  <tr key={i} className="border-t border-bd">
+                    <td className="px-3 py-1.5">
+                      <input value={r.number} onChange={(e) => setRowNumber(i, e.target.value)}
+                        aria-label={`Number for row ${i + 1}`}
+                        className={
+                          "w-20 rounded border px-1.5 py-1 font-mono text-sm outline-none focus:border-accent " +
+                          (r.number.trim() ? "border-bd" : "border-bad bg-bad-bg")} />
+                    </td>
+                    <td className="px-3 py-1.5 text-txt3">{r.section || "—"}</td>
+                    <td className="px-3 py-1.5">{r.text}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {err && <div className="mt-3 rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+          <div className="mt-3 flex items-center gap-2">
+            <button type="button" onClick={() => setStep("upload")} className="btn">← Back</button>
+            <button disabled={busy || missing > 0} onClick={() => commit(previewRows)}
+              className="btn btn-primary disabled:opacity-50">
+              {busy ? "Importing…" : `Import ${previewRows.length} questions`}
+            </button>
+          </div>
         </Card>
       </>
     );
