@@ -844,8 +844,13 @@ CREATE TABLE documents (
     document_type         text NOT NULL DEFAULT 'POLICY'
                               CHECK (document_type IN ('GOVERNANCE', 'POLICY', 'PROCEDURE', 'PLAN',
                                                        'REGISTER', 'RECORD', 'REPORT', 'TEMPLATE', 'SOA')),
-    classification        text NOT NULL DEFAULT 'INTERNAL'
-                              CHECK (classification IN ('PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'SECRET')),
+    -- P7-S5: was CHECKed to ('PUBLIC','INTERNAL','CONFIDENTIAL','SECRET'), same as
+    -- data_items.classification below still is. Deliberately widened to a free-text,
+    -- admin-editable vocabulary (lookup_values kind='document_classification',
+    -- api/domain/vocabularies.py) so an org can add e.g. RESTRICTED without a migration —
+    -- Admin/Masters had no way to manage this field at all. data_items.classification is
+    -- untouched: only the request that named Document Classification changes.
+    classification        text NOT NULL DEFAULT 'INTERNAL',
     write_mode            text NOT NULL DEFAULT 'AUTHORED' CHECK (write_mode IN ('AUTHORED', 'GENERATED')),
     generator_key         text CHECK (generator_key IN ('risk_list', 'asset_list', 'data_list',
                                                         'third_party_list', 'obligation_list',
@@ -1401,6 +1406,39 @@ CREATE TABLE response_evidence (
     FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence  (id, tenant_id) ON DELETE CASCADE
 );
 
+-- P7-S1: an audit point can also point at a policy/register, an incident, or a physical/
+-- virtual asset — not just evidence. Three tables mirroring response_evidence's own shape
+-- exactly, rather than one polymorphic union (risk_links, above, shows that pattern exists
+-- in this schema): response_evidence is the LOCAL precedent for this exact relationship and
+-- is already fully wired end to end, so matching it is less schema and less risk than a new
+-- pattern. All three attachments are optional, per the request.
+CREATE TABLE response_documents (
+    tenant_id   text NOT NULL REFERENCES tenants(id),
+    response_id text NOT NULL,
+    document_id text NOT NULL,
+    PRIMARY KEY (response_id, document_id),
+    FOREIGN KEY (response_id, tenant_id) REFERENCES responses (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id, tenant_id) REFERENCES documents (id, tenant_id) ON DELETE CASCADE
+);
+
+CREATE TABLE response_incidents (
+    tenant_id   text NOT NULL REFERENCES tenants(id),
+    response_id text NOT NULL,
+    incident_id text NOT NULL,
+    PRIMARY KEY (response_id, incident_id),
+    FOREIGN KEY (response_id, tenant_id) REFERENCES responses (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (incident_id, tenant_id) REFERENCES incidents (id, tenant_id) ON DELETE CASCADE
+);
+
+CREATE TABLE response_assets (
+    tenant_id   text NOT NULL REFERENCES tenants(id),
+    response_id text NOT NULL,
+    asset_id    text NOT NULL,
+    PRIMARY KEY (response_id, asset_id),
+    FOREIGN KEY (response_id, tenant_id) REFERENCES responses (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (asset_id, tenant_id)    REFERENCES assets    (id, tenant_id) ON DELETE CASCADE
+);
+
 -- The KSL ask -> action -> validation rounds. author_user_id: auditor guests post here.
 CREATE TABLE review_messages (
     id             text PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -1676,6 +1714,17 @@ CREATE TRIGGER trg_responses_tenant          BEFORE INSERT ON responses
 CREATE TRIGGER trg_response_revisions_tenant BEFORE INSERT ON response_revisions
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('responses', 'response_id');
 CREATE TRIGGER trg_response_evidence_tenant  BEFORE INSERT ON response_evidence
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('responses', 'response_id');
+-- P7-S1: response_documents/incidents/assets INSERT the same way link_evidence does
+-- (api/routers/assessments.py) — no tenant_id in the values() call — so they need the
+-- same trigger response_evidence has, or every link_document/incident/asset call 500s on
+-- the NOT NULL violation. Caught by pytest, not by inspection: this project has no
+-- Alembic, so a schema.sql edit without the matching trigger looks correct on read.
+CREATE TRIGGER trg_response_documents_tenant BEFORE INSERT ON response_documents
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('responses', 'response_id');
+CREATE TRIGGER trg_response_incidents_tenant BEFORE INSERT ON response_incidents
+    FOR EACH ROW EXECUTE FUNCTION inherit_tenant('responses', 'response_id');
+CREATE TRIGGER trg_response_assets_tenant    BEFORE INSERT ON response_assets
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('responses', 'response_id');
 CREATE TRIGGER trg_review_messages_tenant    BEFORE INSERT ON review_messages
     FOR EACH ROW EXECUTE FUNCTION inherit_tenant('assessments', 'assessment_id');

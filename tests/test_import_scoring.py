@@ -1,6 +1,7 @@
 """M6 — xlsx import wizard, mapping proposals, scoring, and export."""
 
 import io
+import json
 import uuid
 
 from openpyxl import Workbook, load_workbook
@@ -43,10 +44,19 @@ def test_import_proposals_scoring_export(app_client):
     tok = token(app_client, "member@kiam.example", "secret2")
     h = {"Authorization": f"Bearer {tok}"}
 
-    # import a bank checklist
-    r = app_client.post("/api/templates/import", headers=h, data={"bank_name": "HDFC"},
-        files={"file": ("hdfc.xlsx", _make_xlsx(),
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+    # import a bank checklist — P7-S6b split this into preview (parse only) then commit
+    # (write, given the rows the preview returned)
+    xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    pv = app_client.post("/api/templates/import/preview", headers=h,
+                        files={"file": ("hdfc.xlsx", _make_xlsx(), xlsx_type)})
+    assert pv.status_code == 200, pv.text
+    assert pv.json()["meta"]["number_column_detected"] is True
+    rows = pv.json()["rows"]
+    assert all(row["number"] for row in rows)
+
+    r = app_client.post("/api/templates/import", headers=h,
+        data={"bank_name": "HDFC", "rows": json.dumps(rows)},
+        files={"file": ("hdfc.xlsx", _make_xlsx(), xlsx_type)})
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["questions"] == 3
@@ -100,3 +110,88 @@ def test_import_proposals_scoring_export(app_client):
     cells = [v for row in wb.active.iter_rows(values_only=True) for v in row]
     assert "YES" in cells                                # our answer made it in
     assert any(c and "password" in str(c).lower() for c in cells)
+
+
+# ─────────────────────────────────────────────────────────── P7-S6b
+
+def _make_xlsx_no_number_col():
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["Domain", "Control Question"])
+    ws.append(["Access Management", "Do you enforce strong password policies?"])
+    ws.append(["Governance", "Do you have an information security policy?"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_preview_writes_nothing_to_the_database(app_client):
+    """The whole point of a preview: parse, don't commit. A second preview of the same file
+    must not create a second template — because it must not create one at all."""
+    from api.core.database import engine
+    tok = token(app_client, "member@kiam.example", "secret2")
+    h = {"Authorization": f"Bearer {tok}"}
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+        before = c.execute(sqltext(
+            "SELECT count(*) FROM templates WHERE tenant_id=:t"), {"t": tid}).scalar()
+
+    xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    pv = app_client.post("/api/templates/import/preview", headers=h,
+                        files={"file": ("hdfc.xlsx", _make_xlsx(), xlsx_type)})
+    assert pv.status_code == 200, pv.text
+    assert len(pv.json()["rows"]) == 3
+
+    with engine.connect() as c:
+        after = c.execute(sqltext(
+            "SELECT count(*) FROM templates WHERE tenant_id=:t"), {"t": tid}).scalar()
+    assert after == before
+
+
+def test_preview_flags_a_missing_number_column(app_client):
+    """The exact failure the issue named: a checklist with no Number column at all used to
+    silently import every question unnumbered. The preview must say so explicitly, not
+    leave the frontend to infer it from every row happening to be blank."""
+    tok = token(app_client, "member@kiam.example", "secret2")
+    h = {"Authorization": f"Bearer {tok}"}
+    xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    pv = app_client.post("/api/templates/import/preview", headers=h,
+                        files={"file": ("no-numbers.xlsx", _make_xlsx_no_number_col(), xlsx_type)})
+    assert pv.status_code == 200, pv.text
+    assert pv.json()["meta"]["number_column_detected"] is False
+    assert all(not row["number"] for row in pv.json()["rows"])
+
+
+def test_import_is_rejected_when_any_row_has_no_number(app_client):
+    """The mandate itself: committing with a blank number anywhere must 400, whether that
+    blank came from the file or was never fixed in the preview step. Defence in depth —
+    this must hold even for a caller that skips the UI's own "fix it here" grid entirely."""
+    tok = token(app_client, "member@kiam.example", "secret2")
+    h = {"Authorization": f"Bearer {tok}"}
+    xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    rows = [{"number": "1", "section": "Access", "text": "Q1?"},
+           {"number": "", "section": "Access", "text": "Q2?"}]
+    r = app_client.post("/api/templates/import", headers=h,
+        data={"bank_name": "Blank Number Bank", "rows": json.dumps(rows)},
+        files={"file": ("f.xlsx", _make_xlsx(), xlsx_type)})
+    assert r.status_code == 400
+    assert "2" in r.json()["detail"]                     # names the offending row
+
+
+def test_import_commits_exactly_the_rows_it_was_given_not_a_reparse(app_client):
+    """Committing must use the (possibly hand-edited) rows verbatim — not re-parse the file,
+    which could silently disagree with what the user approved on screen."""
+    tok = token(app_client, "member@kiam.example", "secret2")
+    h = {"Authorization": f"Bearer {tok}"}
+    xlsx_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    # deliberately doesn't match _make_xlsx()'s real content — proves the FILE isn't re-parsed
+    rows = [{"number": "9.z", "section": "Hand-edited", "text": "A hand-fixed question"}]
+    r = app_client.post("/api/templates/import", headers=h,
+        data={"bank_name": "Hand Edited Bank", "rows": json.dumps(rows)},
+        files={"file": ("f.xlsx", _make_xlsx(), xlsx_type)})
+    assert r.status_code == 201, r.text
+    tpl = r.json()["template_id"]
+    qs = app_client.get(f"/api/templates/{tpl}/questions", headers=h).json()
+    assert len(qs) == 1
+    assert qs[0]["number"] == "9.z"
+    assert qs[0]["text"] == "A hand-fixed question"

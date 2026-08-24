@@ -7,8 +7,16 @@ migration for every new value.
 
 What belongs here: open-ended taxonomies (risk category, vendor category, asset subtype,
 data type, incident category).
-What does NOT: state machines the code branches on — status, severity, classification,
-treatment. Those stay as CHECK constraints so the database keeps enforcing them.
+What does NOT: state machines the code branches on — status, severity, treatment. Those stay
+as CHECK constraints so the database keeps enforcing them.
+
+**Classification is a deliberate, narrow exception (P7-S5), and only for `documents`.**
+`data_items.classification` is unaffected and stays a closed, DB-enforced set — see
+CLASSIFICATIONS below. `documents.classification` prints on a signed PDF/DOCX letterhead, so
+widening it was a real trade-off, made because Admin · Masters had no way to manage it at all
+(the report that prompted this: "no block for Documents Classification"). Nothing here
+branches on `documents.classification`'s value — it is display text, not a state machine —
+which is what makes it safe to move into this module despite the general rule above.
 """
 
 from __future__ import annotations
@@ -73,6 +81,14 @@ KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
     )),
     "regulator": ("Regulator", (
         "RBI", "SEBI", "IRDAI", "MeitY", "CERT-In", "NPCI", "DPDP Authority", "Other",
+    )),
+    # P7-S5. Seeded with the 4 values the CHECK constraint used to enforce, so no existing
+    # document is left pointing at a value that isn't offered anywhere. A separate literal
+    # tuple from CLASSIFICATIONS below on purpose — that constant validates a DIFFERENT
+    # column (data_items.classification, still CHECK-enforced) and must not drift just
+    # because this one grows a "RESTRICTED" or similar later.
+    "document_classification": ("Document classification", (
+        "PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET",
     )),
 }
 

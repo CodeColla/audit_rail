@@ -725,6 +725,9 @@ export default function DocumentDetail() {
   const isSheet = (shown?.content_format ?? "HTML") === "SHEET";
 
   return (
+    // 57px = SHELL_HEADER_H (lib/ui.tsx) — the Shell app header's rendered height. Tailwind
+    // needs this as a literal here (JIT can't read the JS constant), so if the Shell header's
+    // height ever changes, this and STICKY_BELOW_HEADER both need updating together.
     <div className="-mx-6 -mt-6 flex min-h-[calc(100vh-57px)] flex-col">
       {/* ── header: identity and actions ─────────────────────────────── */}
       <header className="shrink-0 border-b border-bd bg-paper px-5 pt-2.5">
