@@ -7,6 +7,7 @@ from sqlalchemy import text
 
 from api.core.config import settings
 from api.core.database import engine, reflect_schema
+from api.core.logging import configure_logging, logger
 from api.routers import (assessments, auth, dashboard, documents, evidence, frameworks,
                          library, lookups, notifications, org, people, policies, registers,
                          roles, signing, tasks, templates)
@@ -72,12 +73,13 @@ def _check_schema_drift() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     _preflight()
     reflect_schema()
     if settings.jwt_secret == "dev-only-insecure-secret-change-me":
-        print(
-            "\n  WARNING: JWT_SECRET is the insecure dev default. "
-            "Set a real secret in .env before putting any real data here.\n"
+        logger.warning(
+            "JWT_SECRET is the insecure dev default. "
+            "Set a real secret in .env before putting any real data here."
         )
     scheduler = None
     if settings.scheduler_enabled:
@@ -142,7 +144,7 @@ app.include_router(signing.router, prefix="/api")
 if os.environ.get("E2E_TEST_HOOKS") == "1":
     from api.routers import e2e_hooks
     app.include_router(e2e_hooks.router, prefix="/api")
-    print("  E2E_TEST_HOOKS enabled — /api/e2e/* is mounted. Never enable this in production.")
+    logger.info("E2E_TEST_HOOKS enabled — /api/e2e/* is mounted. Never enable this in production.")
 
 
 @app.get("/")

@@ -311,6 +311,23 @@ def test_types_endpoint_matches_the_database_constraint(app_client):
     assert served == in_db, f"API serves {served - in_db or '—'}, DB allows {in_db - served or '—'}"
 
 
+# ─────────────────────────────────────────────────────────── P7-S5
+
+def test_classification_is_no_longer_check_constrained(app_client):
+    """The whole point of S5: `documents.classification` used to be a closed CHECK enum —
+    this now saves a value nowhere near the old 4, proving the constraint is genuinely gone
+    and not just widened. `data_items.classification` (a DIFFERENT table) is untouched — see
+    test_vocabularies.test_register_enums_match_the_live_check_constraints, which would fail
+    loudly if that one had been dropped by mistake."""
+    h, owner, _ = _setup(app_client)
+    r = app_client.post("/api/documents", headers=h, json={
+        "title": "Odd classification doc", "owner_person_id": owner,
+        "classification": "RESTRICTED — VENDOR EYES ONLY"})
+    assert r.status_code == 201, r.text
+    got = app_client.get(f"/api/documents/{r.json()['id']}", headers=h).json()
+    assert got["classification"] == "RESTRICTED — VENDOR EYES ONLY"
+
+
 def test_html_content_is_sanitised_on_create_and_edit(app_client):
     h, owner, _ = _setup(app_client)
     doc_id, ver_id = _new_doc(app_client, h, owner, content=HTML_BODY)

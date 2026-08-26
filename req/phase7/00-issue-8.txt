@@ -1,0 +1,12 @@
+GitHub issue #8 — "BugFixes / Enhancements Across Portal for Featurexs"
+https://github.com/CodeColla/audit_rail/issues/8
+
+Problem Statements:
+
+- In Audits, currently we have the provision to Attach Evidence Menu Entries, we will also need provision to Attach Documents Incidents and Assets, we will in overall need provision to attach an Audit Point with Document, Evidence, Incident and Asset. All these attachments are optional and will be attached based on the Audit Points nature.
+- In Documents for Word Type document, the table insert/add option supports only 3 columns, and no proivision to add an extra column or delete any column in the existing format.
+- there should be full screen view option for doc type of Docx as well, similar to what we have done in Excel/spreadhseet type document.
+- the upper tool bar in Doc should be static on the page and not dissapear when we scroll. The scroll feature should only be for the Pages.
+- In Admin/Masters there is not block for Documents Classification, we have Document Type but no entries to add or delete for Documents Classification Master  menu.
+- In Audits menu, there is no manditory provision to delete an entrire audit, also when we built import an audit checklist from any excel, there should be  mandate that Question Col and Number Col and other 2 are there, also data validation should be previewd, cause if i import an excel with out the number columns then there is no provision to change the audit check point number.
+- Which brings to the next point that is in audit  we should be able to edit the Audit Number, store it as float if u want , currently it is displayed in UI with `#` symbol.

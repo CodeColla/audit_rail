@@ -36,6 +36,10 @@ python-docx>=1.1
 # import deserves a direct pin rather than depending on another package's transitive choice.
 Pillow>=10.0
 
+# P7 (issue #5): structured logging. loguru, not stdlib logging — matches the reference
+# repo's own convention (GINTI), see api/core/logging.py.
+loguru>=0.7
+
 # Dev/test
 pytest>=8.0
 httpx>=0.28          # Starlette TestClient

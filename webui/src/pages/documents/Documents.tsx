@@ -33,7 +33,22 @@ function useDocTypes() {
     queryFn: () => get<DocType[]>("/documents/types") });
 }
 
-const CLASSES = ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"];
+/**
+ * P7-S5: classification used to be `CLASSES`, a hardcoded 4-value array — the CHECK
+ * constraint `documents.classification` enforced meant that was safe to hardcode. Now that
+ * an admin can add or retire values from Admin · Masters (`document_classification` kind,
+ * api/domain/vocabularies.py), a hardcoded list here would silently drift from what's
+ * actually offered — the exact bug `useDocTypes()` above already exists to avoid for
+ * document type, one level up.
+ */
+function useClassifications() {
+  return useQuery({
+    queryKey: ["lookups", "document_classification"],
+    queryFn: () => get<{ kinds: Record<string, { values: { id: string; value: string }[] }> }>(
+      "/lookups?kind=document_classification"),
+    select: (r) => r.kinds.document_classification?.values ?? [],
+  });
+}
 
 /** A document's live state: the newest version's status, shown as a pill. */
 function StatusCell({ d }: { d: Doc }) {
@@ -55,6 +70,7 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const people = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
   const types = useDocTypes();
+  const classes = useClassifications();
   const [f, setF] = useState({ title: "", document_type: "POLICY", classification: "INTERNAL",
     owner_person_id: "", review_cadence_months: "12" });
   // Separate from `f` since it maps to `content_format`, not a field the form otherwise has —
@@ -105,8 +121,17 @@ function NewDocModal({ onClose }: { onClose: () => void }) {
             </select>
           </label>
           <label className="text-sm font-medium">Classification
-            <select value={f.classification} onChange={set("classification")} className={inputCls + " mt-1 capitalize"}>
-              {CLASSES.map((c) => <option key={c} value={c}>{c.charAt(0) + c.slice(1).toLowerCase()}</option>)}
+            {/* Same "cosmetically blank while loading, never lets a bad value through"
+                behaviour as the Type select above — f.classification defaults to
+                "INTERNAL", one of the values this vocabulary is always seeded with. */}
+            <select value={f.classification} onChange={set("classification")}
+              disabled={classes.isLoading} className={inputCls + " mt-1 capitalize disabled:opacity-50"}>
+              {classes.isLoading && <option>Loading…</option>}
+              {(classes.data ?? []).map((c) => (
+                <option key={c.id} value={c.value}>
+                  {c.value.charAt(0) + c.value.slice(1).toLowerCase()}
+                </option>
+              ))}
             </select>
           </label>
           <label className="text-sm font-medium">Owner *

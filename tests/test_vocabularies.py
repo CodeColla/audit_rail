@@ -185,3 +185,41 @@ def test_register_enums_match_the_live_check_constraints(app_client):
             assert set(declared) == in_db, (
                 f"{conname}: code allows {set(declared) - in_db or '—'}, "
                 f"database allows {in_db - set(declared) or '—'}")
+
+
+# ─────────────────────────────────────────────────────────── P7-S5
+
+def test_document_classification_is_seeded_and_editable(app_client):
+    """documents.classification (S5) used to be a CHECK enum, same shape as document_type
+    still is — this proves it now behaves exactly like the P5-S6 vocabularies above: seeded
+    for a NEW org with the 4 values the CHECK used to enforce (so no document silently loses
+    its label), then addable and retirable from Admin · Masters like any other kind.
+
+    Deliberately signs up a FRESH org rather than reusing test_documents.py's shared 'kiam'
+    tenant — that one is built by raw SQL in conftest.py and never goes through
+    vocabularies.seed(), so it has no lookup_values at all for ANY kind. Signing up, like
+    every other test in this module, is what actually exercises the seeding path."""
+    org, h = _org(app_client)
+
+    seeded = app_client.get("/api/lookups?kind=document_classification", headers=h).json()
+    values = {v["value"] for v in seeded["kinds"]["document_classification"]["values"]}
+    assert values == {"PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"}
+
+    made = app_client.post("/api/lookups", headers=h,
+                           json={"kind": "document_classification", "value": "RESTRICTED"})
+    assert made.status_code == 201, made.text
+
+    from api.core.database import engine
+    with engine.begin() as c:
+        pid = str(uuid.uuid4())
+        c.execute(sqltext("INSERT INTO people (id,tenant_id,full_name,email) "
+                          "VALUES (:i,:t,'Doc Owner',:e)"),
+                  {"i": pid, "t": org["tenant_id"], "e": f"o-{uuid.uuid4().hex[:6]}@kiam.example"})
+    doc = app_client.post("/api/documents", headers=h, json={
+        "title": "Restricted-classified doc", "owner_person_id": pid,
+        "classification": "RESTRICTED"})
+    assert doc.status_code == 201, doc.text
+    assert app_client.get(f"/api/documents/{doc.json()['id']}",
+                          headers=h).json()["classification"] == "RESTRICTED"
+
+    assert app_client.delete(f"/api/lookups/{made.json()['id']}", headers=h).status_code == 200

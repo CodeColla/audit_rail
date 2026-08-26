@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Plus } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { Plus, FileText, Siren, Boxes } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../../lib/api";
 import { useCan } from "../../lib/auth";
@@ -12,6 +12,7 @@ import { Card, cn, Drawer, inputCls, Loading, Modal, Pill, Segment, Table, Td } 
 type Detail = {
   id: string; title: string; bank_name: string; status: string; predicted_verdict: string;
   total_questions: number; answered: number; open_high_findings: number; score_pct: number;
+  template_id: string;
 };
 type Row = {
   question_id: string; number: string; text: string; section: string;
@@ -24,6 +25,11 @@ type RespDetail = {
   response: { id: string; response_value: string; comment: string | null; na_justification: string | null; workflow_status: string } | null;
   evidence: { id: string; title: string; evidence_type: string }[];
   inherited_evidence: { id: string; title: string; evidence_type: string; valid_until: string | null }[];
+  // P7-S1: Document / Incident / Asset, alongside Evidence — same "attach, optional,
+  // based on the audit point's nature" idea, just three more record types.
+  documents: { id: string; title: string; document_type: string }[];
+  incidents: { id: string; title: string; severity: string | null }[];
+  assets: { id: string; name: string; asset_type: string }[];
   revisions: { rev_no: number; response_value: string | null; comment: string | null; created_at: string }[];
   thread: { author_kind: string; kind: string; body: string; created_at: string }[];
   findings: { title: string; risk_rating: string | null; likelihood: number | null; impact: number | null }[];
@@ -41,6 +47,72 @@ const STATUSES = ["draft", "in_progress", "submitted", "in_review",
 // could never match anything.
 const FILTERS = ["all", "open", "answered", "ask_pending", "actioned",
                  "validated", "final"] as const;
+
+/**
+ * P7-S1. Document / Incident / Asset, alongside evidence: one card per kind, same shape as
+ * the existing "Linked evidence" card (list + a picker that appears on "+ Link"), but pointed
+ * at a RECORD's own page rather than a file preview — `AttachmentLink` fetches and previews
+ * bytes (`components/AttachmentLink.tsx`), which is the wrong tool for something that has its
+ * own detail screen. One parameterised component rather than three near-identical blocks of
+ * JSX: unlike the backend routes (api/routers/assessments.py), which duplicate on purpose
+ * because each targets a different table and duplication there is the SAFER, more legible
+ * choice, three copies of this markup would just be three places to keep in sync by hand.
+ */
+function AttachRecordCard<T extends { id: string }>({
+  label, icon: Icon, items, hasResponse, canEdit, kind, fetchUrl, bodyKey, hrefFor, nameOf,
+  aid, qid, onLinked,
+}: {
+  label: string; icon: typeof FileText; items: T[]; hasResponse: boolean; canEdit: boolean;
+  kind: string; fetchUrl: string; bodyKey: string; hrefFor: (id: string) => string;
+  nameOf: (item: T) => string; aid: string; qid: string; onLinked: () => void;
+}) {
+  const [picking, setPicking] = useState(false);
+  const list = useQuery({ queryKey: [kind], queryFn: () => get<T[]>(fetchUrl), enabled: picking });
+  const link = useMutation({
+    mutationFn: (id: string) =>
+      api.post(`/assessments/${aid}/responses/${qid}/${kind}`, { [bodyKey]: id }),
+    onSuccess: () => { setPicking(false); onLinked(); },
+  });
+  const already = new Set(items.map((i) => i.id));
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="eyebrow">{label}</div>
+        {canEdit && (
+          <button onClick={() => setPicking((s) => !s)} className="text-label font-medium text-accent"
+            disabled={!hasResponse}><Plus size={15} strokeWidth={2.4} /> Link</button>
+        )}
+      </div>
+      {!hasResponse && <div className="text-label text-txt3">Answer the question first, then link a record.</div>}
+      {items.map((item) => (
+        <div key={item.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
+          <Icon size={15} className="shrink-0 text-txt3" />
+          <Link to={hrefFor(item.id)} className="min-w-0 truncate text-label font-medium text-ink
+            underline decoration-txt3/40 underline-offset-2 hover:text-accent hover:decoration-accent">
+            {nameOf(item)}
+          </Link>
+        </div>
+      ))}
+      {items.length === 0 && hasResponse && (
+        <div className="border-t border-bd py-2 text-label text-txt3 first:border-t-0">Nothing attached directly to this question.</div>
+      )}
+      {picking && (
+        <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-bd">
+          {(list.data ?? []).filter((i) => !already.has(i.id)).map((item) => (
+            <button key={item.id} onClick={() => link.mutate(item.id)}
+              className="flex w-full items-center justify-between px-3 py-2 text-left text-label hover:bg-canvas">
+              <span className="truncate">{nameOf(item)}</span><span className="shrink-0 text-txt3">link →</span>
+            </button>
+          ))}
+          {(list.data ?? []).length === 0 && (
+            <div className="px-3 py-2 text-label text-txt3">Nothing here yet.</div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
 
 function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClose: () => void }) {
   const can = useCan();
@@ -114,7 +186,7 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
   const canEdit = can("audits", "edit");
 
   return (
-    <Drawer open onClose={onClose} sub={`QUESTION · #${data.question.number}`} title={data.question.text}>
+    <Drawer open onClose={onClose} sub={`QUESTION · No. ${data.question.number}`} title={data.question.text}>
       {/* mapped control — statement was fetched but never rendered; re-map lets a reviewer
           fix a wrong auto-assignment without leaving the audit response */}
       <Card>
@@ -241,6 +313,22 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         </Card>
       )}
 
+      <AttachRecordCard label="Linked documents" icon={FileText} items={data.documents}
+        hasResponse={!!data.response} canEdit={canEdit} kind="documents" fetchUrl="/documents"
+        bodyKey="document_id" hrefFor={(id) => `/documents/${id}`}
+        nameOf={(d: RespDetail["documents"][number]) => d.title}
+        aid={aid} qid={qid} onLinked={refresh} />
+      <AttachRecordCard label="Linked incidents" icon={Siren} items={data.incidents}
+        hasResponse={!!data.response} canEdit={canEdit} kind="incidents" fetchUrl="/incidents"
+        bodyKey="incident_id" hrefFor={(id) => `/incidents/view/${id}`}
+        nameOf={(i: RespDetail["incidents"][number]) => i.title}
+        aid={aid} qid={qid} onLinked={refresh} />
+      <AttachRecordCard label="Linked assets" icon={Boxes} items={data.assets}
+        hasResponse={!!data.response} canEdit={canEdit} kind="assets" fetchUrl="/assets"
+        bodyKey="asset_id" hrefFor={(id) => `/assets/view/${id}`}
+        nameOf={(a: RespDetail["assets"][number]) => a.name}
+        aid={aid} qid={qid} onLinked={refresh} />
+
       {/* answer history — written on every save; used to be invisible */}
       {(data.revisions?.length ?? 0) > 1 && (
         <Card>
@@ -366,10 +454,70 @@ function InviteModal({ aid, onClose }: { aid: string; onClose: () => void }) {
   );
 }
 
+/**
+ * P7-S7. The audit point's number, editable in place — the gap the issue named: today it
+ * can only ever be SET, at import, and a checklist imported without a Number column left
+ * every question permanently unnumbered. `stopPropagation` throughout because this cell
+ * lives inside a row whose own onClick opens the question drawer; without it, clicking to
+ * edit also opened the drawer underneath the input.
+ *
+ * No `#` prefix — that read as an id/hash rather than a sequence number, which is the
+ * confusion the issue names. A bare mono value plus the column header ("No.") is enough
+ * context on its own.
+ */
+function NumberCell({ templateId, questionId, number, canEdit }: {
+  templateId: string; questionId: string; number: string; canEdit: boolean;
+}) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(number);
+  const save = useMutation({
+    mutationFn: (next: string) =>
+      api.patch(`/templates/${templateId}/questions/${questionId}`, { number: next }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["grid"] }),
+  });
+
+  if (!canEdit) return <Td className="font-mono text-txt3">{number}</Td>;
+
+  if (!editing) {
+    return (
+      <Td className="font-mono text-txt3">
+        <button
+          onClick={(e) => { e.stopPropagation(); setDraft(number); setEditing(true); }}
+          title="Edit number" aria-label={`Edit number for question ${number}`}
+          className="rounded px-1 py-0.5 hover:bg-canvas hover:text-ink">
+          {number || <span className="italic text-bad">unnumbered</span>}
+        </button>
+      </Td>
+    );
+  }
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next && next !== number) save.mutate(next);
+  };
+
+  return (
+    <Td>
+      <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit} onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+          if (e.key === "Escape") { setDraft(number); setEditing(false); }
+        }}
+        aria-label="Question number"
+        className="w-20 rounded border border-bd bg-paper px-1.5 py-0.5 font-mono text-sm outline-none focus:border-accent" />
+    </Td>
+  );
+}
+
 export default function Workspace() {
   const { id } = useParams();
+  const nav = useNavigate();
   const qc = useQueryClient();
   const canEdit = useCan()("audits", "edit");
+  const canDelete = useCan()("audits", "delete");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
   const [openQ, setOpenQ] = useState<string | null>(null);
   const [invite, setInvite] = useState(false);
@@ -383,6 +531,14 @@ export default function Workspace() {
   const setStatus = useMutation({
     mutationFn: (status: string) => api.patch(`/assessments/${id}`, { status }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["assessment", id] }),
+  });
+  // P7-S6a. There was no way to delete an audit at all. Permanent, not archived — an audit
+  // has no "the audit trail must survive" constraint the way a published document does
+  // (nothing signs off on an assessment's existence), and the schema was already built
+  // expecting this: every child table CASCADEs cleanly (db/schema.sql).
+  const deleteAssessment = useMutation({
+    mutationFn: () => api.delete(`/assessments/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["assessments"] }); nav("/audits"); },
   });
   if (det.isLoading || grid.isLoading || !det.data) return <Loading />;
   const d = det.data;
@@ -421,6 +577,21 @@ export default function Workspace() {
         {canEdit && <button onClick={() => setInvite(true)} className="btn py-1.5">Invite auditor</button>}
         <button onClick={() => downloadFile(`/assessments/${id}/export.xlsx`, `${det.data.bank_name ?? "assessment"}.xlsx`)}
           className="btn py-1.5">Export ↓</button>
+        {canDelete && (
+          <button
+            onClick={() => { if (confirm(
+                `Delete ${d.bank_name} — ${d.title}?\n\n` +
+                `${d.total_questions} question${d.total_questions === 1 ? "" : "s"}, ` +
+                `${d.answered} answered — all of it, including evidence links, findings and ` +
+                `the review thread, is gone permanently. If no other audit uses this ` +
+                `imported checklist, it and its control mappings go with it too — it will ` +
+                `no longer appear under Mappings or the Bank crosswalk. This cannot be undone.`))
+              deleteAssessment.mutate(); }}
+            disabled={deleteAssessment.isPending}
+            className="btn py-1.5 text-bad hover:border-bad disabled:opacity-50">
+            {deleteAssessment.isPending ? "Deleting…" : "Delete audit"}
+          </button>
+        )}
       </p>
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -433,10 +604,10 @@ export default function Workspace() {
         ))}
       </div>
 
-      <Table head={["#", "Control question", "Response", "Workflow", "Evidence"]}>
+      <Table head={["No.", "Control question", "Response", "Workflow", "Evidence"]}>
         {rows.map((r) => (
           <tr key={r.question_id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenQ(r.question_id)}>
-            <Td className="font-mono text-txt3">#{r.number}</Td>
+            <NumberCell templateId={d.template_id} questionId={r.question_id} number={r.number} canEdit={canEdit} />
             <Td><div className="font-medium">{r.text}</div>
               {r.mapped_control && (
                 <div className="font-mono text-caption text-txt3" title={r.mapped_control_statement ?? undefined}>

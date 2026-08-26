@@ -204,6 +204,47 @@ def update_assessment(assessment_id: str, body: StatusIn,
     return {"ok": True}
 
 
+@router.delete("/{assessment_id}", status_code=204)
+def delete_assessment(assessment_id: str,
+                      user: Principal = Depends(require("audits", "delete"))):
+    """P7-S6a. There was no way to remove an audit at all — not gated behind a permission,
+    simply no route. Safe to add without a schema change: every table referencing
+    `assessments.id` already `ON DELETE CASCADE`s (responses, findings, guests, the
+    response_evidence/documents/incidents/assets links, review threads) except
+    `tasks.assessment_id`, which is `ON DELETE SET NULL` — a task a closed audit raised
+    outlives the audit that raised it, on purpose (see that FK's own comment in
+    db/schema.sql). One statement does the whole thing; nothing here needs to walk the
+    child tables by hand.
+
+    **Also removes the imported checklist behind it, if nothing else uses it any more**
+    (reported by Sumit: a deleted audit kept showing up in Checklist mappings and the Bank
+    crosswalk). `templates` is a REUSABLE thing by schema design — `assessments.template_id`
+    has no ON DELETE action specifically so a bank's checklist can outlive any one year's
+    audit — but nothing in the product actually creates a second assessment from an existing
+    template today (the only `POST /assessments` call site is Import.tsx, straight after a
+    fresh import), so in practice "delete the audit" and "delete the checklist I just
+    imported for it" are the same user intent. Only ever removes the template when THIS was
+    the last assessment referencing it — if a future feature does reuse templates, an
+    audit still in progress against a shared checklist is never touched.
+    """
+    a, tpl = t("assessments"), t("templates")
+    with engine.begin() as conn:
+        row = _access(conn, user, assessment_id)
+        template_id = row["template_id"]
+        conn.execute(sqldelete(a).where(a.c.id == assessment_id))
+        still_used = conn.execute(select(func.count()).select_from(a)
+                                  .where(a.c.template_id == template_id)).scalar()
+        template_deleted = False
+        if not still_used:
+            conn.execute(sqldelete(tpl).where(tpl.c.id == template_id))
+            template_deleted = True
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="assessment.deleted", entity_type="assessment",
+                 entity_id=assessment_id,
+                 detail={"bank_name": row.get("bank_name"), "title": row.get("title"),
+                        "template_deleted": template_deleted})
+
+
 @router.post("/{assessment_id}/prefill")
 def prefill(assessment_id: str, user: Principal = Depends(require("audits", "edit"))):
     """Answer once: fill responses from mapped controls' stock answers."""
@@ -520,11 +561,32 @@ def response_detail(assessment_id: str, question_id: str,
             .join(ec, ec.c.evidence_id == ev2.c.id)
             .where(ec.c.control_id == best["cid"])
             .order_by(ev2.c.valid_until.asc().nullslast())).mappings()]
+    # P7-S1: Document / Incident / Asset, alongside evidence — same shape (a join table off
+    # `responses.id`, queried only when a response row exists), so an unanswered question
+    # shows none of them rather than raising, exactly like `evidence` above.
+    documents = incidents = assets = []
+    if rr:
+        doc, rd = t("documents"), t("response_documents")
+        documents = [dict(x) for x in conn.execute(
+            select(doc.c.id, doc.c.title, doc.c.document_type)
+            .join(rd, rd.c.document_id == doc.c.id)
+            .where(rd.c.response_id == rr["id"])).mappings()]
+        inc, ri = t("incidents"), t("response_incidents")
+        incidents = [dict(x) for x in conn.execute(
+            select(inc.c.id, inc.c.title, inc.c.severity)
+            .join(ri, ri.c.incident_id == inc.c.id)
+            .where(ri.c.response_id == rr["id"])).mappings()]
+        ast, ra = t("assets"), t("response_assets")
+        assets = [dict(x) for x in conn.execute(
+            select(ast.c.id, ast.c.name, ast.c.asset_type)
+            .join(ra, ra.c.asset_id == ast.c.id)
+            .where(ra.c.response_id == rr["id"])).mappings()]
     return {
         "question": {"id": ques["id"], "number": ques["number"], "text": ques["text"]},
         "mapped_control": {"code": best["code"], "statement": best["statement"]} if best else None,
         "response": dict(rr) if rr else None,
         "revisions": revisions, "evidence": evidence, "inherited_evidence": inherited_evidence,
+        "documents": documents, "incidents": incidents, "assets": assets,
         "thread": messages, "findings": findings,
     }
 
@@ -555,6 +617,95 @@ def link_evidence(assessment_id: str, question_id: str, body: LinkEvidenceIn,
         if not already:
             conn.execute(insert(re_).values(
                 response_id=rid, evidence_id=body.evidence_id))
+    return {"ok": True}
+
+
+# P7-S1. Three near-duplicates of link_evidence, not a generalised "link" route: each targets
+# a different table and a different join table (response_documents/incidents/assets), so
+# genericising would mean a runtime table-name lookup instead of the boring, obviously-correct
+# repetition — small enough here that copying is the more readable choice.
+
+class LinkDocumentIn(StrictModel):
+    document_id: str
+
+
+@router.post("/{assessment_id}/responses/{question_id}/documents")
+def link_document(assessment_id: str, question_id: str, body: LinkDocumentIn,
+                  user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "answer the question before linking a document")
+        doc, rd = t("documents"), t("response_documents")
+        if conn.execute(select(doc.c.id).where(
+                doc.c.id == body.document_id,
+                doc.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(404, "document not found")
+        already = conn.execute(select(rd.c.response_id).where(
+            rd.c.response_id == rid,
+            rd.c.document_id == body.document_id)).first()
+        if not already:
+            conn.execute(insert(rd).values(response_id=rid, document_id=body.document_id))
+    return {"ok": True}
+
+
+class LinkIncidentIn(StrictModel):
+    incident_id: str
+
+
+@router.post("/{assessment_id}/responses/{question_id}/incidents")
+def link_incident(assessment_id: str, question_id: str, body: LinkIncidentIn,
+                  user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "answer the question before linking an incident")
+        inc, ri = t("incidents"), t("response_incidents")
+        if conn.execute(select(inc.c.id).where(
+                inc.c.id == body.incident_id,
+                inc.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(404, "incident not found")
+        already = conn.execute(select(ri.c.response_id).where(
+            ri.c.response_id == rid,
+            ri.c.incident_id == body.incident_id)).first()
+        if not already:
+            conn.execute(insert(ri).values(response_id=rid, incident_id=body.incident_id))
+    return {"ok": True}
+
+
+class LinkAssetIn(StrictModel):
+    asset_id: str
+
+
+@router.post("/{assessment_id}/responses/{question_id}/assets")
+def link_asset(assessment_id: str, question_id: str, body: LinkAssetIn,
+               user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "answer the question before linking an asset")
+        ast, ra = t("assets"), t("response_assets")
+        if conn.execute(select(ast.c.id).where(
+                ast.c.id == body.asset_id,
+                ast.c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(404, "asset not found")
+        already = conn.execute(select(ra.c.response_id).where(
+            ra.c.response_id == rid,
+            ra.c.asset_id == body.asset_id)).first()
+        if not already:
+            conn.execute(insert(ra).values(response_id=rid, asset_id=body.asset_id))
     return {"ok": True}
 
 
