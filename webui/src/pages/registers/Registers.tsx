@@ -30,6 +30,8 @@ type EvidenceRow = { id: string; title: string; evidence_type: string; valid_unt
 type Asset = {
   id: string; name: string; asset_type: string; criticality: string | null;
   owner_name: string | null; location: string | null; quantity: number; data_types_stored: string[];
+  effective_liveness: "ONLINE" | "STALE" | "UNKNOWN"; last_seen_at: string | null;
+  expected_heartbeat_minutes: number | null;
 };
 type AssetDetail = Asset & {
   description: string | null; data: { name: string; classification: string | null }[];
@@ -38,10 +40,20 @@ type AssetDetail = Asset & {
   hostname: string | null; ip_address: string | null;
   cloud_provider: string | null; service_url: string | null;
   photo_file_id: string | null; photo_name: string | null;
+  compliance_checks: ComplianceCheck[];
 };
 type DataItem = {
   id: string; name: string; classification: string; owner_name: string | null; retention_note: string | null;
   data_type: string | null;
+};
+type IngestedAlert = {
+  id: string; title: string; description: string | null; severity: string | null;
+  source: string; status: "new" | "reviewed" | "dismissed"; occurred_at: string;
+};
+type ComplianceCheck = {
+  id: string; check_key: string; check_label: string; status: "PASS" | "FAIL" | "UNKNOWN";
+  effective_status: "PASS" | "FAIL" | "UNKNOWN" | "STALE"; details: string | null;
+  source: string; last_checked_at: string;
 };
 
 /**
@@ -59,6 +71,9 @@ function useDrawerRoute(base: string) {
 // ─────────────────────────────────────────────────────────── shared bits
 const BAND_TONE: Record<string, string> = { LOW: "ok", MEDIUM: "warn", HIGH: "bad", CRITICAL: "bad" };
 const CRIT_TONE: Record<string, string> = { LOW: "na", MEDIUM: "warn", HIGH: "bad", CRITICAL: "bad" };
+const LIVENESS_TONE: Record<string, string> = { ONLINE: "ok", STALE: "warn", UNKNOWN: "na" };
+const ALERT_SEVERITY_TONE: Record<string, string> = { LOW: "na", MEDIUM: "warn", HIGH: "bad", CRITICAL: "bad" };
+const CHECK_TONE: Record<string, string> = { PASS: "ok", FAIL: "bad", STALE: "warn", UNKNOWN: "na" };
 const CLASS_TONE: Record<string, string> = { PUBLIC: "na", INTERNAL: "info", CONFIDENTIAL: "warn", SECRET: "bad" };
 const TREATMENTS = ["MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED"];
 const CRITICALITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
@@ -477,7 +492,7 @@ function NewAssetModal({ onClose }: { onClose: () => void }) {
   const dataItems = useQuery({ queryKey: ["data-items"], queryFn: () => get<DataItem[]>("/data-items") });
   const [f, setF] = useState<Record<string, string>>({
     name: "", asset_type: "VIRTUAL", owner_person_id: "", criticality: "", location: "",
-    quantity: "1", vendor_third_party_id: "", subtype: "",
+    quantity: "1", vendor_third_party_id: "", subtype: "", expected_heartbeat_minutes: "",
     manufacturer: "", model: "", serial_number: "",
     hostname: "", ip_address: "", cloud_provider: "", service_url: "",
   });
@@ -493,6 +508,7 @@ function NewAssetModal({ onClose }: { onClose: () => void }) {
       criticality: f.criticality || null, location: f.location || null,
       quantity: f.quantity ? +f.quantity : 1, data_types_stored: dataTypes,
       vendor_third_party_id: f.vendor_third_party_id || null, subtype: f.subtype || null,
+      expected_heartbeat_minutes: f.expected_heartbeat_minutes ? +f.expected_heartbeat_minutes : null,
       // Send only the CURRENT type's fields. The other side's values stay in local state
       // (so a mis-click on the type toggle is recoverable) but must never reach the API —
       // the server rejects a physical asset carrying a hostname, and rightly so.
@@ -528,6 +544,10 @@ function NewAssetModal({ onClose }: { onClose: () => void }) {
             <input value={f.location} onChange={(e) => set("location")(e.target.value)}
               className={inputCls + " mt-1"}
               placeholder={f.asset_type === "PHYSICAL" ? "Server room, HO" : "AWS ap-south-1"} /></label>
+          <label className="text-sm font-medium">Expected heartbeat (minutes)
+            <input type="number" min={1} value={f.expected_heartbeat_minutes}
+              onChange={(e) => set("expected_heartbeat_minutes")(e.target.value)}
+              className={inputCls + " mt-1"} placeholder="Leave blank for no liveness check" /></label>
         </div>
         <div className="rounded-md border border-bd p-2.5">
           <div className="eyebrow mb-2">{f.asset_type === "PHYSICAL" ? "Physical detail" : "Virtual detail"}</div>
@@ -630,6 +650,10 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
     <Drawer open onClose={onClose} sub={`ASSET · ${cap(a.asset_type)}`} title={a.name}>
       <div className="flex flex-wrap gap-2">
         {a.criticality && <Pill tone={CRIT_TONE[a.criticality]}>{cap(a.criticality)}</Pill>}
+        {/* Only shown once liveness tracking is actually in play — an UNKNOWN pill on every
+            asset that never opted in would just be noise. */}
+        {(a.expected_heartbeat_minutes != null || a.last_seen_at != null) && (
+          <Pill tone={LIVENESS_TONE[a.effective_liveness]}>{cap(a.effective_liveness)}</Pill>)}
         {a.location && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{a.location}</span>}
         <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">×{a.quantity}</span>
       </div>
@@ -677,9 +701,59 @@ function AssetDrawer({ id, onClose }: { id: string; onClose: () => void }) {
               </div>))}
           </div>)}
       </Card>
+      {a.compliance_checks.length > 0 && (
+        <Card>
+          <div className="eyebrow mb-2">Compliance checks</div>
+          <div className="flex flex-col gap-1.5">
+            {a.compliance_checks.map((c) => (
+              <div key={c.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
+                <Pill tone={CHECK_TONE[c.effective_status]}>{cap(c.effective_status)}</Pill>
+                <span className="flex-1">{c.check_label}<span className="ml-1 text-caption text-txt3">· {c.source}</span></span>
+              </div>))}
+          </div>
+        </Card>
+      )}
+      <AssetAlertsCard assetId={id} />
       {a.owner_name && <div className="text-label text-txt2">Owner · <b>{a.owner_name}</b></div>}
       <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this asset</button>
     </Drawer>
+  );
+}
+
+/**
+ * Alerts an external integration reported against this asset (P8-S2). Read-only except for
+ * review/dismiss — the alert itself always comes from an agent, never typed here; promoting
+ * one to a real audit finding is a deliberate separate action through the assessment flow,
+ * not a button on this card (see the `ingested_alerts` schema comment for why).
+ */
+function AssetAlertsCard({ assetId }: { assetId: string }) {
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["asset-alerts", assetId],
+    queryFn: () => get<IngestedAlert[]>(`/integrations/alerts?asset_id=${assetId}`),
+  });
+  const review = useMutation({
+    mutationFn: (vars: { id: string; status: "reviewed" | "dismissed" }) =>
+      api.patch(`/integrations/alerts/${vars.id}`, { status: vars.status }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["asset-alerts", assetId] }),
+  });
+  const rows = (data ?? []).filter((x) => x.status === "new");
+  if (!data || rows.length === 0) return null;
+  return (
+    <Card>
+      <div className="eyebrow mb-2">Alerts needing review</div>
+      <div className="flex flex-col gap-1.5">
+        {rows.map((x) => (
+          <div key={x.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
+            {x.severity && <Pill tone={ALERT_SEVERITY_TONE[x.severity]}>{cap(x.severity)}</Pill>}
+            <span className="flex-1">{x.title}<span className="ml-1 text-caption text-txt3">· {x.source}</span></span>
+            <button onClick={() => review.mutate({ id: x.id, status: "reviewed" })}
+              className="text-caption text-txt3 hover:text-ink">Mark reviewed</button>
+            <button onClick={() => review.mutate({ id: x.id, status: "dismissed" })}
+              className="text-caption text-txt3 hover:text-bad">Dismiss</button>
+          </div>))}
+      </div>
+    </Card>
   );
 }
 
@@ -706,6 +780,10 @@ export function AssetsTab() {
       render: (a) => <span className="text-txt2">{a.owner_name ?? "—"}</span> },
     { key: "loc", label: "Location", sortValue: (a) => a.location,
       render: (a) => <span className="text-txt2">{a.location ?? "—"}</span> },
+    { key: "liveness", label: "Liveness", sortValue: (a) => a.effective_liveness,
+      render: (a) => (a.expected_heartbeat_minutes != null || a.last_seen_at != null)
+        ? <Pill tone={LIVENESS_TONE[a.effective_liveness]}>{cap(a.effective_liveness)}</Pill>
+        : <span className="text-txt3">—</span> },
   ];
   return (
     <>

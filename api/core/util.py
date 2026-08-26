@@ -112,6 +112,34 @@ def risk_band(score: int | None) -> str | None:
     return "CRITICAL"
 
 
+def is_overdue(last_checked_at: str | None, expected_interval_minutes: int | None,
+              now: str) -> bool:
+    """Shared staleness math for P8 (asset liveness, compliance-config checks). `None`
+    interval means no cadence is expected, so nothing is ever overdue — mirrors evidence's
+    `no_expiry` carve-out. Computed live from `now`, never stored, so it can't drift out of
+    date between writes (see docs/phase8/01-sprint-plan.md)."""
+    if last_checked_at is None or expected_interval_minutes is None:
+        return False
+    elapsed_minutes = (dt.datetime.fromisoformat(now)
+                       - dt.datetime.fromisoformat(last_checked_at)).total_seconds() / 60
+    return elapsed_minutes > expected_interval_minutes
+
+
+def effective_liveness(last_seen_at: str | None, expected_heartbeat_minutes: int | None,
+                       now: str) -> str:
+    """UNKNOWN (never reported) | ONLINE | STALE, for an asset's heartbeat."""
+    if last_seen_at is None:
+        return "UNKNOWN"
+    return "STALE" if is_overdue(last_seen_at, expected_heartbeat_minutes, now) else "ONLINE"
+
+
+def effective_status(status: str, last_checked_at: str | None,
+                     expected_interval_minutes: int | None, now: str) -> str:
+    """A compliance_checks row's stored PASS/FAIL/UNKNOWN, with STALE layered on top when
+    overdue. STALE is never stored (see `is_overdue`)."""
+    return "STALE" if is_overdue(last_checked_at, expected_interval_minutes, now) else status
+
+
 def review_status(next_review_at: str | None, today: str, soon_days: int = 30) -> str:
     """overdue | due_soon | ok | none"""
     days = _days_until(next_review_at, today)

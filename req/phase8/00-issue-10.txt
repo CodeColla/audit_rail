@@ -1,0 +1,38 @@
+GitHub issue #10 — "Feature exploration: xyops/isoflow-inspired additions to asset & compliance tooling"
+
+Context:
+
+Reviewed two open-source tools for feature ideas to extend the asset register / compliance
+model: xyops (github.com/pixlcore/xyops — job scheduling, workflow automation, server
+monitoring/alerting, cloned locally to /home/sumit/XYOPS/xyops) and isoflow
+(github.com/markmanx/isoflow — React network-diagram component, cloned to
+/home/sumit/XYOPS/isoflow). Goal was NOT to adopt either wholesale — xyops is an ops tool
+(keep infra running), audit_rail is a compliance/evidence tool (prove infra is controlled) —
+but to cherry-pick anything that maps cleanly onto compliance evidence.
+
+Problem statements / asks:
+
+- Assets in the register have no live "is this still around / still correct" signal — once
+  entered, criticality/ownership/etc. sit static until someone manually edits them.
+- No mechanism exists to prove a control is actually enforced on an asset (MFA on, disk
+  encryption on, patched) other than manual evidence upload/screenshot — this is the
+  Vanta/Drata "continuous compliance monitoring" gap.
+- External alerts/incidents (from whatever monitoring the org already runs) have no ingestion
+  path into audit_rail's findings/evidence trail — they'd have to be manually re-typed.
+- Network/data-flow diagrams (commonly required by ISO 27001 / SOC 2 / PCI-DSS as audit
+  evidence) have no first-class place in the app beyond uploading a static file as a document.
+
+Explicitly rejected in discussion (do not build):
+
+- A visual workflow/pipeline editor (xyops) — ops tooling, no compliance payoff.
+- Full server fleet monitoring — CPU/process/network snapshots (xyops) — infra ops, not audit
+  evidence.
+- A general-purpose job scheduler for arbitrary infra tasks — APScheduler already covers
+  compliance recurrence.
+- In-app vault/secrets management (own idea, evaluated and rejected) — storing real
+  credentials is a different threat model than the rest of the app. Model as a control fact
+  ("uses an approved secrets vault: Y/N") instead of storing credentials.
+
+Full discussion transcript and research (xyops/isoflow deep-dives, license checks, data model
+notes) preserved in the Claude Code plan file
+`~/.claude/plans/in-this-audit-rail-twinkling-lantern.md` if deeper rationale is needed.

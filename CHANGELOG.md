@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — `.claude/` setup + logging convention ([#5](https://github.com/CodeColla/audit_rail/issues/5))
+
+Housekeeping for how Claude works in this repo, not a product change. No route's behaviour,
+response shape, or status codes changed.
+
+### Added
+
+- **`CLAUDE.md`** (root, short) + **`api/CLAUDE.md`** + **`webui/CLAUDE.md`** (deeper,
+  loaded only when working in those trees) — repo map, standing conventions (no Alembic,
+  SQLAlchemy Core not ORM, the req/docs split), and the new error-handling/logging pattern
+  below, with a real example. Was a blank slate before this — no `CLAUDE.md` existed anywhere.
+- **`loguru`-based logging** (`api/core/logging.py`, one `configure_logging()` call from
+  `main.py`'s `lifespan()`). Was zero logging infrastructure before this — just two ad hoc
+  `print()` calls, both now `logger.warning`/`logger.info`.
+- **A documented try/except pattern for new routes**: log the full exception server-side,
+  return a generic message to the client — never the raw exception text. Deliberately not a
+  literal copy of the reference repo's own `detail=str(e)` pattern, which leaks internals.
+
+### Explicitly not done
+
+- **No retrofit.** The other ~18 routers keep their existing error handling untouched — the
+  new pattern applies to new routes and to existing ones only when they're next touched for
+  other reasons, per *"I don't want any blocking, just the style followed as per need."*
+- **No lint/CI enforcement**, no `docs/` reference-doc tree, no multi-tool rules-sync script —
+  none of these solve a problem this repo actually has today.
+- **Graphify** (a third-party codebase-knowledge-graph tool) — considered, deferred. A short,
+  auto-loaded `CLAUDE.md` addresses the "re-scans the repo every session" complaint at zero
+  cost; revisit only if that's still a problem once this is in use for a while.
+
+### Verified
+
+559 pytest passing — the app boots identically, `logger` output replaces the two old
+`print()` lines, no behaviour changed anywhere else.
+
 ## Unreleased — bugfixes & enhancements across the portal ([#8](https://github.com/CodeColla/audit_rail/issues/8))
 
 Seven independent fixes and additions found in day-to-day use, spanning the audit workspace,

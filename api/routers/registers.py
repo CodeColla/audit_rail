@@ -29,7 +29,8 @@ from api.core.config import settings
 from api.core.auth import Principal, get_current_user
 from api.core.permissions import MODULE_LABELS, load_permissions, require
 from api.core.database import engine, get_conn, t
-from api.core.util import IsoDate, StrictModel, now_iso, risk_band
+from api.core.util import (IsoDate, StrictModel, effective_liveness, effective_status,
+                          now_iso, risk_band)
 
 router = APIRouter(tags=["registers"])
 
@@ -386,6 +387,7 @@ class AssetIn(StrictModel):
     ip_address: str | None = None
     cloud_provider: str | None = None
     service_url: str | None = None
+    expected_heartbeat_minutes: int | None = None
 
 
 PHYSICAL_ONLY = ("manufacturer", "model", "serial_number")
@@ -409,6 +411,8 @@ def _validate_asset(vals: dict, effective: dict | None = None):
         raise HTTPException(400, "quantity must be between 0 and 2,147,483,647")
     if vals.get("data_types_stored") is not None and len(vals["data_types_stored"]) > 200:
         raise HTTPException(400, "too many data types (max 200)")
+    if vals.get("expected_heartbeat_minutes") is not None and vals["expected_heartbeat_minutes"] <= 0:
+        raise HTTPException(400, "expected heartbeat interval must be a positive number of minutes")
     eff = effective if effective is not None else vals
     if eff.get("asset_type") in ("PHYSICAL", "VIRTUAL"):
         wrong = PHYSICAL_ONLY if eff["asset_type"] == "VIRTUAL" else VIRTUAL_ONLY
@@ -430,7 +434,10 @@ def list_assets(criticality: str | None = Query(None), q: str | None = Query(Non
         stmt = stmt.where(a.c.criticality == criticality)
     if q:
         stmt = stmt.where(func.lower(a.c.name).like(f"%{q.lower()}%"))
-    return [dict(r) for r in conn.execute(stmt).mappings()]
+    now = now_iso()
+    return [{**dict(r), "effective_liveness": effective_liveness(
+                r["last_seen_at"], r["expected_heartbeat_minutes"], now)}
+            for r in conn.execute(stmt).mappings()]
 
 
 @router.post("/assets", status_code=201)
@@ -465,8 +472,20 @@ def asset_detail(asset_id: str, user: Principal = Depends(require("assets", "vie
         if a["vendor_third_party_id"] else None
     photo_name = conn.execute(select(t("files").c.original_name).where(
         t("files").c.id == a["photo_file_id"])).scalar() if a["photo_file_id"] else None
+    now = now_iso()
+    cc = t("compliance_checks")
+    checks = [
+        {**dict(c), "effective_status": effective_status(
+            c["status"], c["last_checked_at"], c["expected_interval_minutes"], now)}
+        for c in conn.execute(
+            select(cc).where(cc.c.tenant_id == user.tenant_id, cc.c.asset_id == asset_id)
+            .order_by(cc.c.check_label)).mappings()
+    ]
     return {**a, "owner_name": _owner_name(conn, a["owner_person_id"]),
             "vendor_name": vendor_name, "photo_name": photo_name,
+            "effective_liveness": effective_liveness(
+                a["last_seen_at"], a["expected_heartbeat_minutes"], now),
+            "compliance_checks": checks,
             "data": [{"name": n, "classification": matched.get(n)} for n in stored]}
 
 
@@ -490,6 +509,7 @@ class AssetPatch(StrictModel):
     ip_address: str | None = None
     cloud_provider: str | None = None
     service_url: str | None = None
+    expected_heartbeat_minutes: int | None = None
 
 
 @router.patch("/assets/{asset_id}")

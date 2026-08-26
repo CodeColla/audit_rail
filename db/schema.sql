@@ -415,11 +415,73 @@ CREATE TABLE assets (
     -- reasoning as third_party_agreements.file_id: a rack photo is an attribute of the
     -- asset, not a dated compliance artifact with its own expiry to track.
     photo_file_id        text,
+    -- P8-S1: liveness. last_seen_at is written only by POST /api/integrations/heartbeat
+    -- (never via AssetIn/AssetPatch — StrictModel's extra="forbid" keeps it out of those
+    -- bodies by construction). expected_heartbeat_minutes is nullable and human-set: null
+    -- means "no heartbeat expected", so the asset never shows STALE for lack of one.
+    last_seen_at              iso_ts,
+    expected_heartbeat_minutes integer CHECK (expected_heartbeat_minutes > 0),
     created_at           iso_ts NOT NULL DEFAULT now_iso(),
     updated_at           iso_ts NOT NULL DEFAULT now_iso(),
     UNIQUE (id, tenant_id),
     FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people (id, tenant_id) ON DELETE RESTRICT,
     FOREIGN KEY (photo_file_id, tenant_id)   REFERENCES files  (id, tenant_id) ON DELETE RESTRICT
+);
+
+-- P8-S0. Machine auth for external integrations (asset heartbeat, compliance-config checks
+-- — Phase 8). Mirrors signing_tokens' token_hash discipline: sha256 of a high-entropy random
+-- value, looked up directly by hash. Not argon2 — argon2's deliberate slowness defends
+-- against guessing a LOW-entropy secret (a password); it buys nothing against a 256-bit
+-- random token that was never guessable, and would just add latency to every ingestion call.
+-- Two-tier (`kind`): a short-lived 'install' token is generated in the UI for a human to hand
+-- to a new agent; the agent's first call exchanges it for a long-lived 'longlived' token it
+-- stores locally. Both live in this one table, distinguished by `kind`, not two tables.
+CREATE TABLE integration_tokens (
+    id                    text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id             text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    name                  text NOT NULL,
+    token_hash            text NOT NULL UNIQUE,
+    kind                  text NOT NULL CHECK (kind IN ('install', 'longlived')),
+    created_by_member_id  text,
+    created_at            iso_ts NOT NULL DEFAULT now_iso(),
+    expires_at            iso_ts,                   -- required for 'install', null for 'longlived'
+    last_used_at          iso_ts,
+    revoked_at            iso_ts,
+    UNIQUE (id, tenant_id),
+    CONSTRAINT it_install_needs_expiry CHECK (kind <> 'install' OR expires_at IS NOT NULL),
+    FOREIGN KEY (created_by_member_id, tenant_id)
+        REFERENCES tenant_members (id, tenant_id) ON DELETE SET NULL
+);
+
+-- P8-S2. External alerts, staged for human review — NOT written into `findings`. Confirmed
+-- by reading assessments.py: every `findings` row is created via POST
+-- /assessments/{id}/findings and is only ever listed by joining through
+-- `finding_assessments` for ONE specific assessment — there is no standalone findings view.
+-- An externally-ingested alert has no assessment to attach to, so inserting into `findings`
+-- directly would produce a row nothing in the UI could ever surface. A human reviews here
+-- and, if it's audit-worthy, creates a real finding by hand through the existing assessment
+-- flow — same "no silent automation" posture as compliance_checks not auto-creating findings.
+CREATE TABLE ingested_alerts (
+    id                     text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id              text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    asset_id               text,                    -- nullable: an alert may not map to a registered asset
+    source                 text NOT NULL,            -- server-set from the integration token's name
+    source_event_id        text,                     -- the external system's own id, for idempotent re-delivery
+    title                  text NOT NULL,
+    description            text,
+    severity               text CHECK (severity IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+    occurred_at            iso_ts NOT NULL,
+    status                 text NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewed', 'dismissed')),
+    reviewed_by_member_id  text,
+    reviewed_at            iso_ts,
+    created_at             iso_ts NOT NULL DEFAULT now_iso(),
+    UNIQUE (id, tenant_id),
+    -- NULLs never collide under UNIQUE in Postgres, so this only dedupes re-delivery when the
+    -- integration actually supplies a source_event_id — alerts without one are never deduped.
+    UNIQUE (tenant_id, source, source_event_id),
+    FOREIGN KEY (asset_id, tenant_id) REFERENCES assets (id, tenant_id) ON DELETE SET NULL,
+    FOREIGN KEY (reviewed_by_member_id, tenant_id)
+        REFERENCES tenant_members (id, tenant_id) ON DELETE SET NULL
 );
 
 -- M10. Data inventory (classification drives the SoA + document classification).
@@ -727,6 +789,39 @@ CREATE TABLE controls (
                                                       OR recurrence_months IS NOT NULL),
     FOREIGN KEY (domain_id, tenant_id)       REFERENCES domains (id, tenant_id),
     FOREIGN KEY (owner_person_id, tenant_id) REFERENCES people  (id, tenant_id) ON DELETE RESTRICT
+);
+
+-- P8-S3a. Continuous compliance-config monitoring (Vanta/Drata-style) — an integration
+-- reports a CONFIG FACT about an asset (MFA enabled, disk encryption on, patch level
+-- current), not performance/uptime telemetry — do not conflate with P8-S1's asset liveness
+-- or xyOps-style server monitoring, both of which this project deliberately did not import.
+-- Latest-state only (one row per tenant+asset+check_key), not a log — a history/trend table
+-- is explicit future work. `status` stores only PASS/FAIL/UNKNOWN; STALE is derived live at
+-- read time from `last_checked_at`/`expected_interval_minutes` via api/core/util.py's
+-- `effective_status` (shared with P8-S1's `effective_liveness` — same staleness math, one
+-- implementation), never stored, so it can't drift out of date between agent check-ins.
+-- Declared here (after `controls`), not alongside the other P8 additions after `assets` —
+-- its FK to `controls` must follow controls' own declaration; this schema's convention for a
+-- genuine forward reference is a deferred ALTER in CROSS-LAYER, but there's no reason to pay
+-- that complexity when simply declaring the table after its dependency works today.
+CREATE TABLE compliance_checks (
+    id                         text PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    tenant_id                  text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    asset_id                   text NOT NULL,
+    control_id                 text,                 -- nullable, like findings.control_id
+    check_key                  text NOT NULL,         -- free text, integration-defined — NOT a lookup_values kind
+    check_label                text NOT NULL,         -- human label, avoids a lookup join in the UI
+    status                     text NOT NULL CHECK (status IN ('PASS', 'FAIL', 'UNKNOWN')),
+    details                    text,
+    source                     text NOT NULL,         -- server-set from the integration token's name
+    expected_interval_minutes  integer CHECK (expected_interval_minutes > 0),  -- null = never stale
+    last_checked_at            iso_ts NOT NULL,        -- the agent's reported time, not ingestion time
+    created_at                 iso_ts NOT NULL DEFAULT now_iso(),
+    updated_at                 iso_ts NOT NULL DEFAULT now_iso(),
+    UNIQUE (id, tenant_id),
+    UNIQUE (tenant_id, asset_id, check_key),           -- the upsert key
+    FOREIGN KEY (asset_id, tenant_id)   REFERENCES assets   (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (control_id, tenant_id) REFERENCES controls (id, tenant_id) ON DELETE SET NULL
 );
 
 -- PORTED + EXTENDED. "This control must be evidenced by X, every N months."

@@ -46,18 +46,24 @@ type LinkedClause = {
   id: string; ref: string; title: string;
   framework_id: string; framework_code: string; framework_name: string;
 };
+type LinkedCheck = {
+  id: string; asset_id: string; asset_name: string; check_label: string;
+  status: "PASS" | "FAIL" | "UNKNOWN"; effective_status: "PASS" | "FAIL" | "UNKNOWN" | "STALE";
+  source: string;
+};
 type Framework = { id: string; code: string; name: string; version: string | null };
 type Clause = { id: string; ref: string; title: string };
 type Detail = Control & {
   mapped_points: MappedPoint[]; linked_risks: LinkedRisk[]; linked_obligations: LinkedObligation[];
   linked_evidence: LinkedEvidence[]; linked_documents: LinkedDocument[];
-  linked_clauses: LinkedClause[];
+  linked_clauses: LinkedClause[]; linked_checks: LinkedCheck[];
 };
 type Evidence = { id: string; title: string; evidence_type: string };
 type Doc = { id: string; title: string; document_type: string };
 
 const LIFECYCLE = ["one_time", "recurring", "per_audit"] as const;
 const STOCK = ["yes", "partial", "no", "na"] as const;
+const CHECK_TONE: Record<string, string> = { PASS: "ok", FAIL: "bad", STALE: "warn", UNKNOWN: "na" };
 const stockTone = (v: string | null) =>
   v === "yes" ? "ok" : v === "partial" ? "warn" : v === "no" ? "bad" : v === "na" ? "na" : "na";
 
@@ -565,6 +571,23 @@ export default function ControlDetail() {
         <AttachEvidence controlId={doc.id} linked={doc.linked_evidence} canEdit={canEdit} />
         <AttachDocument controlId={doc.id} linked={doc.linked_documents} canEdit={canEdit} />
         <SatisfiesClauses controlId={doc.id} linked={doc.linked_clauses ?? []} canEdit={canEdit} />
+        {(doc.linked_checks?.length ?? 0) > 0 && (
+          <Card>
+            <div className="eyebrow mb-2.5">Compliance checks reported</div>
+            <p className="mb-2 text-caption text-txt3">
+              {doc.linked_checks.filter((c) => c.effective_status === "PASS").length} passing ·{" "}
+              {doc.linked_checks.filter((c) => c.effective_status === "FAIL").length} failing ·{" "}
+              {doc.linked_checks.filter((c) => c.effective_status === "STALE").length} stale
+            </p>
+            {doc.linked_checks.map((c) => (
+              <Link key={c.id} to={`/assets/view/${c.asset_id}`}
+                className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0 hover:bg-canvas">
+                <Pill tone={CHECK_TONE[c.effective_status]}>{c.effective_status}</Pill>
+                <span className="min-w-0 flex-1 truncate">{c.asset_name} · {c.check_label}</span>
+              </Link>
+            ))}
+          </Card>
+        )}
       </div>
     </>
   );

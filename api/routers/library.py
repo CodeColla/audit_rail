@@ -16,7 +16,7 @@ from api.core import activity
 from api.core.auth import Principal
 from api.core.permissions import require
 from api.core.database import engine, get_conn, t
-from api.core.util import StrictModel, evidence_status, now_iso, today_iso
+from api.core.util import StrictModel, effective_status, evidence_status, now_iso, today_iso
 
 router = APIRouter(prefix="/library", tags=["library"])
 
@@ -195,12 +195,31 @@ def control_detail(
         .where(ccm.c.control_id == control_id, ccm.c.tenant_id == user.tenant_id)
         .order_by(fw.c.code, fc.c.sort_order, fc.c.ref)
     ).mappings().all()
+    # compliance-config checks reported against assets this control is tied to (P8-S3a).
+    # A rollup, not a full evidence record — a human still decides whether a FAIL is
+    # audit-worthy; this only shows what's been reported, live-computing STALE the same way
+    # linked_evidence above live-computes its expiry status.
+    cc, assets = t("compliance_checks"), t("assets")
+    now = now_iso()
+    linked_checks = [
+        {**dict(c), "effective_status": effective_status(
+            c["status"], c["last_checked_at"], c["expected_interval_minutes"], now)}
+        for c in conn.execute(
+            select(cc.c.id, cc.c.asset_id, assets.c.name.label("asset_name"),
+                   cc.c.check_label, cc.c.status, cc.c.last_checked_at,
+                   cc.c.expected_interval_minutes, cc.c.source)
+            .join(assets, cc.c.asset_id == assets.c.id)
+            .where(cc.c.control_id == control_id, cc.c.tenant_id == user.tenant_id)
+            .order_by(assets.c.name, cc.c.check_label)
+        ).mappings()
+    ]
     return {**dict(row), "mapped_points": [dict(m) for m in mapped],
             "linked_risks": [dict(r) for r in linked_risks],
             "linked_obligations": [dict(o) for o in linked_obligations],
             "linked_evidence": linked_evidence,
             "linked_documents": [dict(d) for d in linked_documents],
-            "linked_clauses": [dict(c) for c in linked_clauses]}
+            "linked_clauses": [dict(c) for c in linked_clauses],
+            "linked_checks": linked_checks}
 
 
 # ------------------------------------------------------------------ write path (P4-S5)

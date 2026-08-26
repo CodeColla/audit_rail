@@ -9,8 +9,8 @@ from api.core.config import settings
 from api.core.database import engine, reflect_schema
 from api.core.logging import configure_logging, logger
 from api.routers import (assessments, auth, dashboard, documents, evidence, frameworks,
-                         library, lookups, notifications, org, people, policies, registers,
-                         roles, signing, tasks, templates)
+                         integrations, library, lookups, notifications, org,
+                         people, policies, registers, roles, signing, tasks, templates)
 
 
 def _preflight() -> None:
@@ -50,6 +50,11 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
      "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_file_id text;"),
     ("files", "purpose",
      "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
+    ("assets", "last_seen_at",
+     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_seen_at iso_ts;"),
+    ("assets", "expected_heartbeat_minutes",
+     "ALTER TABLE assets ADD COLUMN IF NOT EXISTS expected_heartbeat_minutes integer "
+     "CHECK (expected_heartbeat_minutes > 0);"),
 ]
 
 
@@ -137,6 +142,11 @@ app.include_router(lookups.router, prefix="/api")
 # row is derived from the token (see api/routers/signing.py). Mounted under /api so the
 # SPA's Vite proxy reaches it; the user-facing link is the SPA page /sign/{token}.
 app.include_router(signing.router, prefix="/api")
+
+# Machine callers (agents/scripts), not the SPA. Token issue/list/revoke are JWT+RBAC gated;
+# the exchange endpoint is unauthenticated by design, same as signing (see
+# api/core/service_auth.py / api/routers/integrations.py).
+app.include_router(integrations.router, prefix="/api")
 
 
 # Test-only hooks for the browser suite — states a browser cannot reach (e.g. a password
