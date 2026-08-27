@@ -65,3 +65,22 @@ def make_member(body: MakeMemberIn, user: Principal = Depends(get_current_user))
                      {"i": str(uuid.uuid4()), "t": user.tenant_id, "u": uid, "r": rid})
         set_password(conn, uid, body.password)
     return {"user_id": uid}
+
+
+class SetNdaIn(StrictModel):
+    document_id: str
+
+
+@router.post("/set-nda-document")
+def set_nda_document(body: SetNdaIn, user: Principal = Depends(get_current_user)):
+    """Mark a document as the caller's tenant NDA — Trust Center has no UI/API of its own
+    yet (schema-only, a later sprint), but issue #13's document hard-delete needs a real,
+    reachable blocker to test against. Upserts the tenant's one trust_center row."""
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO trust_center (id, tenant_id, slug, nda_document_id) "
+            "VALUES (:i, :t, :s, :d) "
+            "ON CONFLICT (tenant_id) DO UPDATE SET nda_document_id = :d"),
+            {"i": str(uuid.uuid4()), "t": user.tenant_id, "s": f"trust-{user.tenant_id}",
+             "d": body.document_id})
+    return {"ok": True}

@@ -12,6 +12,7 @@ type Doc = {
   id: string; title: string; document_type: string; classification: string; status: string;
   owner_name: string; published_version: string | null; latest_version: string | null;
   latest_status: string | null; next_review_at: string | null; review_status: string;
+  linked_controls: number; linked_audits: number;
 };
 type Person = { id: string; full_name: string };
 type PreviewVersion = { id: string; content: string; content_format: "MARKDOWN" | "HTML" | "SHEET" };
@@ -28,7 +29,7 @@ type DocType = { value: string; label: string };
  * it offered "STANDARD", which the database CHECK rejects — picking it produced a 500 —
  * and omitted REGISTER, TEMPLATE and SOA, which are valid.
  */
-function useDocTypes() {
+export function useDocTypes() {
   return useQuery({ queryKey: ["document-types"], staleTime: Infinity,
     queryFn: () => get<DocType[]>("/documents/types") });
 }
@@ -41,7 +42,7 @@ function useDocTypes() {
  * actually offered — the exact bug `useDocTypes()` above already exists to avoid for
  * document type, one level up.
  */
-function useClassifications() {
+export function useClassifications() {
   return useQuery({
     queryKey: ["lookups", "document_classification"],
     queryFn: () => get<{ kinds: Record<string, { values: { id: string; value: string }[] }> }>(
@@ -251,6 +252,14 @@ export default function Documents() {
         ? <Pill tone={d.review_status === "overdue" ? "bad" : d.review_status === "due_soon" ? "warn" : "ok"}>
             {d.next_review_at.slice(0, 10)}</Pill>
         : <span className="text-txt3">—</span>,
+    },
+    {
+      key: "linked_audits", label: "Audits linked", sortValue: (d) => d.linked_audits,
+      render: (d) => <span className="tnum text-txt2">{d.linked_audits} audits</span>,
+    },
+    {
+      key: "linked_controls", label: "Controls linked", sortValue: (d) => d.linked_controls,
+      render: (d) => <span className="tnum text-txt2">{d.linked_controls} controls</span>,
     },
   ];
 

@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { get } from "../../lib/api";
 import { useCan } from "../../lib/auth";
-import { Bar, Loading, PageHead, Pill, Table, Td } from "../../lib/ui";
+import { Bar, inputCls, Loading, PageHead, Pill, Table, Td } from "../../lib/ui";
 
 type Assessment = {
   id: string; title: string; bank_name: string; status: string; predicted_verdict: string | null;
@@ -12,7 +13,12 @@ type Assessment = {
 export default function Audits() {
   const nav = useNavigate();
   const can = useCan();
-  const { data, isLoading } = useQuery({ queryKey: ["assessments"], queryFn: () => get<Assessment[]>("/assessments") });
+  const [q, setQ] = useState("");
+  const { data, isLoading } = useQuery({
+    queryKey: ["assessments", q],
+    queryFn: () => get<Assessment[]>(`/assessments${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+    placeholderData: keepPreviousData,
+  });
   if (isLoading) return <Loading />;
   const rows = data ?? [];
 
@@ -28,9 +34,11 @@ export default function Audits() {
               <Link to="/audits/import" className="btn btn-primary">Import checklist</Link>
             </div>
           : undefined} />
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search bank or title…"
+        aria-label="Search audits" className={inputCls + " mb-4 max-w-xs"} />
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-bd bg-paper p-8 text-center text-sm text-txt3">
-          No assessments yet. Create one from an imported template.
+          {q ? `No audits match "${q}".` : "No assessments yet. Create one from an imported template."}
         </div>
       ) : (
         <Table head={["Bank / assessment", "Progress", "Status", "Predicted verdict", "Bank SPOC"]}>

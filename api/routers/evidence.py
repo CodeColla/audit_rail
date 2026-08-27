@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 
 from api.core import activity, storage
 from api.core.auth import Principal, get_current_user
+from api.core.logging import logger
 from api.core.permissions import require
 from api.core.config import settings
 from api.core.database import engine, get_conn, t
@@ -32,6 +33,19 @@ def _link_counts(conn, tenant_id: str) -> dict:
         select(ec.c.evidence_id, func.count())
         .where(ec.c.tenant_id == tenant_id)
         .group_by(ec.c.evidence_id)
+    ).all())
+
+
+def _audit_link_counts(conn, tenant_id: str) -> dict:
+    """issue #13: "audits linked" counts DISTINCT ASSESSMENTS, not distinct response rows —
+    evidence cited by three points in the same audit is linked to that ONE audit, not three,
+    same convention as documents.py's list_documents."""
+    re_, resp = t("response_evidence"), t("responses")
+    return dict(conn.execute(
+        select(re_.c.evidence_id, func.count(func.distinct(resp.c.assessment_id)))
+        .select_from(re_.join(resp, re_.c.response_id == resp.c.id))
+        .where(re_.c.tenant_id == tenant_id)
+        .group_by(re_.c.evidence_id)
     ).all())
 
 
@@ -83,8 +97,14 @@ def list_evidence(
 ):
     ev, files = t("evidence"), t("files")
     counts = _link_counts(conn, user.tenant_id)
+    audit_counts = _audit_link_counts(conn, user.tenant_id)
     today = today_iso()
-    stmt = _with_file(select(ev), ev, files).where(ev.c.tenant_id == user.tenant_id)
+    # issue #13: a task-completion upload goes through this same table and endpoint as a
+    # deliberately-vaulted artifact, but shouldn't clutter the general list — it belongs to
+    # the task's own run history (AttachmentLink there fetches it by id directly, unaffected
+    # by this list-only filter).
+    stmt = (_with_file(select(ev), ev, files)
+            .where(ev.c.tenant_id == user.tenant_id, ev.c.source_task_run_id.is_(None)))
     if q:
         like = f"%{q.lower()}%"
         # func.lower(...).like(...) is this codebase's search idiom across seven endpoints;
@@ -102,7 +122,8 @@ def list_evidence(
         if expiring and status not in ("expired", "expiring"):
             continue
         out.append({**dict(r), "status": status,
-                    "linked_controls": counts.get(r["id"], 0)})
+                    "linked_controls": counts.get(r["id"], 0),
+                    "linked_audits": audit_counts.get(r["id"], 0)})
     return out
 
 
@@ -122,8 +143,22 @@ def evidence_detail(
         .join(ec, ec.c.control_id == controls.c.id)
         .where(ec.c.evidence_id == evidence_id, ec.c.tenant_id == user.tenant_id)
     ).mappings().all()
+    # issue #13: "Audits This Proves", mirroring "Controls This Proves" above — audit points
+    # this evidence is attached to directly (not inherited via a control; that store is
+    # evidence_controls, already covered by `linked` above and never merged with this one).
+    re_, resp, q, a = (t("response_evidence"), t("responses"), t("questions"), t("assessments"))
+    linked_audit_points = conn.execute(
+        select(a.c.id.label("assessment_id"), a.c.title.label("assessment_title"),
+               a.c.bank_name, resp.c.question_id, q.c.number, q.c.text)
+        .select_from(re_.join(resp, re_.c.response_id == resp.c.id)
+                       .join(q, resp.c.question_id == q.c.id)
+                       .join(a, resp.c.assessment_id == a.c.id))
+        .where(re_.c.evidence_id == evidence_id, re_.c.tenant_id == user.tenant_id)
+        .order_by(a.c.title, q.c.number)
+    ).mappings().all()
     return {**dict(row), "status": evidence_status(row["valid_until"], today_iso()),
-            "linked_controls": [dict(c) for c in linked]}
+            "linked_controls": [dict(c) for c in linked],
+            "linked_audit_points": [dict(p) for p in linked_audit_points]}
 
 
 class EvidencePatchIn(StrictModel):
@@ -234,6 +269,8 @@ async def upload_evidence(
     issued_at: IsoDate = Form(None),
     valid_until: IsoDate = Form(None),
     control_ids: str | None = Form(None, description="comma-separated control ids"),
+    source_task_run_id: str | None = Form(
+        None, description="set when this upload is produced by completing a task run"),
     file: UploadFile = File(...),
     user: Principal = Depends(require("evidence", "add")),
 ):
@@ -254,6 +291,12 @@ async def upload_evidence(
             select(members.c.id).where(members.c.tenant_id == user.tenant_id,
                                        members.c.user_id == user.user_id)
         ).scalar()
+        # issue #13: a cross-tenant or made-up id here would otherwise reach the composite
+        # FK as an uncaught IntegrityError (500) — same guard as control_ids below.
+        if source_task_run_id and conn.execute(select(t("task_runs").c.id).where(
+                t("task_runs").c.id == source_task_run_id,
+                t("task_runs").c.tenant_id == user.tenant_id)).first() is None:
+            raise HTTPException(400, "task run not found in this organisation")
         conn.execute(insert(t("files")).values(
             id=file_id, tenant_id=user.tenant_id, storage_key=key,
             original_name=file.filename or "upload", mime_type=file.content_type,
@@ -261,6 +304,7 @@ async def upload_evidence(
         conn.execute(insert(t("evidence")).values(
             id=ev_id, tenant_id=user.tenant_id, title=title, evidence_type=evidence_type,
             file_id=file_id, issued_at=issued_at, valid_until=valid_until,
+            source_task_run_id=source_task_run_id,
             created_by_member_id=member_id, created_at=now))
         ids = [c.strip() for c in (control_ids or "").split(",") if c.strip()]
         # only link controls that belong to this tenant
@@ -308,6 +352,14 @@ def delete_evidence(
     evidence_id: str,
     user: Principal = Depends(require("evidence", "delete")),
 ):
+    """issue #13: deletion used to refuse whenever a completed task run, a training
+    assignment or a vendor assessment still cited this artifact — RESTRICT/NO ACTION FKs
+    that were treating "the proof behind a completed obligation" as untouchable. The
+    explicit ask is the opposite: delete must always succeed, clearing those references
+    rather than being blocked by them (same shape as the existing evidence_controls
+    cleanup below, just three more tables). response_evidence/risk_evidence/
+    incident_evidence stay on CASCADE and need no code here at all.
+    """
     ev, files = t("evidence"), t("files")
     with engine.begin() as conn:
         row = conn.execute(
@@ -321,17 +373,20 @@ def delete_evidence(
         ).scalar() if row["file_id"] else None
         conn.execute(sqldelete(t("evidence_controls")).where(
             t("evidence_controls").c.evidence_id == evidence_id))
+        for tbl in ("task_runs", "training_assignments", "third_party_assessments"):
+            table = t(tbl)
+            conn.execute(update(table).where(
+                table.c.evidence_id == evidence_id, table.c.tenant_id == user.tenant_id
+            ).values(evidence_id=None))
         try:
             conn.execute(sqldelete(ev).where(ev.c.id == evidence_id))
             if row["file_id"]:
                 conn.execute(sqldelete(files).where(files.c.id == row["file_id"]))
-        except IntegrityError:
-            # Something still points at this artifact — a completed task run, a training
-            # assignment, a third-party assessment. Those FKs are RESTRICT/NO ACTION on
-            # purpose: the proof behind a completed obligation must not silently vanish.
+        except IntegrityError as e:
+            logger.error(f"evidence delete failed for {evidence_id} after clearing known "
+                        f"referrers: {e}")
             raise HTTPException(
-                409, "This evidence is still referenced (e.g. by a completed task run or "
-                     "a vendor assessment) and cannot be deleted.")
+                500, "something still references this evidence — try again or contact support")
     if key:
         storage.delete(key)
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,

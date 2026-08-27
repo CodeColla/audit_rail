@@ -20,7 +20,7 @@ import { cn } from "../lib/ui";
  * can use it without pulling in auth.
  */
 
-export const PRODUCT_NAME = "Audit Rail";
+export const PRODUCT_NAME = "Auditrail";
 export const VENDOR = "SR";
 
 type Size = "sm" | "md" | "lg";

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import re
 import secrets
 import uuid
 from urllib.parse import quote
@@ -73,6 +74,73 @@ def _require_active(doc: dict) -> dict:
     if doc["status"] == "ARCHIVED":
         raise HTTPException(409, "this document is archived — restore it first")
     return doc
+
+
+#: 'r' (RESTRICT) and 'a' (NO ACTION) are what would actually refuse a delete; 'c' (CASCADE)
+#: resolves itself and is deliberately absent. Same convention as people.py's
+#: _person_blockers, target relname swapped from 'people' to 'documents'.
+_DOC_BLOCKING_FK_RULES = ("r", "a")
+
+_DOC_REFERRERS_SQL = text("""
+SELECT src.relname AS table_name, att.attname AS column_name
+  FROM pg_constraint con
+  JOIN pg_class src ON src.oid = con.conrelid
+  JOIN pg_class tgt ON tgt.oid = con.confrelid
+  JOIN unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) ON true
+  JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+ WHERE con.contype = 'f'
+   AND tgt.relname = 'documents'
+   AND att.attname <> 'tenant_id'
+   AND con.confdeltype = ANY(:rules)
+ ORDER BY src.relname, att.attname
+""")
+
+_DOC_IDENT = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+#: `table_name` -> what a user calls it. Anything unlisted falls back to the table name.
+_DOC_REFERRER_LABELS = {
+    "statements_of_applicability": "Statement of Applicability",
+    "access_review_campaigns": "access review campaign",
+    "trust_center": "trust centre NDA setting",
+}
+
+
+def _document_blockers(conn, tenant_id: str, doc_id: str) -> list[str]:
+    """Which records still point at this document through a FK that would refuse a hard
+    delete. Catalog-driven, not a hand-written list — see people.py's _person_blockers for
+    the same reasoning: a hardcoded table list rots the first time a new RESTRICT lands.
+
+    One thing a single-level catalog query cannot see, checked separately below:
+    `document_versions.document_id` CASCADEs (so it never shows up here, correctly — 'c' is
+    excluded from `_DOC_BLOCKING_FK_RULES`), but `evidence.document_version_id` is RESTRICT
+    on THOSE rows. A hard delete would let Postgres cascade documents -> document_versions
+    and then hit that RESTRICT mid-transaction — a real, reachable case (evidence citing a
+    specific policy version), worth naming up front rather than surfacing as a raw
+    IntegrityError.
+    """
+    blockers: dict[str, int] = {}
+    for row in conn.execute(_DOC_REFERRERS_SQL, {"rules": list(_DOC_BLOCKING_FK_RULES)}).mappings():
+        table, column = row["table_name"], row["column_name"]
+        if not (_DOC_IDENT.match(table) and _DOC_IDENT.match(column)):  # pragma: no cover - defence
+            continue
+        n = conn.execute(text(
+            f"SELECT count(*) FROM {table} WHERE {column} = :d AND tenant_id = :t"),
+            {"d": doc_id, "t": tenant_id}).scalar() or 0
+        if n:
+            label = _DOC_REFERRER_LABELS.get(table, table.replace("_", " "))
+            blockers[label] = blockers.get(label, 0) + n
+
+    dv = t("document_versions")
+    version_ids = list(conn.execute(select(dv.c.id).where(
+        dv.c.document_id == doc_id, dv.c.tenant_id == tenant_id)).scalars())
+    if version_ids:
+        ev = t("evidence")
+        n = conn.execute(select(func.count()).where(
+            ev.c.document_version_id.in_(version_ids), ev.c.tenant_id == tenant_id)).scalar() or 0
+        if n:
+            blockers["evidence"] = blockers.get("evidence", 0) + n
+
+    return [f"{n} {label}{'' if n == 1 else 's'}" for label, n in sorted(blockers.items())]
 
 
 def _versions(conn, doc_id: str):
@@ -323,6 +391,22 @@ def list_documents(document_type: str | None = Query(None), status: str | None =
         stmt = stmt.where(d.c.document_type == document_type)
     if q:
         stmt = stmt.where(func.lower(d.c.title).like(f"%{q.lower()}%"))
+    # issue #13: same count-and-merge shape as evidence.py's _link_counts(). "Audits linked"
+    # counts DISTINCT ASSESSMENTS, not distinct response rows — a document cited by three
+    # points in the same audit is linked to that ONE audit, not three.
+    cd = t("control_documents")
+    control_counts = dict(conn.execute(
+        select(cd.c.document_id, func.count())
+        .where(cd.c.tenant_id == user.tenant_id)
+        .group_by(cd.c.document_id)
+    ).all())
+    rd, resp = t("response_documents"), t("responses")
+    audit_counts = dict(conn.execute(
+        select(rd.c.document_id, func.count(func.distinct(resp.c.assessment_id)))
+        .select_from(rd.join(resp, rd.c.response_id == resp.c.id))
+        .where(rd.c.tenant_id == user.tenant_id)
+        .group_by(rd.c.document_id)
+    ).all())
     today = today_iso()
     out = []
     for r in conn.execute(stmt).mappings():
@@ -335,7 +419,9 @@ def list_documents(document_type: str | None = Query(None), status: str | None =
                 "published_version": pub,
                 "latest_version": latest["version_label"] if latest else None,
                 "latest_status": latest["status"] if latest else None,
-                "review_status": review_status(r["next_review_at"], today)}
+                "review_status": review_status(r["next_review_at"], today),
+                "linked_controls": control_counts.get(r["id"], 0),
+                "linked_audits": audit_counts.get(r["id"], 0)}
         if status and item["latest_status"] != status:
             continue
         out.append(item)
@@ -407,12 +493,43 @@ def document_detail(doc_id: str, user: Principal = Depends(require("documents", 
             "versions": versions, "open_version": draft, "approval": approval}
 
 
+@router.get("/{doc_id}/links")
+def document_links(doc_id: str, user: Principal = Depends(require("documents", "view")),
+                   conn=Depends(get_conn)):
+    """Reverse lookup for the "Linked Controls" / "Linked Audit Point" sections (issue #13):
+    which controls and audit points cite this document directly. Mirrors library.py's
+    control_detail() linked_documents query, in the opposite direction. Attach/detach for
+    controls reuses the existing control-side routes (library.py); for audit points it
+    reuses the response_documents routes in assessments.py — no new write endpoints here,
+    this is read-only.
+    """
+    _doc(conn, user, doc_id)
+    cd, controls = t("control_documents"), t("controls")
+    linked_controls = [dict(r) for r in conn.execute(
+        select(controls.c.id, controls.c.code, controls.c.statement)
+        .join(cd, cd.c.control_id == controls.c.id)
+        .where(cd.c.document_id == doc_id, cd.c.tenant_id == user.tenant_id)
+        .order_by(controls.c.code)).mappings()]
+    rd, resp, q, a = (t("response_documents"), t("responses"), t("questions"), t("assessments"))
+    linked_audit_points = [dict(r) for r in conn.execute(
+        select(a.c.id.label("assessment_id"), a.c.title.label("assessment_title"),
+               a.c.bank_name, resp.c.question_id, q.c.number, q.c.text)
+        .select_from(rd.join(resp, rd.c.response_id == resp.c.id)
+                       .join(q, resp.c.question_id == q.c.id)
+                       .join(a, resp.c.assessment_id == a.c.id))
+        .where(rd.c.document_id == doc_id, rd.c.tenant_id == user.tenant_id)
+        .order_by(a.c.title, q.c.number)).mappings()]
+    return {"controls": linked_controls, "audit_points": linked_audit_points}
+
+
 class DocumentPatch(StrictModel):
     title: str | None = None
+    document_type: str | None = None
     classification: str | None = None
     owner_person_id: str | None = None
     description: str | None = None
     review_cadence_months: int | None = None
+    next_review_at: IsoDate = None
     status: str | None = None           # ACTIVE | ARCHIVED — retire without deleting
 
 
@@ -424,6 +541,12 @@ def update_document(doc_id: str, body: DocumentPatch,
         raise HTTPException(400, "nothing to update")
     if "status" in vals and vals["status"] not in ("ACTIVE", "ARCHIVED"):
         raise HTTPException(400, "status must be ACTIVE or ARCHIVED")
+    # issue #13: Type/Classification/Owner/Review were all set once at creation and never
+    # editable again. classification/owner/review_cadence_months already accepted PATCHes;
+    # document_type didn't, and needs the same 400-on-bad-value guard create_document uses.
+    if "document_type" in vals and vals["document_type"] not in vocabularies.DOCUMENT_TYPES:
+        raise HTTPException(400, f"document_type must be one of: "
+                                 f"{', '.join(vocabularies.DOCUMENT_TYPES)}")
     vals["updated_at"] = now_iso()
     with engine.begin() as conn:
         _doc(conn, user, doc_id)
@@ -440,6 +563,28 @@ def update_document(doc_id: str, body: DocumentPatch,
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="document.updated", entity_type="document", entity_id=doc_id,
                  detail=vals)
+    return {"ok": True}
+
+
+@router.delete("/{doc_id}")
+def delete_document(doc_id: str, user: Principal = Depends(require("documents", "delete"))):
+    """Really delete a document — unlike Evidence's delete_evidence (which always succeeds
+    and nulls out whatever pointed at it), a document can BE a Statement of Applicability's
+    cited artifact, an access-review campaign's output, or the organisation's own NDA —
+    compliance records in their own right, not incidental references. Refuse rather than
+    silently corrupt one of those; same "block and name it" philosophy as delete_person.
+    """
+    with engine.begin() as conn:
+        _doc(conn, user, doc_id)
+        blockers = _document_blockers(conn, user.tenant_id, doc_id)
+        if blockers:
+            raise HTTPException(409, "this document is still referenced by "
+                                     + ", ".join(blockers)
+                                     + " — remove those references first, or archive it instead")
+        conn.execute(delete(t("documents")).where(
+            t("documents").c.id == doc_id, t("documents").c.tenant_id == user.tenant_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="document.deleted", entity_type="document", entity_id=doc_id)
     return {"ok": True}
 
 

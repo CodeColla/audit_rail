@@ -18,16 +18,18 @@ type Row = {
   question_id: string; number: string; text: string; section: string;
   mapped_control: string | null; mapped_control_statement: string | null;
   response_value: string | null; workflow_status: string; evidence_count: number;
+  document_count: number;
 };
 type RespDetail = {
   question: { id: string; number: string; text: string };
-  mapped_control: { code: string; statement: string } | null;
+  mapped_control: { id: string; code: string; statement: string } | null;
   response: { id: string; response_value: string; comment: string | null; na_justification: string | null; workflow_status: string } | null;
   evidence: { id: string; title: string; evidence_type: string }[];
   inherited_evidence: { id: string; title: string; evidence_type: string; valid_until: string | null }[];
   // P7-S1: Document / Incident / Asset, alongside Evidence — same "attach, optional,
   // based on the audit point's nature" idea, just three more record types.
   documents: { id: string; title: string; document_type: string }[];
+  inherited_documents: { id: string; title: string; document_type: string }[];
   incidents: { id: string; title: string; severity: string | null }[];
   assets: { id: string; name: string; asset_type: string }[];
   revisions: { rev_no: number; response_value: string | null; comment: string | null; created_at: string }[];
@@ -60,18 +62,25 @@ const FILTERS = ["all", "open", "answered", "ask_pending", "actioned",
  */
 function AttachRecordCard<T extends { id: string }>({
   label, icon: Icon, items, hasResponse, canEdit, kind, fetchUrl, bodyKey, hrefFor, nameOf,
-  aid, qid, onLinked,
+  aid, qid, onChanged,
 }: {
   label: string; icon: typeof FileText; items: T[]; hasResponse: boolean; canEdit: boolean;
   kind: string; fetchUrl: string; bodyKey: string; hrefFor: (id: string) => string;
-  nameOf: (item: T) => string; aid: string; qid: string; onLinked: () => void;
+  nameOf: (item: T) => string; aid: string; qid: string; onChanged: () => void;
 }) {
   const [picking, setPicking] = useState(false);
   const list = useQuery({ queryKey: [kind], queryFn: () => get<T[]>(fetchUrl), enabled: picking });
   const link = useMutation({
     mutationFn: (id: string) =>
       api.post(`/assessments/${aid}/responses/${qid}/${kind}`, { [bodyKey]: id }),
-    onSuccess: () => { setPicking(false); onLinked(); },
+    onSuccess: () => { setPicking(false); onChanged(); },
+  });
+  // P7-S1 / issue #13: only a directly-linked item has a row here to remove — see
+  // unlink_evidence's own comment (api/routers/assessments.py) for why inherited-via-control
+  // items don't go through this route at all.
+  const unlink = useMutation({
+    mutationFn: (id: string) => api.delete(`/assessments/${aid}/responses/${qid}/${kind}/${id}`),
+    onSuccess: onChanged,
   });
   const already = new Set(items.map((i) => i.id));
 
@@ -88,10 +97,13 @@ function AttachRecordCard<T extends { id: string }>({
       {items.map((item) => (
         <div key={item.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
           <Icon size={15} className="shrink-0 text-txt3" />
-          <Link to={hrefFor(item.id)} className="min-w-0 truncate text-label font-medium text-ink
+          <Link to={hrefFor(item.id)} className="min-w-0 flex-1 truncate text-label font-medium text-ink
             underline decoration-txt3/40 underline-offset-2 hover:text-accent hover:decoration-accent">
             {nameOf(item)}
           </Link>
+          {canEdit && (
+            <button onClick={() => unlink.mutate(item.id)} className="shrink-0 text-caption text-bad hover:underline">remove</button>
+          )}
         </div>
       ))}
       {items.length === 0 && hasResponse && (
@@ -114,7 +126,57 @@ function AttachRecordCard<T extends { id: string }>({
   );
 }
 
-function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClose: () => void }) {
+/**
+ * Issue #13: the grid row's number cell (`NumberCell`, below) already lets you fix a point's
+ * number in place — this is the same editing pattern, just rendered into the drawer's `sub`
+ * slot instead of a `<Td>`, since the drawer had no edit affordance of its own at all.
+ */
+function DrawerNumberEdit({ templateId, questionId, number, canEdit, onSaved }: {
+  templateId: string; questionId: string; number: string; canEdit: boolean; onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(number);
+  const save = useMutation({
+    mutationFn: (next: string) =>
+      api.patch(`/templates/${templateId}/questions/${questionId}`, { number: next }),
+    onSuccess: onSaved,
+  });
+
+  if (!canEdit) return <>QUESTION · No. {number}</>;
+
+  if (!editing) {
+    return (
+      <>QUESTION · No.{" "}
+        <button onClick={() => { setDraft(number); setEditing(true); }}
+          title="Edit number" aria-label={`Edit number for question ${number}`}
+          className="rounded px-1 py-0.5 hover:bg-canvas hover:text-ink">
+          {number || <span className="italic text-bad">unnumbered</span>}
+        </button>
+      </>
+    );
+  }
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (next && next !== number) save.mutate(next);
+  };
+
+  return (
+    <>QUESTION · No.{" "}
+      <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+          if (e.key === "Escape") { setDraft(number); setEditing(false); }
+        }}
+        aria-label="Question number"
+        className="w-20 rounded border border-bd bg-paper px-1.5 py-0.5 font-mono text-label outline-none focus:border-accent" />
+    </>
+  );
+}
+
+function QuestionDrawer({ aid, qid, templateId, onClose }: { aid: string; qid: string; templateId: string; onClose: () => void }) {
   const can = useCan();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ["resp", aid, qid], queryFn: () => get<RespDetail>(`/assessments/${aid}/responses/${qid}`) });
@@ -160,6 +222,26 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
     mutationFn: (evId: string) => api.post(`/assessments/${aid}/responses/${qid}/evidence`, { evidence_id: evId }),
     onSuccess: () => { setPickEv(false); refresh(); },
   });
+  const unlinkEv = useMutation({
+    mutationFn: (evId: string) => api.delete(`/assessments/${aid}/responses/${qid}/evidence/${evId}`),
+    onSuccess: refresh,
+  });
+  // Removes the item from the CONTROL itself (there is no per-question override table for
+  // an inherited link) — so it disappears from every audit point mapped to that control, not
+  // just this one. unlink_control_evidence/unlink_control_document (api/routers/library.py)
+  // are the same endpoints the Control's own detail page uses.
+  const detachFromControl = useMutation({
+    mutationFn: ({ kind: k, id }: { kind: "evidence" | "documents"; id: string }) =>
+      api.delete(`/library/controls/${data!.mapped_control!.id}/${k}/${id}`),
+    onSuccess: refresh,
+  });
+  const detachInherited = (k: "evidence" | "documents", id: string, name: string) => {
+    if (confirm(
+        `Detach "${name}" from control ${data?.mapped_control?.code}?\n\n` +
+        `This removes it from the control entirely, affecting every audit point that ` +
+        `inherits it via this control — not just this one.`))
+      detachFromControl.mutate({ kind: k, id });
+  };
   // P5-S3: attach proof without first going to the vault. Upload then link — two calls the
   // API already has; a multipart variant of the link route would duplicate upload logic for
   // a failure mode that merely leaves the file in the vault, unlinked rather than lost.
@@ -186,7 +268,10 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
   const canEdit = can("audits", "edit");
 
   return (
-    <Drawer open onClose={onClose} sub={`QUESTION · No. ${data.question.number}`} title={data.question.text}>
+    <Drawer open onClose={onClose} title={data.question.text} sub={
+      <DrawerNumberEdit templateId={templateId} questionId={qid} number={data.question.number}
+        canEdit={canEdit} onSaved={refresh} />
+    }>
       {/* mapped control — statement was fetched but never rendered; re-map lets a reviewer
           fix a wrong auto-assignment without leaving the audit response */}
       <Card>
@@ -256,9 +341,14 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         </div>
         {!data.response && <div className="text-label text-txt3">Answer the question first, then link evidence.</div>}
         {data.evidence.map((e) => (
-          <div key={e.id} className="border-t border-bd py-2 first:border-t-0">
-            <AttachmentLink id={e.id} title={e.title} />
-            <div className="pl-8 text-caption text-txt3">{e.evidence_type}</div>
+          <div key={e.id} className="flex items-start gap-2 border-t border-bd py-2 first:border-t-0">
+            <div className="min-w-0 flex-1">
+              <AttachmentLink id={e.id} title={e.title} />
+              <div className="pl-8 text-caption text-txt3">{e.evidence_type}</div>
+            </div>
+            {canEdit && (
+              <button onClick={() => unlinkEv.mutate(e.id)} className="shrink-0 text-caption text-bad hover:underline">remove</button>
+            )}
           </div>
         ))}
         {data.evidence.length === 0 && data.response && (
@@ -295,7 +385,7 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         )}
       </Card>
 
-      {data.inherited_evidence.length > 0 && (
+      {(data.inherited_evidence.length > 0 || data.inherited_documents.length > 0) && (
         <Card>
           <div className="mb-2 flex items-center gap-2">
             <div className="eyebrow">Inherited from {data.mapped_control?.code}</div>
@@ -303,11 +393,28 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
           </div>
           {data.inherited_evidence.map((e) => (
             <div key={e.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
-              <span className="grid h-7 w-7 place-items-center rounded-md bg-canvas text-txt3">▣</span>
-              <div>
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-canvas text-txt3">▣</span>
+              <div className="min-w-0 flex-1">
                 <AttachmentLink id={e.id} title={e.title} />
                 <div className="pl-8 text-caption text-txt3">{e.evidence_type}{e.valid_until && ` · valid until ${e.valid_until.slice(0, 10)}`}</div>
               </div>
+              {canEdit && (
+                <button onClick={() => detachInherited("evidence", e.id, e.title)}
+                  className="shrink-0 text-caption text-bad hover:underline">detach from control</button>
+              )}
+            </div>
+          ))}
+          {data.inherited_documents.map((d) => (
+            <div key={d.id} className="flex items-center gap-2.5 border-t border-bd py-2 first:border-t-0">
+              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-canvas text-txt3">▣</span>
+              <Link to={`/documents/${d.id}`} className="min-w-0 flex-1 truncate text-label font-medium text-ink
+                underline decoration-txt3/40 underline-offset-2 hover:text-accent hover:decoration-accent">
+                {d.title}
+              </Link>
+              {canEdit && (
+                <button onClick={() => detachInherited("documents", d.id, d.title)}
+                  className="shrink-0 text-caption text-bad hover:underline">detach from control</button>
+              )}
             </div>
           ))}
         </Card>
@@ -317,17 +424,17 @@ function QuestionDrawer({ aid, qid, onClose }: { aid: string; qid: string; onClo
         hasResponse={!!data.response} canEdit={canEdit} kind="documents" fetchUrl="/documents"
         bodyKey="document_id" hrefFor={(id) => `/documents/${id}`}
         nameOf={(d: RespDetail["documents"][number]) => d.title}
-        aid={aid} qid={qid} onLinked={refresh} />
+        aid={aid} qid={qid} onChanged={refresh} />
       <AttachRecordCard label="Linked incidents" icon={Siren} items={data.incidents}
         hasResponse={!!data.response} canEdit={canEdit} kind="incidents" fetchUrl="/incidents"
         bodyKey="incident_id" hrefFor={(id) => `/incidents/view/${id}`}
         nameOf={(i: RespDetail["incidents"][number]) => i.title}
-        aid={aid} qid={qid} onLinked={refresh} />
+        aid={aid} qid={qid} onChanged={refresh} />
       <AttachRecordCard label="Linked assets" icon={Boxes} items={data.assets}
         hasResponse={!!data.response} canEdit={canEdit} kind="assets" fetchUrl="/assets"
         bodyKey="asset_id" hrefFor={(id) => `/assets/view/${id}`}
         nameOf={(a: RespDetail["assets"][number]) => a.name}
-        aid={aid} qid={qid} onLinked={refresh} />
+        aid={aid} qid={qid} onChanged={refresh} />
 
       {/* answer history — written on every save; used to be invisible */}
       {(data.revisions?.length ?? 0) > 1 && (
@@ -604,7 +711,7 @@ export default function Workspace() {
         ))}
       </div>
 
-      <Table head={["No.", "Control question", "Response", "Workflow", "Evidence"]}>
+      <Table head={["No.", "Control question", "Response", "Workflow", "Evidence", "Documents"]}>
         {rows.map((r) => (
           <tr key={r.question_id} className="cursor-pointer hover:bg-canvas" onClick={() => setOpenQ(r.question_id)}>
             <NumberCell templateId={d.template_id} questionId={r.question_id} number={r.number} canEdit={canEdit} />
@@ -617,11 +724,12 @@ export default function Workspace() {
             <Td>{r.response_value ? <Pill tone={r.response_value}>{r.response_value.toUpperCase()}</Pill> : <span className="text-txt3">—</span>}</Td>
             <Td><Pill tone={r.workflow_status}>{r.workflow_status.replace(/_/g, " ")}</Pill></Td>
             <Td>{r.evidence_count > 0 ? <span className="rounded bg-canvas px-2 py-0.5 text-caption">{r.evidence_count} linked</span> : <span className="text-txt3">none</span>}</Td>
+            <Td>{r.document_count > 0 ? <span className="rounded bg-canvas px-2 py-0.5 text-caption">{r.document_count} linked</span> : <span className="text-txt3">none</span>}</Td>
           </tr>
         ))}
       </Table>
 
-      {openQ && <QuestionDrawer key={openQ} aid={id!} qid={openQ} onClose={() => setOpenQ(null)} />}
+      {openQ && <QuestionDrawer key={openQ} aid={id!} qid={openQ} templateId={d.template_id} onClose={() => setOpenQ(null)} />}
       {invite && <InviteModal aid={id!} onClose={() => setInvite(false)} />}
     </>
   );

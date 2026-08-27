@@ -27,7 +27,11 @@ async function apiGet(page: Page, path: string) {
 }
 
 test.describe("completing a task", () => {
-  test("a file uploaded here lands in the vault AND on the run", async ({ page }) => {
+  test("a file uploaded here attaches to the run, without leaking into the general vault", async ({ page }) => {
+    // issue #13: this upload used to land in BOTH the run and the general Evidence vault
+    // list, mixing task-completion artifacts in with deliberately-curated evidence. The
+    // fix keeps it attached to the run (still fetchable by id — the task drawer's own
+    // AttachmentLink relies on exactly that) but excludes it from GET /evidence by default.
     const tag = `s3task-${uniq()}`;
     await page.goto("/tasks");
     await page.getByRole("button", { name: /New task/ }).click();
@@ -47,13 +51,25 @@ test.describe("completing a task", () => {
     await expect(modal.locator("select")).toBeDisabled();
 
     await modal.getByRole("button", { name: /Mark complete/ }).click();
+    await expect(page.getByText("Task completed")).toBeVisible();
     // Assert the MODAL closed, not "no dialogs" — the task drawer underneath is also
     // role="dialog" and legitimately stays open.
     await expect(modal).toHaveCount(0);
 
-    // it really is in the vault, under the filename's stem
+    const tasks = await apiGet(page, "/tasks?status=all");
+    const task = tasks.find((t: any) => t.title === tag);
+    const detail = await apiGet(page, `/tasks/${task.id}`);
+    const evidenceId = detail.runs[0].evidence_id;
+    expect(evidenceId, "the completed run should carry the uploaded evidence's id").toBeTruthy();
+
+    // NOT in the general vault list…
     const vault = await apiGet(page, "/evidence");
-    expect(vault.some((e: any) => e.title === tag), "upload reached the vault").toBeTruthy();
+    expect(vault.some((e: any) => e.id === evidenceId),
+      "a task-completion upload must not appear in the general vault list").toBeFalsy();
+
+    // …but the artifact itself still exists, reachable by id
+    const artifact = await apiGet(page, `/evidence/${evidenceId}`);
+    expect(artifact.title).toBe(tag);
   });
 
   test("completing with no file at all still works", async ({ page }) => {

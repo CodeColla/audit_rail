@@ -34,6 +34,17 @@ def _next_run(conn, task_id):
         .order_by(runs.c.due_at).limit(1)).mappings().first()
 
 
+def _last_done_run(conn, task_id):
+    """issue #13 follow-up: a recurring task's own `status` never becomes 'completed' — only
+    a one-off task's does, once nothing is left to schedule (tasks_engine.complete_run). The
+    "Completed" tab needs a way to show a recurring task's most recent finished occurrence
+    even though the task itself stays 'active' forever."""
+    runs = t("task_runs")
+    return conn.execute(
+        select(runs).where(runs.c.task_id == task_id, runs.c.status == "done")
+        .order_by(runs.c.completed_at.desc()).limit(1)).mappings().first()
+
+
 def _norm(vals: dict) -> dict:
     """Empty/whitespace strings -> None, so a form clearing a date sends "" and the column
     ends up NULL rather than tripping an iso_ts CHECK. Copied, not imported, per this
@@ -140,7 +151,15 @@ def list_tasks(mine: bool = Query(False),
                conn=Depends(get_conn)):
     tasks = t("tasks")
     q = select(tasks).where(tasks.c.tenant_id == user.tenant_id).order_by(tasks.c.next_due_at)
-    if status != "all":
+    if status == "completed":
+        # "Completed" means "has at least one done occurrence", not "is permanently
+        # finished" — a recurring task belongs here too, alongside a one-off task whose own
+        # status really did flip to 'completed'. Without the OR, a recurring task's
+        # completed occurrences were invisible everywhere except its own run history.
+        runs = t("task_runs")
+        has_done = select(runs.c.task_id).where(runs.c.status == "done").distinct()
+        q = q.where((tasks.c.status == "completed") | (tasks.c.id.in_(has_done)))
+    elif status != "all":
         q = q.where(tasks.c.status == status)
     if mine:
         q = q.where(tasks.c.assignee_member_id == _member_id(
@@ -148,9 +167,11 @@ def list_tasks(mine: bool = Query(False),
     out = []
     for task in conn.execute(q).mappings():
         nr = _next_run(conn, task["id"])
+        ldr = _last_done_run(conn, task["id"])
         out.append({**dict(task),
                     "next_run": dict(nr) if nr else None,
-                    "run_status": nr["status"] if nr else "none"})
+                    "run_status": nr["status"] if nr else "none",
+                    "last_done_run": dict(ldr) if ldr else None})
     return out
 
 
@@ -171,13 +192,19 @@ def calendar(month: str = Query(..., pattern=r"^\d{4}-\d{2}$"),
 @router.get("/{task_id}")
 def task_detail(task_id: str, user: Principal = Depends(require("tasks", "view")),
                 conn=Depends(get_conn)):
-    tasks, runs = t("tasks"), t("task_runs")
+    tasks, runs, ev = t("tasks"), t("task_runs"), t("evidence")
     task = conn.execute(select(tasks).where(
         tasks.c.id == task_id, tasks.c.tenant_id == user.tenant_id)).mappings().first()
     if task is None:
         raise HTTPException(404, "task not found")
-    run_rows = conn.execute(select(runs).where(runs.c.task_id == task_id)
-                            .order_by(runs.c.due_at.desc())).mappings().all()
+    # issue #13: a run's attached evidence was never surfaced here at all — the drawer's
+    # Run History showed only date/status/notes, so completing a task with a file left no
+    # visible trace of it anywhere in the task view. OUTER join: most runs have no evidence.
+    run_rows = conn.execute(
+        select(runs, ev.c.title.label("evidence_title"))
+        .select_from(runs.outerjoin(ev, runs.c.evidence_id == ev.c.id))
+        .where(runs.c.task_id == task_id)
+        .order_by(runs.c.due_at.desc())).mappings().all()
     # Same shape as list_tasks: `next_run`/`run_status` are what the UI's Complete action
     # keys off, and were missing here entirely — a task detail fetched straight from
     # /tasks/{id} (as the drawer does) could never show a Complete button, even with a
