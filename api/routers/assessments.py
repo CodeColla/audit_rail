@@ -153,10 +153,15 @@ def create_assessment(body: AssessmentIn, user: Principal = Depends(require("aud
 
 
 @router.get("")
-def list_assessments(user: Principal = Depends(require("audits", "view")), conn=Depends(get_conn)):
+def list_assessments(q: str | None = Query(None, description="search title and bank name"),
+                     user: Principal = Depends(require("audits", "view")), conn=Depends(get_conn)):
     a = t("assessments")
-    rows = conn.execute(select(a).where(a.c.tenant_id == user.tenant_id)
-                        .order_by(a.c.created_at.desc())).mappings().all()
+    stmt = select(a).where(a.c.tenant_id == user.tenant_id).order_by(a.c.created_at.desc())
+    if q:
+        like = f"%{q.lower()}%"
+        stmt = stmt.where(func.lower(a.c.title).like(like)
+                          | func.lower(func.coalesce(a.c.bank_name, "")).like(like))
+    rows = conn.execute(stmt).mappings().all()
     out = []
     for r in rows:
         total, answered, _, verdict, _pct = _progress(conn, r["id"], r["template_id"])
@@ -420,8 +425,8 @@ def export_answers(assessment_id: str, caller: Principal = Depends(get_caller),
 def questions_grid(assessment_id: str, status: str | None = Query(None),
                    caller: Principal = Depends(get_caller), conn=Depends(get_conn)):
     row = _access(conn, caller, assessment_id)
-    q, s, resp, re_ = (t("questions"), t("template_sections"), t("responses"),
-                       t("response_evidence"))
+    q, s, resp, re_, rd = (t("questions"), t("template_sections"), t("responses"),
+                          t("response_evidence"), t("response_documents"))
     best = _best_controls(conn, row["template_id"])
     responses = {r["question_id"]: r for r in conn.execute(
         select(resp).where(resp.c.assessment_id == assessment_id)).mappings()}
@@ -430,6 +435,11 @@ def questions_grid(assessment_id: str, status: str | None = Query(None),
     ev_counts = dict(conn.execute(
         select(re_.c.response_id, func.count()).where(re_.c.response_id.in_(resp_ids))
         .group_by(re_.c.response_id)).all()) if resp_ids else {}
+    # issue #13: the grid showed an Evidence count but no Documents one, even though a
+    # point can carry both — same shape, one table over.
+    doc_counts = dict(conn.execute(
+        select(rd.c.response_id, func.count()).where(rd.c.response_id.in_(resp_ids))
+        .group_by(rd.c.response_id)).all()) if resp_ids else {}
     rows = conn.execute(
         select(q, s.c.title.label("section"))
         .join(s, q.c.section_id == s.c.id, isouter=True)
@@ -447,6 +457,7 @@ def questions_grid(assessment_id: str, status: str | None = Query(None),
             "response_value": rr["response_value"] if rr else None,
             "workflow_status": rr["workflow_status"] if rr else "open",
             "evidence_count": ev_counts.get(rr["id"], 0) if rr else 0,
+            "document_count": doc_counts.get(rr["id"], 0) if rr else 0,
         }
         if status and item["workflow_status"] != status:
             continue
@@ -554,6 +565,7 @@ def response_detail(assessment_id: str, question_id: str,
     # separate store from evidence attached to this response directly — a distinct key,
     # never merged into `evidence`, so nothing downstream can silently double-count.
     inherited_evidence = []
+    inherited_documents = []
     if best:
         ec, ev2 = t("evidence_controls"), t("evidence")
         inherited_evidence = [dict(x) for x in conn.execute(
@@ -561,6 +573,15 @@ def response_detail(assessment_id: str, question_id: str,
             .join(ec, ec.c.evidence_id == ev2.c.id)
             .where(ec.c.control_id == best["cid"])
             .order_by(ev2.c.valid_until.asc().nullslast())).mappings()]
+        # Same idea as inherited_evidence, one table over (control_documents, P4-S5's
+        # doc-linking counterpart) — a policy attached to the mapped control shows here too,
+        # badged "via control", never merged into the direct `documents` list below.
+        cd, doc2 = t("control_documents"), t("documents")
+        inherited_documents = [dict(x) for x in conn.execute(
+            select(doc2.c.id, doc2.c.title, doc2.c.document_type)
+            .join(cd, cd.c.document_id == doc2.c.id)
+            .where(cd.c.control_id == best["cid"])
+            .order_by(doc2.c.title)).mappings()]
     # P7-S1: Document / Incident / Asset, alongside evidence — same shape (a join table off
     # `responses.id`, queried only when a response row exists), so an unanswered question
     # shows none of them rather than raising, exactly like `evidence` above.
@@ -583,10 +604,11 @@ def response_detail(assessment_id: str, question_id: str,
             .where(ra.c.response_id == rr["id"])).mappings()]
     return {
         "question": {"id": ques["id"], "number": ques["number"], "text": ques["text"]},
-        "mapped_control": {"code": best["code"], "statement": best["statement"]} if best else None,
+        "mapped_control": {"id": best["cid"], "code": best["code"], "statement": best["statement"]} if best else None,
         "response": dict(rr) if rr else None,
         "revisions": revisions, "evidence": evidence, "inherited_evidence": inherited_evidence,
-        "documents": documents, "incidents": incidents, "assets": assets,
+        "documents": documents, "inherited_documents": inherited_documents,
+        "incidents": incidents, "assets": assets,
         "thread": messages, "findings": findings,
     }
 
@@ -617,6 +639,32 @@ def link_evidence(assessment_id: str, question_id: str, body: LinkEvidenceIn,
         if not already:
             conn.execute(insert(re_).values(
                 response_id=rid, evidence_id=body.evidence_id))
+    return {"ok": True}
+
+
+@router.delete("/{assessment_id}/responses/{question_id}/evidence/{evidence_id}")
+def unlink_evidence(assessment_id: str, question_id: str, evidence_id: str,
+                    user: Principal = Depends(require("audits", "edit"))):
+    # Gated on .edit, not .delete: unlinking removes a RELATIONSHIP, not a record — same
+    # convention as unlink_control_evidence (api/routers/library.py) and unlink_control
+    # (api/routers/evidence.py). Only detaches a DIRECTLY-linked item; evidence the question
+    # sees via its mapped control (inherited_evidence) has no row here to delete at all — see
+    # unlink_control_evidence for that path.
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "response not found")
+        re_ = t("response_evidence")
+        conn.execute(sqldelete(re_).where(
+            re_.c.tenant_id == user.tenant_id, re_.c.response_id == rid,
+            re_.c.evidence_id == evidence_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="response.evidence_unlinked", entity_type="response", entity_id=rid,
+                 detail={"evidence_id": evidence_id})
     return {"ok": True}
 
 
@@ -653,6 +701,27 @@ def link_document(assessment_id: str, question_id: str, body: LinkDocumentIn,
     return {"ok": True}
 
 
+@router.delete("/{assessment_id}/responses/{question_id}/documents/{document_id}")
+def unlink_document(assessment_id: str, question_id: str, document_id: str,
+                    user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "response not found")
+        rd = t("response_documents")
+        conn.execute(sqldelete(rd).where(
+            rd.c.tenant_id == user.tenant_id, rd.c.response_id == rid,
+            rd.c.document_id == document_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="response.document_unlinked", entity_type="response", entity_id=rid,
+                 detail={"document_id": document_id})
+    return {"ok": True}
+
+
 class LinkIncidentIn(StrictModel):
     incident_id: str
 
@@ -681,6 +750,27 @@ def link_incident(assessment_id: str, question_id: str, body: LinkIncidentIn,
     return {"ok": True}
 
 
+@router.delete("/{assessment_id}/responses/{question_id}/incidents/{incident_id}")
+def unlink_incident(assessment_id: str, question_id: str, incident_id: str,
+                    user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "response not found")
+        ri = t("response_incidents")
+        conn.execute(sqldelete(ri).where(
+            ri.c.tenant_id == user.tenant_id, ri.c.response_id == rid,
+            ri.c.incident_id == incident_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="response.incident_unlinked", entity_type="response", entity_id=rid,
+                 detail={"incident_id": incident_id})
+    return {"ok": True}
+
+
 class LinkAssetIn(StrictModel):
     asset_id: str
 
@@ -706,6 +796,27 @@ def link_asset(assessment_id: str, question_id: str, body: LinkAssetIn,
             ra.c.asset_id == body.asset_id)).first()
         if not already:
             conn.execute(insert(ra).values(response_id=rid, asset_id=body.asset_id))
+    return {"ok": True}
+
+
+@router.delete("/{assessment_id}/responses/{question_id}/assets/{asset_id}")
+def unlink_asset(assessment_id: str, question_id: str, asset_id: str,
+                 user: Principal = Depends(require("audits", "edit"))):
+    with engine.begin() as conn:
+        _access(conn, user, assessment_id)
+        resp = t("responses")
+        rid = conn.execute(select(resp.c.id).where(
+            resp.c.assessment_id == assessment_id,
+            resp.c.question_id == question_id)).scalar()
+        if rid is None:
+            raise HTTPException(404, "response not found")
+        ra = t("response_assets")
+        conn.execute(sqldelete(ra).where(
+            ra.c.tenant_id == user.tenant_id, ra.c.response_id == rid,
+            ra.c.asset_id == asset_id))
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="response.asset_unlinked", entity_type="response", entity_id=rid,
+                 detail={"asset_id": asset_id})
     return {"ok": True}
 
 

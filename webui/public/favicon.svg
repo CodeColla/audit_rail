@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Audit Rail">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Auditrail">
   <!-- Audit Rail (P6-S6). "AR" is Inter Bold with its outlines BAKED AS PATHS, not a <text>
        element, and that is not a stylistic choice: this machine has no Inter installed
        (fc-match sans-serif -> DejaVu Sans), so a <text> favicon rasterises into the PNG icons

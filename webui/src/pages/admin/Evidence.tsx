@@ -13,7 +13,7 @@ import { LookupSelect } from "../registers/Registers";
 
 type Ev = {
   id: string; title: string; evidence_type: string; issued_at: string | null; valid_until: string | null;
-  status: string; linked_controls: number; medium: string;
+  status: string; linked_controls: number; linked_audits: number; medium: string;
   original_name: string | null; size_bytes: number | null; mime_type: string | null;
 };
 
@@ -270,6 +270,10 @@ export default function Evidence() {
     {
       key: "links", label: "Links", sortValue: (e) => e.linked_controls,
       render: (e) => <span className="tnum">{e.linked_controls} controls</span>,
+    },
+    {
+      key: "linked_audits", label: "Audit points", sortValue: (e) => e.linked_audits,
+      render: (e) => <span className="tnum">{e.linked_audits} audits</span>,
     },
     {
       key: "status", label: "Status", sortValue: (e) => e.status,

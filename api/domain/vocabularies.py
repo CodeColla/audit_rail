@@ -98,7 +98,7 @@ KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
 #: theoretical risk: the bulk importer was first written against invented spellings
 #: ("MITIGATE", "ONBOARDING", "RESTRICTED") and every affected row failed with an opaque
 #: constraint error instead of a readable one.
-TREATMENTS = ("MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED")
+TREATMENTS = ("MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED", "PENDING")
 CRITICALITIES = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 CLASSIFICATIONS = ("PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET")
 TP_STATUSES = ("ACTIVE", "OFFBOARDING", "TERMINATED")

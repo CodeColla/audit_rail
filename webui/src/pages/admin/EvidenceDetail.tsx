@@ -12,12 +12,16 @@ import { useDebounced } from "../../lib/useDebounced";
 import { LookupSelect } from "../registers/Registers";
 
 type LinkedControl = { id: string; code: string; statement: string };
+type LinkedAuditPoint = {
+  assessment_id: string; assessment_title: string; bank_name: string;
+  question_id: string; number: string; text: string;
+};
 type EvidenceDetailRow = {
   id: string; title: string; evidence_type: string; medium: string; state: string;
   issued_at: string | null; valid_until: string | null; notes: string | null;
   external_url: string | null; file_id: string | null; status: string;
   original_name: string | null; mime_type: string | null; size_bytes: number | null;
-  linked_controls: LinkedControl[];
+  linked_controls: LinkedControl[]; linked_audit_points: LinkedAuditPoint[];
 };
 type ControlRow = { id: string; code: string; statement: string };
 
@@ -152,6 +156,96 @@ function LinkControls({ ev, canEdit }: { ev: EvidenceDetailRow; canEdit: boolean
   );
 }
 
+/**
+ * Issue #13: "Audits This Proves", the audit-point mirror of "Controls This Proves" above.
+ * A `response_evidence` row's natural key is (response_id, evidence_id), and a response only
+ * exists once its question has been answered (assessments.py's link_evidence: "answer the
+ * question before linking evidence") — so "an audit" alone isn't the linkable unit, a
+ * two-step assessment -> question picker is. Link reuses the EXISTING
+ * `POST /assessments/{aid}/responses/{qid}/evidence`; unlink reuses the shared
+ * `DELETE .../evidence/{evidence_id}` route the Workspace drawer already uses (Phase 1) —
+ * no new backend routes for either direction.
+ */
+function LinkAudits({ ev, canEdit }: { ev: EvidenceDetailRow; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [picking, setPicking] = useState(false);
+  const [assessmentId, setAssessmentId] = useState("");
+  const [err, setErr] = useState("");
+  const assessments = useQuery({
+    queryKey: ["assessments-lite"], enabled: picking,
+    queryFn: () => get<{ id: string; title: string; bank_name: string }[]>("/assessments"),
+  });
+  const questions = useQuery({
+    queryKey: ["grid", assessmentId], enabled: picking && !!assessmentId,
+    queryFn: () => get<{ question_id: string; number: string; text: string }[]>(
+      `/assessments/${assessmentId}/questions`),
+  });
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["evidence-detail", ev.id] });
+    qc.invalidateQueries({ queryKey: ["evidence"] });
+    qc.invalidateQueries({ queryKey: ["resp"] });   // the Workspace drawer's own cache
+  };
+  const link = useMutation({
+    mutationFn: (question_id: string) =>
+      api.post(`/assessments/${assessmentId}/responses/${question_id}/evidence`, { evidence_id: ev.id }),
+    onSuccess: () => { setErr(""); setPicking(false); setAssessmentId(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not link — answer the question first.")),
+  });
+  const unlink = useMutation({
+    mutationFn: (p: { assessment_id: string; question_id: string }) =>
+      api.delete(`/assessments/${p.assessment_id}/responses/${p.question_id}/evidence/${ev.id}`),
+    onSuccess: () => { setErr(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not unlink.")),
+  });
+  const linkedQIds = new Set(
+    ev.linked_audit_points.filter((p) => p.assessment_id === assessmentId).map((p) => p.question_id));
+  const pickableQuestions = (questions.data ?? []).filter((q) => !linkedQIds.has(q.question_id));
+
+  return (
+    <Card>
+      <div className="mb-2.5 flex items-center justify-between">
+        <div className="eyebrow">Audits this proves · {ev.linked_audit_points.length}</div>
+        {canEdit && <button onClick={() => setPicking((s) => !s)}
+          className="text-label font-medium text-accent"><Plus size={15} strokeWidth={2.4} /> Link an audit point</button>}
+      </div>
+      {ev.linked_audit_points.length === 0 && (
+        <p className="text-label text-txt3">Not linked to any audit point yet.</p>)}
+      {ev.linked_audit_points.map((p) => (
+        <div key={p.question_id} className="flex items-center gap-2.5 border-t border-bd py-2 text-label first:border-t-0">
+          <Link to={`/audits/${p.assessment_id}`} className="min-w-0 flex-1 truncate text-txt2 hover:text-accent">
+            <span className="font-mono text-txt3">No. {p.number}</span> · {p.bank_name} — {p.assessment_title}
+          </Link>
+          {canEdit && <button
+            onClick={() => unlink.mutate({ assessment_id: p.assessment_id, question_id: p.question_id })}
+            className="shrink-0 text-caption text-bad hover:underline">remove</button>}
+        </div>))}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
+      {picking && (
+        <div className="mt-2 flex flex-col gap-2">
+          <select value={assessmentId} onChange={(e) => setAssessmentId(e.target.value)} className={inputCls}>
+            <option value="">— pick an audit —</option>
+            {(assessments.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.bank_name} — {a.title}</option>))}
+          </select>
+          {assessmentId && (
+            <div className="max-h-56 overflow-y-auto rounded-md border border-bd">
+              {questions.isPending ? (
+                <div className="px-3 py-2 text-label text-txt3">Loading…</div>
+              ) : pickableQuestions.length === 0 ? (
+                <div className="px-3 py-2 text-label text-txt3">Nothing left to link in this audit.</div>
+              ) : pickableQuestions.map((q) => (
+                <button key={q.question_id} onClick={() => link.mutate(q.question_id)}
+                  className="flex w-full items-start gap-2 px-3 py-2 text-left text-label hover:bg-canvas">
+                  <span className="shrink-0 font-mono text-txt3">No. {q.number}</span>
+                  <span className="min-w-0 flex-1 truncate text-txt2">{q.text}</span>
+                </button>))}
+            </div>
+          )}
+        </div>)}
+    </Card>
+  );
+}
+
 export default function EvidenceDetail() {
   const { id = "" } = useParams();
   const nav = useNavigate();
@@ -221,7 +315,7 @@ export default function EvidenceDetail() {
           {isLink ? (
             <>
               <p className="mb-2 text-label text-txt2">
-                Held outside the vault. Audit Rail records that it exists and when it expires;
+                Held outside the vault. Auditrail records that it exists and when it expires;
                 the bytes live at:</p>
               <a href={ev.external_url ?? "#"} target="_blank" rel="noopener noreferrer"
                 className="break-all text-label font-medium text-accent hover:underline">
@@ -242,6 +336,10 @@ export default function EvidenceDetail() {
           {ev.notes && <p className="mt-3 border-t border-bd pt-3 text-label text-txt2">{ev.notes}</p>}
         </Card>
         <LinkControls ev={ev} canEdit={canEdit} />
+      </div>
+
+      <div className="mb-4">
+        <LinkAudits ev={ev} canEdit={canEdit} />
       </div>
 
       {ev.file_id && (

@@ -341,7 +341,7 @@ CREATE TABLE risks (
     residual_likelihood  smallint CHECK (residual_likelihood BETWEEN 1 AND 5),
     residual_impact      smallint CHECK (residual_impact BETWEEN 1 AND 5),
     residual_score       smallint GENERATED ALWAYS AS (residual_likelihood * residual_impact) STORED,
-    treatment            text CHECK (treatment IN ('MITIGATED', 'ACCEPTED', 'AVOIDED', 'TRANSFERRED')),
+    treatment            text CHECK (treatment IN ('MITIGATED', 'ACCEPTED', 'AVOIDED', 'TRANSFERRED', 'PENDING')),
     note                 text,
     status               text NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'CLOSED')),
     next_review_at       iso_ts,
@@ -1112,6 +1112,11 @@ CREATE TABLE evidence (
     requirement_id        text,                     -- NEW: which control requirement this satisfies
     requested_by_control_id text,
     requested_by_member_id  text REFERENCES tenant_members(id),
+    -- issue #13: which task completion produced this artifact, if any — lets the vault
+    -- list hide task-completion uploads by default instead of mixing them in with
+    -- deliberately-curated evidence. NULL for everything uploaded any other way.
+    -- FK added in CROSS-LAYER section: task_runs is declared later in this file.
+    source_task_run_id   text,
     due_at                iso_ts,                   -- for state=REQUESTED
     issued_at             iso_ts,
     valid_until           iso_ts,                   -- ***freshness: a 2023 VAPT is not 2026 evidence***
@@ -1671,6 +1676,9 @@ ALTER TABLE obligations ADD CONSTRAINT obligations_clause_fk
     FOREIGN KEY (clause_id, tenant_id) REFERENCES framework_clauses (id, tenant_id) ON DELETE SET NULL (clause_id);
 ALTER TABLE training_assignments ADD CONSTRAINT ta_evidence_fk
     FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence (id, tenant_id) ON DELETE RESTRICT;
+ALTER TABLE evidence ADD CONSTRAINT evidence_source_task_run_fk
+    FOREIGN KEY (source_task_run_id, tenant_id) REFERENCES task_runs (id, tenant_id)
+    ON DELETE SET NULL (source_task_run_id);
 ALTER TABLE third_party_assessments ADD CONSTRAINT tpa_evidence_fk
     FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence (id, tenant_id) ON DELETE RESTRICT;
 ALTER TABLE access_review_campaigns ADD CONSTRAINT arc_document_fk

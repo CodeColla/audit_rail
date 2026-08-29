@@ -20,7 +20,9 @@ type Risk = {
 };
 type LinkRow = { id: string; target_kind: string; target_id: string; label: string | null; note: string | null };
 type RiskDetail = Risk & {
-  description: string | null; note: string | null;
+  description: string | null; note: string | null; next_review_at: string | null;
+  owner_person_id: string | null; reported_by_person_id: string | null;
+  reviewed_by_person_id: string | null;
   inherent_likelihood: number | null; inherent_impact: number | null;
   residual_likelihood: number | null; residual_impact: number | null; links: LinkRow[];
   reported_by_name: string | null; reviewed_by_name: string | null;
@@ -60,7 +62,7 @@ function useDrawerRoute(base: string) {
 const BAND_TONE: Record<string, string> = { LOW: "ok", MEDIUM: "warn", HIGH: "bad", CRITICAL: "bad" };
 const CRIT_TONE: Record<string, string> = { LOW: "na", MEDIUM: "warn", HIGH: "bad", CRITICAL: "bad" };
 const CLASS_TONE: Record<string, string> = { PUBLIC: "na", INTERNAL: "info", CONFIDENTIAL: "warn", SECRET: "bad" };
-const TREATMENTS = ["MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED"];
+const TREATMENTS = ["MITIGATED", "ACCEPTED", "AVOIDED", "TRANSFERRED", "PENDING"];
 const CRITICALITIES = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const CLASSES = ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "SECRET"];
 const cap = (s: string | null) => (s ? s.charAt(0) + s.slice(1).toLowerCase() : "—");
@@ -95,11 +97,20 @@ export function LookupSelect({ kind, value, onChange, className }: {
   );
 }
 
-export function OwnerSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function OwnerSelect({ value, onChange, label }: {
+  value: string; onChange: (v: string) => void;
+  /** Wrapping a <select> in a bare <label> computes its accessible name from the WHOLE
+   * subtree, options included — harmless until two such selects share an overlapping
+   * option pool (e.g. Owner/Reported by/Reviewed by all drawing from the same people list),
+   * at which point their names collide. Pass a distinct `label` (sets aria-label, which
+   * takes precedence) wherever more than one of these appears in the same form. */
+  label?: string;
+}) {
   const people = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
   const active = (people.data ?? []).filter((p) => p.effective_state === "ACTIVE");
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className={inputCls + " mt-1"}>
+    <select value={value} onChange={(e) => onChange(e.target.value)} aria-label={label}
+      className={inputCls + " mt-1"}>
       <option value="">— unassigned —</option>
       {active.map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
     </select>
@@ -180,6 +191,110 @@ function NewRiskModal({ onClose }: { onClose: () => void }) {
         {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
         <button disabled={!f.title || create.isPending} className="btn btn-primary justify-center disabled:opacity-50">
           {create.isPending ? "Creating…" : "Create risk"}</button>
+      </form>
+    </Modal>
+  );
+}
+
+const RISK_STATUSES = ["OPEN", "CLOSED"];
+
+/**
+ * Issue #13: risks had no edit form at all — only New (create) and Delete. Built from
+ * scratch and checked field-by-field against `RiskPatch` (api/routers/registers.py), not
+ * copied from `NewRiskModal` — that form itself never exposes `description` or `note` as
+ * inputs (both only ever arrive via bulk import), which is exactly the "silently omitted
+ * field" failure mode Tasks' `cadence_months` gap already showed once in this codebase.
+ * `status` is a plain, independent select: the project decided a real treatment must NOT
+ * auto-close a risk — a human closes it explicitly, here, same as they set it.
+ */
+function EditRiskModal({ risk, onClose }: { risk: RiskDetail; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [f, setF] = useState({
+    title: risk.title, reference: risk.reference ?? "", description: risk.description ?? "",
+    category: risk.category ?? "",
+    owner_person_id: risk.owner_person_id ?? "",
+    reported_by_person_id: risk.reported_by_person_id ?? "",
+    reviewed_by_person_id: risk.reviewed_by_person_id ?? "",
+    il: risk.inherent_likelihood != null ? String(risk.inherent_likelihood) : "",
+    ii: risk.inherent_impact != null ? String(risk.inherent_impact) : "",
+    rl: risk.residual_likelihood != null ? String(risk.residual_likelihood) : "",
+    ri: risk.residual_impact != null ? String(risk.residual_impact) : "",
+    treatment: risk.treatment ?? "", note: risk.note ?? "",
+    status: risk.status, next_review_at: risk.next_review_at?.slice(0, 10) ?? "",
+  });
+  const [err, setErr] = useState("");
+  const set = (k: string) => (v: string) => setF({ ...f, [k]: v });
+  const save = useMutation({
+    mutationFn: () => api.patch(`/risks/${risk.id}`, {
+      title: f.title, reference: f.reference || null, description: f.description || null,
+      category: f.category || null,
+      owner_person_id: f.owner_person_id || null,
+      reported_by_person_id: f.reported_by_person_id || null,
+      reviewed_by_person_id: f.reviewed_by_person_id || null,
+      inherent_likelihood: f.il ? +f.il : null, inherent_impact: f.ii ? +f.ii : null,
+      residual_likelihood: f.rl ? +f.rl : null, residual_impact: f.ri ? +f.ri : null,
+      treatment: f.treatment || null, note: f.note || null,
+      status: f.status, next_review_at: f.next_review_at || null,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["risks"] });
+      qc.invalidateQueries({ queryKey: ["risk", risk.id] });
+      onClose();
+    },
+    onError: (e: any) => setErr(errText(e, "Could not save.")),
+  });
+  const submit = (e: FormEvent) => { e.preventDefault(); if (f.title.trim()) save.mutate(); };
+  return (
+    <Modal open onClose={onClose} title="Edit risk" size="lg">
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <label className="text-sm font-medium">Title *
+          <input required value={f.title} onChange={(e) => set("title")(e.target.value)}
+            className={inputCls + " mt-1"} /></label>
+        <label className="text-sm font-medium">Description
+          <textarea value={f.description} onChange={(e) => set("description")(e.target.value)}
+            className={cn(inputCls, "mt-1 min-h-[56px]")} /></label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-sm font-medium">Reference
+            <input value={f.reference} onChange={(e) => set("reference")(e.target.value)}
+              className={inputCls + " mt-1"} /></label>
+          <label className="text-sm font-medium">Category
+            <LookupSelect kind="risk_category" value={f.category} onChange={set("category")} /></label>
+        </div>
+        <label className="text-sm font-medium">Owner
+          <OwnerSelect value={f.owner_person_id} onChange={set("owner_person_id")} label="Owner" /></label>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-sm font-medium">Reported by
+            <OwnerSelect value={f.reported_by_person_id} onChange={set("reported_by_person_id")} label="Reported by" /></label>
+          <label className="text-sm font-medium">Reviewed by
+            <OwnerSelect value={f.reviewed_by_person_id} onChange={set("reviewed_by_person_id")} label="Reviewed by" /></label>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-md border border-bd p-2.5">
+            <div className="eyebrow mb-1">Inherent</div>
+            <LikelihoodImpact l={f.il} i={f.ii} onL={set("il")} onI={set("ii")} /></div>
+          <div className="rounded-md border border-bd p-2.5">
+            <div className="eyebrow mb-1">Residual (after treatment)</div>
+            <LikelihoodImpact l={f.rl} i={f.ri} onL={set("rl")} onI={set("ri")} /></div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <label className="text-sm font-medium">Treatment
+            <select value={f.treatment} onChange={(e) => set("treatment")(e.target.value)} className={inputCls + " mt-1"}>
+              <option value="">—</option>{TREATMENTS.map((t) => <option key={t} value={t}>{cap(t)}</option>)}
+            </select></label>
+          <label className="text-sm font-medium">Status
+            <select value={f.status} onChange={(e) => set("status")(e.target.value)} className={inputCls + " mt-1"}>
+              {RISK_STATUSES.map((s) => <option key={s} value={s}>{cap(s)}</option>)}
+            </select></label>
+        </div>
+        <label className="text-sm font-medium">Next review
+          <input type="date" value={f.next_review_at} onChange={(e) => set("next_review_at")(e.target.value)}
+            className={inputCls + " mt-1"} /></label>
+        <label className="text-sm font-medium">Note
+          <textarea value={f.note} onChange={(e) => set("note")(e.target.value)}
+            className={cn(inputCls, "mt-1 min-h-[56px]")} /></label>
+        {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
+        <button disabled={!f.title.trim() || save.isPending} className="btn btn-primary justify-center disabled:opacity-50">
+          {save.isPending ? "Saving…" : "Save"}</button>
       </form>
     </Modal>
   );
@@ -305,6 +420,8 @@ function AttachEvidenceCard({ base, invalidateKey, rows }: {
 
 function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const qc = useQueryClient();
+  const can = useCan();
+  const [editing, setEditing] = useState(false);
   const { data: r } = useQuery({ queryKey: ["risk", id], queryFn: () => get<RiskDetail>(`/risks/${id}`) });
   const del = useMutation({
     mutationFn: () => api.delete(`/risks/${id}`),
@@ -317,10 +434,12 @@ function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   if (!r) return <Drawer open onClose={onClose} title="Loading…"><div /></Drawer>;
   return (
     <Drawer open onClose={onClose} sub={`RISK${r.reference ? " · " + r.reference : ""}`} title={r.title}>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Pill tone={r.status === "OPEN" ? "warn" : "ok"}>{cap(r.status)}</Pill>
         {r.treatment && <Pill tone="info">{cap(r.treatment)}</Pill>}
         {r.category && <span className="rounded border border-bd bg-canvas px-2 py-0.5 text-caption text-txt2">{r.category}</span>}
+        {can("risks", "edit") && !editing && (
+          <button onClick={() => setEditing(true)} className="text-label font-medium text-accent">Edit</button>)}
       </div>
       {r.description && <p className="text-sm text-txt2">{r.description}</p>}
       <div className="grid grid-cols-2 gap-3">
@@ -357,6 +476,7 @@ function RiskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       </div>
       {r.note && <Card><div className="eyebrow mb-1">Note</div><p className="text-label text-txt2">{r.note}</p></Card>}
       <button onClick={() => del.mutate()} className="mt-2 text-label text-txt3 hover:text-bad">Delete this risk</button>
+      {editing && <EditRiskModal risk={r} onClose={() => setEditing(false)} />}
     </Drawer>
   );
 }

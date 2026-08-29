@@ -48,6 +48,10 @@ export async function uploadEvidence(file: File, opts: {
   evidenceType?: string;
   issuedAt?: string;
   validUntil?: string;
+  /** issue #13: set when this upload is produced by completing a task run, so the general
+   * vault list (list_evidence) can hide it by default instead of mixing task-completion
+   * artifacts in with deliberately-curated evidence. */
+  sourceTaskRunId?: string;
 } = {}): Promise<{ id: string }> {
   if (file.size > MAX_UPLOAD_MB * 1024 * 1024) throw new UploadTooLarge();
 
@@ -58,6 +62,7 @@ export async function uploadEvidence(file: File, opts: {
   fd.append("evidence_type", opts.evidenceType || "other");
   if (opts.issuedAt) fd.append("issued_at", opts.issuedAt);
   if (opts.validUntil) fd.append("valid_until", opts.validUntil);
+  if (opts.sourceTaskRunId) fd.append("source_task_run_id", opts.sourceTaskRunId);
   fd.append("file", file);
 
   const r = await api.post("/evidence", fd);

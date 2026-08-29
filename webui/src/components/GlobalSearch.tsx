@@ -42,6 +42,13 @@ const SOURCES = [
     title: (r: any) => r.name, sub: (r: any) => r.category },
   { key: "people", label: "People", url: "/people", to: () => `/people`,
     title: (r: any) => r.full_name, sub: (r: any) => r.department },
+  // API path and frontend list-page path diverge for these two (unlike every source
+  // above, where they happen to be the same string) — listPath is what "See all" navigates
+  // to, url is what the search request itself hits.
+  { key: "controls", label: "Controls", url: "/library/controls", listPath: "/controls",
+    to: (id: string) => `/controls/view/${id}`, title: (r: any) => r.code, sub: (r: any) => r.statement },
+  { key: "audits", label: "Audits", url: "/assessments", listPath: "/audits",
+    to: (id: string) => `/audits/${id}`, title: (r: any) => r.bank_name, sub: (r: any) => r.title },
 ] as const;
 
 const PER_SOURCE = 5;
@@ -76,7 +83,7 @@ export function GlobalSearch() {
         // blank the whole panel — hence allSettled and a per-source skip.
         const rows = r.status === "fulfilled" ? r.value : [];
         return {
-          key: s.key, label: s.label, path: s.url,
+          key: s.key, label: s.label, path: "listPath" in s ? s.listPath : s.url,
           hits: rows.slice(0, PER_SOURCE).map((row) => ({
             id: row.id, label: s.title(row), sub: s.sub(row),
           })),
