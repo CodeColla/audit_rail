@@ -14,6 +14,8 @@ data/                       # the blob vault: every tenant's uploaded evidence
 node_modules/
 webui/node_modules/
 webui/dist/                 # rebuilt in the UI image's build stage
+landingpage/node_modules/
+landingpage/dist/           # rebuilt in the landing image's build stage
 __pycache__/
 **/__pycache__/
 *.py[cod]
