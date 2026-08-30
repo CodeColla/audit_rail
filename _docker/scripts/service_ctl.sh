@@ -26,6 +26,7 @@ cd "$REPO"
 REGISTRY="${REGISTRY:-}"                 # e.g. registry.example.com/iesg  (no trailing slash)
 API_IMAGE="${API_IMAGE:-audit-rail-api}"
 UI_IMAGE="${UI_IMAGE:-audit-rail-ui}"
+LANDING_IMAGE="${LANDING_IMAGE:-audit-rail-landing}"
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'
 CYAN=$'\033[0;36m'; BOLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
@@ -41,6 +42,7 @@ ${BOLD}Audit Rail — service control${NC}
   1    api         FastAPI backend                     5007
   2    ui          SPA served by nginx                 8080
   3    postgres    ${DIM}Local dev database only${NC}             5434
+  4    landing     Static marketing site served by nginx  8081
 
   The image tag is derived from git automatically — see below.
 EOF
@@ -53,10 +55,11 @@ case "$CMD" in -h|--help|help) usage; exit 0 ;; esac
 
 # id -> service name
 case "$TARGET" in
-  0) SERVICES=(api ui) ;;                # postgres is dev-only; `all` never touches it
+  0) SERVICES=(api ui landing) ;;        # postgres is dev-only; `all` never touches it
   1) SERVICES=(api) ;;
   2) SERVICES=(ui) ;;
   3) SERVICES=(postgres) ;;
+  4) SERVICES=(landing) ;;
   *) echo "${RED}unknown id: $TARGET${NC}"; usage; exit 2 ;;
 esac
 
@@ -115,7 +118,7 @@ generate_host_sql() {
   echo "  host.sql  $(wc -l < "$out") lines"
 }
 
-image_for() { case "$1" in api) echo "$API_IMAGE" ;; ui) echo "$UI_IMAGE" ;; esac; }
+image_for() { case "$1" in api) echo "$API_IMAGE" ;; ui) echo "$UI_IMAGE" ;; landing) echo "$LANDING_IMAGE" ;; esac; }
 
 build_one() {
   local svc="$1" image; image="$(image_for "$svc")"

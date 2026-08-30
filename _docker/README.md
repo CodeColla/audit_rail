@@ -8,13 +8,17 @@ workflow and are unaffected.
 _docker/
   dockerfile/  audit-rail-api.Dockerfile        python:3.12-slim + uvicorn
                audit-rail-ui.Dockerfile         node build -> nginx:alpine serving the SPA
+               audit-rail-landing.Dockerfile    node build -> nginx:alpine serving the landing site
   compose/     audit-rail-api.compose.yml       API service
                audit-rail-ui.compose.yml        UI service
+               audit-rail-landing.compose.yml   Landing page service
                audit-rail-postgres.compose.yml  LOCAL DEV database only — not a deployment
   scripts/     service_ctl.sh                   build / up / down / logs / push, by numeric id
   ui/          nginx.conf                       the UI container's server block
                entrypoint.sh                    writes the /api forwarding block from API_URL,
                                                 then execs nginx
+  landing/     nginx.conf                       the landing container's server block — no
+                                                entrypoint.sh, no runtime config
   env/         api.env.example                  copy to api.env and fill in
                ui.env.example                   copy to ui.env
   host.sql     GENERATED from db/schema.sql; apply once to your database
@@ -26,10 +30,11 @@ each one you bring up only what belongs there.
 
 | ID | Component | Description | Port |
 | -- | --------- | ----------- | ---- |
-| 0  | all       | api + ui (never postgres) | — |
+| 0  | all       | api + ui + landing (never postgres) | — |
 | 1  | api       | FastAPI backend | 5007 |
 | 2  | ui        | SPA served by nginx | 8080 |
 | 3  | postgres  | **Local dev database only** | 5434 |
+| 4  | landing   | Static marketing site served by nginx | 8081 |
 
 ```bash
 ./_docker/scripts/service_ctl.sh build 0     # build both images, tag derived from git
@@ -196,6 +201,29 @@ while still flashing "Copied ✓". The bearer token is also a header on every re
 HSTS behind it.
 
 **`E2E_TEST_HOOKS` must stay unset.** At `1` it mounts test-only routes under `/api/e2e/*`.
+
+## The landing page
+
+`landingpage/` is a separate, standalone site — the public marketing page, not the product.
+It builds and serves the same way as the UI (`node build -> nginx:alpine`), but simpler:
+
+- **No runtime config, no `entrypoint.sh`.** The one external reference the page makes — the
+  sign-up CTA's URL — is an absolute, cross-origin link (`VITE_SIGNUP_URL`), baked into the
+  bundle at **build** time via `landingpage/.env.example`. Changing it means rebuilding the
+  image with `service_ctl.sh build 4`, not restarting the container.
+- **No shared network.** Unlike the UI, this page has no backend to reach by container name,
+  so `audit-rail-landing.compose.yml` never joins the `audit-rail` network.
+- **Own port**, 8081, so it can run alongside the UI's 8080 on the same host if you want one
+  server fronting both.
+
+```bash
+./_docker/scripts/service_ctl.sh build 4
+./_docker/scripts/service_ctl.sh up 4
+./_docker/scripts/service_ctl.sh logs 4
+```
+
+Point your own nginx (or whatever serves your public domain) at `127.0.0.1:8081` the same way
+the UI section above describes — this container needs nothing else in front of it.
 
 ## Upgrading
 

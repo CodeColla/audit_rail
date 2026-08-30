@@ -1,0 +1,15 @@
+Issue #14 — Need to make a Landing page for Auditrail
+Source: https://github.com/CodeColla/audit_rail/issues/14
+
+Auditrail will be hosted on Public Server as well, where we want to make a Landing page for the Site and also post about it on LinkedIn or any tech blog so people can go visit and try it out.
+
+The Landing page inspiration can be taken from https://www.vanta.com/
+
+What ive notices is Auditrail is a Automate Compliance Platforn , where ISO, SOC2, HIPPA and all these other compliances are taken care of.
+So the Platform should hilight these thing.
+
+TO back the term `Automate Compliance` Down the Line , we will have integration modules that will be used to integrate with several services.
+
+for now this Landing page will be mcompletely in a sepetate folder, in parallel to the web-ui, api folder. name it as landingpage folder.
+
+Since this is customer facing make it fancy are good with animation and informative,
