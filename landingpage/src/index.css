@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: #f4f5f6;
+  color: #0e1a2b;
+  /* Mirrors tailwind.config.js fontFamily.sans, same reasoning as webui/src/index.css: body
+     renders before any utility class applies, so this stays hand-synced with the config. */
+  font-family: -apple-system, BlinkMacSystemFont, "Inter Variable", Inter, "Segoe UI", Roboto,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── The hero surface — ported from webui/src/index.css's .auth-surface/.auth-rails
+   (the sign-in split panel is the only other place in this codebase that gives a big empty
+   background to the brand instead of to product data). Adapted for a full hero section
+   instead of an auth-card backdrop; same recipe otherwise.
+
+   Pure CSS on purpose — no image, no request, nothing async, so it can't shift layout or
+   delay first paint, and can't be tripped by a font-CDN check the way a background image
+   fetch could be. Every colour is an existing token. */
+.hero-surface {
+  background-color: theme("colors.canvas");
+  background-image:
+    radial-gradient(42rem 34rem at 8% -12%, rgba(249, 115, 22, 0.12), transparent 62%),
+    radial-gradient(48rem 38rem at 104% 108%, rgba(14, 26, 43, 0.10), transparent 62%);
+  background-repeat: no-repeat;
+  /* Oversized so the pan below never reveals a hard edge, then drifted via
+     background-position rather than editing the gradients' own "at" coordinates — those are
+     fixed per-value and don't interpolate across a keyframe. A soft, low-opacity blob moving a
+     few percent is nearly invisible to the eye with nothing sharp to track, so the range and
+     speed here are deliberately more generous than they'd need to be for a sharp-edged image. */
+  background-size: 180% 180%;
+  background-position: 0% 0%;
+  animation: hero-drift 16s ease-in-out infinite alternate;
+}
+
+@keyframes hero-drift {
+  from { background-position: 0% 0%; }
+  to   { background-position: 45% 32%; }
+}
+
+/* The grid, drifting exactly one tile (96px) along each pattern's own repeat axis — since the
+   tile is identical at 0 and 96px, the loop point is invisible. Repeating patterns read motion
+   far more clearly than a diffuse gradient at the same pixel speed, which is what actually
+   makes this "a slight touch of motion" rather than the gradient drift alone. */
+.hero-rails {
+  background-image:
+    repeating-linear-gradient(90deg, rgba(14, 26, 43, 0.035) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(0deg,  rgba(14, 26, 43, 0.028) 0 1px, transparent 1px 96px);
+  -webkit-mask-image: radial-gradient(70% 66% at 50% 42%, transparent 0%, #000 88%);
+          mask-image: radial-gradient(70% 66% at 50% 42%, transparent 0%, #000 88%);
+  background-position: 0px 0px, 0px 0px;
+  animation: hero-rails-drift 22s linear infinite;
+}
+
+@keyframes hero-rails-drift {
+  from { background-position: 0px 0px,  0px 0px; }
+  to   { background-position: 96px 0px, 0px 96px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-surface, .hero-rails { animation: none; }
+}
+
+/* The same rails inverted, for the ink-panel CTA band at the bottom of the page — no mask,
+   the panel wants the texture edge to edge (mirrors webui's .auth-rails-dark). */
+.hero-rails-dark {
+  background-image:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px 96px),
+    repeating-linear-gradient(0deg,  rgba(255, 255, 255, 0.05) 0 1px, transparent 1px 96px);
+}

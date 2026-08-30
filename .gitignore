@@ -6,6 +6,7 @@ db/*.db
 data/vault/
 node_modules/
 webui/dist/
+landingpage/dist/
 .pytest_cache/
 *.Zone.Identifier
 *SandBoxSafeFile

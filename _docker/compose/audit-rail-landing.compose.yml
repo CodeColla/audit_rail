@@ -1,0 +1,24 @@
+# Audit Rail — landing page service (static marketing site served by nginx).
+#
+#   ./_docker/scripts/service_ctl.sh up 4
+#   # or directly:
+#   docker compose -f _docker/compose/audit-rail-landing.compose.yml up -d
+#
+# No shared network: unlike the UI, this page has no backend dependency (its only external
+# reference is an absolute VITE_SIGNUP_URL, baked in at build time and resolved by the
+# browser, not the container), so joining the api/ui's `audit-rail` network would be a
+# coupling with no purpose.
+services:
+  audit-rail-landing:
+    build:
+      context: ../..
+      dockerfile: _docker/dockerfile/audit-rail-landing.Dockerfile
+    image: audit-rail-landing
+    container_name: audit-rail-landing
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+    ports:
+      - "8081:80"

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Auditrail">
+  <!-- The accent "t" from the full auditrail wordmark (src/assets/brand/auditrail-logo.svg),
+       re-centered on its own tile. Baked as a path, not text, for the same reason webui's
+       favicon.svg gives: no <text> element renders identically across a machine's installed
+       fonts and a browser's, so PNG icons and the live SVG would drift apart. -->
+  <rect width="64" height="64" rx="14" fill="#0E1A2B"/>
+  <g transform="translate(13.285,10) scale(0.2529) translate(-519,-255)">
+    <path d="M579,255 L607,255 L607,282 L667,282 L667,310 L607,310 L607,401 A28,28 0 0 1 635,429 L579,429 L579,310 L519,310 L519,282 L579,282 Z" fill="#EF6E21"/>
+  </g>
+</svg>
