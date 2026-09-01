@@ -6,15 +6,25 @@ import { uploadEvidence, UploadTooLarge } from "../../lib/evidence";
 import { inputCls, cn, Card, Drawer, Loading, Modal, PageHead, Pill, Table, Td } from "../../lib/ui";
 import { useCan } from "../../lib/auth";
 import { OwnerSelect } from "../registers/Registers";
+import { AttachmentLink } from "../../components/AttachmentLink";
 
+type LastDoneRun = {
+  id: string; due_at: string; completed_at: string | null; evidence_id: string | null;
+};
 type Task = {
   id: string; title: string; description: string | null;
   cadence_months: number | null; frequency: string | null; interval_count: number | null;
   next_due_at: string | null; status: string; assignee_person_id: string | null;
   risk_id: string | null;
   run_status: string; next_run: { id: string } | null;
+  // issue #13: a recurring task's own `status` never becomes "completed" — this is how the
+  // Completed tab shows its most recent finished occurrence anyway (see list_tasks).
+  last_done_run: LastDoneRun | null;
 };
-type Run = { id: string; due_at: string; status: string; notes: string | null };
+type Run = {
+  id: string; due_at: string; status: string; notes: string | null;
+  evidence_id: string | null; evidence_title: string | null;
+};
 type TaskDetail = Task & { runs: Run[] };
 type CalendarRun = { id: string; due_at: string; status: string; title: string; task_id: string };
 type Ev = { id: string; title: string };
@@ -41,25 +51,42 @@ function cadenceLabel(t: Pick<Task, "cadence_months" | "frequency" | "interval_c
 }
 
 /** Shared by create and edit — recurrence, assignee, and the optional risk link. */
-function RecurrenceFields({ f, set }: {
+function RecurrenceFields({ f, set, cadenceMonths }: {
   f: { frequency: string; interval_count: string; assignee_person_id: string; risk_id: string };
   set: (k: string) => (v: string) => void;
+  /** issue #13: a control-generated recurring task uses the legacy `cadence_months` column,
+   * never `frequency`/`interval_count` — rendering the editable Recurrence select for one of
+   * those always read "One-off", no matter how it actually recurs (the list/drawer already
+   * show the real cadence correctly via `cadenceLabel()`; only this form's initializer never
+   * looked at the column at all). Passed only from EditTaskModal — a brand-new task can never
+   * have this set yet. */
+  cadenceMonths?: number | null;
 }) {
   const risks = useQuery({ queryKey: ["risks"], queryFn: () => get<Risk[]>("/risks") });
   return (
     <>
       <div className="grid grid-cols-2 gap-3">
-        <label className="text-sm font-medium">Recurrence
-          <select value={f.frequency} onChange={(e) => set("frequency")(e.target.value)}
-            className={inputCls + " mt-1"}>
-            <option value="">One-off</option>
-            {FREQUENCIES.map((fr) => <option key={fr} value={fr}>{nice(fr)}</option>)}
-          </select></label>
-        {f.frequency && (
-          <label className="text-sm font-medium">Every
-            <input type="number" min={1} value={f.interval_count}
-              onChange={(e) => set("interval_count")(e.target.value)}
-              className={inputCls + " mt-1"} placeholder="1" /></label>)}
+        {cadenceMonths ? (
+          <div className="text-sm font-medium">Recurrence
+            <div className={inputCls + " mt-1 text-txt2"}>
+              Every {cadenceMonths} mo — set by the control this task came from, not editable here
+            </div>
+          </div>
+        ) : (
+          <>
+            <label className="text-sm font-medium">Recurrence
+              <select value={f.frequency} onChange={(e) => set("frequency")(e.target.value)}
+                className={inputCls + " mt-1"}>
+                <option value="">One-off</option>
+                {FREQUENCIES.map((fr) => <option key={fr} value={fr}>{nice(fr)}</option>)}
+              </select></label>
+            {f.frequency && (
+              <label className="text-sm font-medium">Every
+                <input type="number" min={1} value={f.interval_count}
+                  onChange={(e) => set("interval_count")(e.target.value)}
+                  className={inputCls + " mt-1"} placeholder="1" /></label>)}
+          </>
+        )}
         <label className="text-sm font-medium">Assignee
           <OwnerSelect value={f.assignee_person_id} onChange={set("assignee_person_id")} /></label>
       </div>
@@ -138,7 +165,7 @@ function EditTaskModal({ task, onClose }: { task: TaskDetail; onClose: () => voi
         <label className="text-sm font-medium">Description
           <textarea value={f.description} onChange={(e) => set("description")(e.target.value)}
             className={inputCls + " mt-1 min-h-[56px]"} /></label>
-        <RecurrenceFields f={f} set={set} />
+        <RecurrenceFields f={f} set={set} cadenceMonths={task.cadence_months} />
         <p className="text-caption text-txt3">
           The next run's due date isn't editable here — complete the current run to roll it forward, or pause the task instead.</p>
         {err && <div className="rounded-md bg-bad-bg px-3 py-2 text-label text-bad">{err}</div>}
@@ -158,6 +185,11 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  // issue #13: completing a recurring task immediately opens the NEXT occurrence as
+  // pending, which is correct — but with no acknowledgement of the action that just
+  // succeeded, that legitimate "still pending" pill reads as "nothing happened". This is
+  // the acknowledgement; the list/drawer pill logic is untouched, and rightly so.
+  const [done, setDone] = useState(false);
   // A native <select>; no search box to feed, so it holds the unfiltered slot of the key.
   const evList = useQuery({ queryKey: ["evidence", ""], queryFn: () => get<Ev[]>("/evidence") });
 
@@ -168,14 +200,16 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
       // rather than a multipart variant of `complete`. If the second call fails the file is
       // still in the vault (unlinked, not lost), which is the cheap failure direction.
       let evidenceId = evId || null;
-      if (file) evidenceId = (await uploadEvidence(file, { evidenceType: "report" })).id;
+      if (file) evidenceId = (await uploadEvidence(file,
+        { evidenceType: "report", sourceTaskRunId: task.next_run!.id })).id;
       await api.post(`/tasks/${task.id}/runs/${task.next_run!.id}/complete`,
         { evidence_id: evidenceId, notes: notes || null });
       qc.invalidateQueries({ queryKey: ["tasks"] });
       qc.invalidateQueries({ queryKey: ["task", task.id] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["evidence"] });
-      onClose();
+      setDone(true);
+      setTimeout(onClose, 1400);
     } catch (e: any) {
       // Report the real failure. Uploading and completing fail for different reasons, and
       // "Could not complete" on a rejected upload would send the user hunting in the wrong
@@ -184,6 +218,16 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
         : errText(e, file ? "Could not upload that file." : "Could not complete the task."));
     } finally { setBusy(false); }
   }
+
+  if (done) return (
+    <Modal open onClose={onClose} title="Complete task">
+      <div role="status" className="flex flex-col items-center gap-2 py-8 text-center">
+        <span className="grid h-11 w-11 place-items-center rounded-full bg-ok-bg text-title text-ok">✓</span>
+        <p className="text-sm font-medium">Task completed</p>
+        <p className="text-caption text-txt3">{task.title}</p>
+      </div>
+    </Modal>
+  );
 
   return (
     <Modal open onClose={onClose} title="Complete task">
@@ -277,10 +321,19 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
         {task.runs.length === 0 ? <p className="text-label text-txt3">No runs yet.</p> : (
           <div className="flex flex-col gap-1.5">
             {task.runs.map((r) => (
-              <div key={r.id} className="flex items-center gap-2 border-t border-bd py-1.5 text-label first:border-t-0">
-                <span className="font-mono text-txt2">{r.due_at.slice(0, 10)}</span>
-                <Pill tone={r.status}>{nice(r.status)}</Pill>
-                {r.notes && <span className="min-w-0 flex-1 truncate text-txt3">{r.notes}</span>}
+              <div key={r.id} className="border-t border-bd py-1.5 text-label first:border-t-0">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-txt2">{r.due_at.slice(0, 10)}</span>
+                  <Pill tone={r.status}>{nice(r.status)}</Pill>
+                  {r.notes && <span className="min-w-0 flex-1 truncate text-txt3">{r.notes}</span>}
+                </div>
+                {/* issue #13: the evidence produced by completing this run was never shown
+                    anywhere in the task view at all — see uploadEvidence's sourceTaskRunId. */}
+                {r.evidence_id && r.evidence_title && (
+                  <div className="mt-1 pl-0.5">
+                    <AttachmentLink id={r.evidence_id} title={r.evidence_title} />
+                  </div>
+                )}
               </div>))}
           </div>)}
       </Card>
@@ -337,8 +390,18 @@ function TaskList() {
               <Td className="font-medium">{t.title}</Td>
               <Td className="text-txt2">{cadenceLabel(t)}</Td>
               <Td className="font-mono text-txt2">{t.next_due_at?.slice(0, 10) ?? "—"}</Td>
-              <Td><Pill tone={t.status === "active" ? t.run_status : t.status}>
-                {nice(t.status === "active" ? t.run_status : t.status)}</Pill></Td>
+              <Td>
+                {/* issue #13: viewing the Completed tab, a still-active recurring task
+                    would otherwise show its NEXT occurrence's "Pending" pill here — the
+                    exact "still shows pending" confusion. Show when it was last completed
+                    instead; the Active tab's own pill logic is untouched. */}
+                {status === "completed" && t.last_done_run ? (
+                  <Pill tone="ok">Completed {(t.last_done_run.completed_at ?? t.last_done_run.due_at).slice(0, 10)}</Pill>
+                ) : (
+                  <Pill tone={t.status === "active" ? t.run_status : t.status}>
+                    {nice(t.status === "active" ? t.run_status : t.status)}</Pill>
+                )}
+              </Td>
               <Td><span onClick={(e) => e.stopPropagation()}>
                 {t.next_run && t.status === "active" && <CompleteButton task={t} />}</span></Td>
             </tr>

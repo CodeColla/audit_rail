@@ -80,9 +80,12 @@ def test_thread_does_not_leak_across_unanswered_questions(app_client):
 
 # ---------------------------------------------------------------- evidence delete
 
-def test_deleting_referenced_evidence_is_409_not_500(app_client):
-    """task_runs.evidence_id is NO ACTION on purpose — the proof behind a completed
-    obligation must not vanish. That used to surface as an uncaught IntegrityError (500)."""
+def test_deleting_referenced_evidence_clears_the_reference_instead_of_refusing(app_client):
+    """issue #13: task_runs.evidence_id is NO ACTION/RESTRICT, but the explicit ask is that
+    evidence delete must always succeed — the completed task run survives, it just loses
+    the link, rather than the delete being refused. (Was 409 before this change; the raw
+    IntegrityError-as-500 bug this test originally guarded against is a separate, still-true
+    concern were that clearing step ever removed.)"""
     from api.core.database import engine
     tid, h = _tid(engine), _h(app_client)
     ev_id, task_id, run_id = (str(uuid.uuid4()) for _ in range(3))
@@ -103,12 +106,13 @@ def test_deleting_referenced_evidence_is_409_not_500(app_client):
             {"i": run_id, "tk": task_id, "e": ev_id})
 
     r = app_client.delete(f"/api/evidence/{ev_id}", headers=h)
-    assert r.status_code == 409, r.text
-    assert "referenced" in r.json()["detail"].lower()
-    # and it is still there — the delete was refused, not half-applied
+    assert r.status_code == 204, r.text
     with engine.connect() as c:
         assert c.execute(sqltext("SELECT count(*) FROM evidence WHERE id=:i"),
-                         {"i": ev_id}).scalar() == 1
+                         {"i": ev_id}).scalar() == 0
+        # the task run itself is untouched — only the evidence link is gone
+        assert c.execute(sqltext("SELECT status, evidence_id FROM task_runs WHERE id=:i"),
+                         {"i": run_id}).one() == ("done", None)
 
 
 # ---------------------------------------------------------------- strict request bodies

@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Plus } from "lucide-react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, downloadFile, errText, get } from "../../lib/api";
 import { useAuth, useCan } from "../../lib/auth";
+import { useDebounced } from "../../lib/useDebounced";
 import { OrgLogo } from "../../components/Avatar";
 import { DocBody } from "../../components/DocBody";
 import { RichTextEditor } from "../../components/RichTextEditor";
 import { SheetEditor } from "../../components/SheetEditor";
+import { useDocTypes, useClassifications } from "./Documents";
 import { Bar, Card, cn, inputCls, Loading, Modal, Pill } from "../../lib/ui";
 
 type Version = {
@@ -564,6 +567,245 @@ function SaveIndicator({ state, error }: { state: SaveState; error?: string }) {
   );
 }
 
+// ─────────────────────────────────────────────────────── details edit form
+/**
+ * Issue #13: Type, Classification, Owner and Review were all set once at creation and never
+ * editable again — the Details tab was a plain read-only `.map()` over label/value pairs.
+ * The backend already accepted classification/owner/review_cadence_months; document_type and
+ * next_review_at needed the PATCH schema extended too (see `DocumentPatch`). Modeled on
+ * EvidenceDetail.tsx's `EditForm`: local state, one PATCH, invalidate + close.
+ */
+function DetailsEditForm({ doc, onDone }: { doc: Detail; onDone: () => void }) {
+  const qc = useQueryClient();
+  const types = useDocTypes();
+  const classes = useClassifications();
+  const people = useQuery({ queryKey: ["people"], queryFn: () => get<Person[]>("/people") });
+  const [f, setF] = useState({
+    document_type: doc.document_type, classification: doc.classification,
+    owner_person_id: doc.owner?.id ?? "",
+    review_cadence_months: doc.review_cadence_months ? String(doc.review_cadence_months) : "",
+    next_review_at: doc.next_review_at?.slice(0, 10) ?? "",
+  });
+  const [err, setErr] = useState("");
+  const set = (k: string) => (v: string) => setF({ ...f, [k]: v });
+  const save = useMutation({
+    mutationFn: () => api.patch(`/documents/${doc.id}`, {
+      ...f, review_cadence_months: f.review_cadence_months ? +f.review_cadence_months : null,
+      next_review_at: f.next_review_at || null,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["document", doc.id] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      onDone();
+    },
+    onError: (e: any) => setErr(errText(e, "Could not save.")),
+  });
+  return (
+    <div className="flex flex-col gap-3">
+      <label className="text-label font-medium">Type
+        <select value={f.document_type} onChange={(e) => set("document_type")(e.target.value)}
+          className={inputCls + " mt-1"}>
+          {(types.data ?? []).map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select></label>
+      <label className="text-label font-medium">Classification
+        <select value={f.classification} onChange={(e) => set("classification")(e.target.value)}
+          className={inputCls + " mt-1 capitalize"}>
+          {(classes.data ?? []).map((c) => (
+            <option key={c.id} value={c.value}>{c.value.charAt(0) + c.value.slice(1).toLowerCase()}</option>
+          ))}
+        </select></label>
+      <label className="text-label font-medium">Owner
+        <select value={f.owner_person_id} onChange={(e) => set("owner_person_id")(e.target.value)}
+          className={inputCls + " mt-1"}>
+          <option value="">— pick a person —</option>
+          {(people.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.full_name}</option>)}
+        </select></label>
+      <label className="text-label font-medium">Review every (months)
+        <input type="number" value={f.review_cadence_months}
+          onChange={(e) => set("review_cadence_months")(e.target.value)} className={inputCls + " mt-1"} /></label>
+      <label className="text-label font-medium">Next review
+        <input type="date" value={f.next_review_at}
+          onChange={(e) => set("next_review_at")(e.target.value)} className={inputCls + " mt-1"} /></label>
+      {err && <div className="rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
+      <div className="flex gap-2">
+        <button disabled={!f.owner_person_id || save.isPending}
+          onClick={() => save.mutate()} className="btn btn-primary disabled:opacity-50">
+          {save.isPending ? "Saving…" : "Save"}</button>
+        <button type="button" onClick={onDone} className="btn">Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────── linked controls / audit points
+type LinkedControl = { id: string; code: string; statement: string };
+type LinkedAuditPoint = {
+  assessment_id: string; assessment_title: string; bank_name: string;
+  question_id: string; number: string; text: string;
+};
+type DocLinks = { controls: LinkedControl[]; audit_points: LinkedAuditPoint[] };
+type LiteControl = { id: string; code: string; statement: string };
+
+/**
+ * Controls this document proves, from the document's side. `control_documents` is writable
+ * from the control's own page too (library.py's link_control_document/unlink_control_document)
+ * — both caches must be invalidated or one screen shows a link the other does not, same
+ * "two doors" note as EvidenceDetail.tsx's LinkControls.
+ */
+function LinkedControlsCard({ docId, controls, canEdit }:
+  { docId: string; controls: LinkedControl[]; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [picking, setPicking] = useState(false);
+  const [term, setTerm] = useState("");
+  const dq = useDebounced(term);
+  const [err, setErr] = useState("");
+  const list = useQuery({
+    queryKey: ["controls-lite", dq], enabled: picking,
+    queryFn: () => get<LiteControl[]>(`/library/controls?${new URLSearchParams(dq ? { q: dq } : {})}`),
+  });
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["document-links", docId] });
+    qc.invalidateQueries({ queryKey: ["documents"] });
+    qc.invalidateQueries({ queryKey: ["control"] });   // the control page's own link list
+  };
+  const link = useMutation({
+    mutationFn: (control_id: string) => api.post(`/library/controls/${control_id}/documents`, { document_id: docId }),
+    onSuccess: () => { setErr(""); setPicking(false); setTerm(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not link.")),
+  });
+  const unlink = useMutation({
+    mutationFn: (control_id: string) => api.delete(`/library/controls/${control_id}/documents/${docId}`),
+    onSuccess: () => { setErr(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not unlink.")),
+  });
+  const linkedIds = new Set(controls.map((c) => c.id));
+  const pickable = (list.data ?? []).filter((c) => !linkedIds.has(c.id));
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="eyebrow">Linked controls · {controls.length}</div>
+        {canEdit && <button onClick={() => setPicking((s) => !s)}
+          className="text-label font-medium text-accent"><Plus size={14} strokeWidth={2.4} /> Link</button>}
+      </div>
+      {controls.length === 0 && <p className="text-label text-txt3">Not linked to any control yet.</p>}
+      {controls.map((c) => (
+        <div key={c.id} className="flex items-center gap-2 border-t border-bd py-2 text-label first:border-t-0">
+          <Link to={`/controls/view/${c.id}`} className="shrink-0 font-mono font-semibold text-accent hover:underline">{c.code}</Link>
+          <span className="min-w-0 flex-1 truncate text-txt2">{c.statement}</span>
+          {canEdit && <button onClick={() => unlink.mutate(c.id)} className="shrink-0 text-caption text-bad hover:underline">remove</button>}
+        </div>
+      ))}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
+      {picking && (
+        <div className="mt-2">
+          <input autoFocus value={term} onChange={(e) => setTerm(e.target.value)}
+            placeholder="Search controls…" className={inputCls} />
+          <div className="mt-2 max-h-48 overflow-y-auto rounded-md border border-bd">
+            {list.isPending ? (
+              <div className="px-3 py-2 text-label text-txt3">Searching…</div>
+            ) : pickable.length === 0 ? (
+              <div className="px-3 py-2 text-label text-txt3">
+                {dq ? "No control matches that." : "Every control is already linked."}</div>
+            ) : pickable.map((c) => (
+              <button key={c.id} onClick={() => link.mutate(c.id)}
+                className="flex w-full items-start gap-2 px-3 py-2 text-left text-label hover:bg-canvas">
+                <span className="shrink-0 font-mono font-semibold text-accent">{c.code}</span>
+                <span className="min-w-0 flex-1 truncate text-txt2">{c.statement}</span>
+              </button>))}
+          </div>
+        </div>)}
+    </Card>
+  );
+}
+
+/**
+ * Audit points this document is attached to directly. Attach reuses the existing
+ * `POST /assessments/{aid}/responses/{qid}/documents` (assessments.py's link_document) via a
+ * two-step assessment → question picker — a `response_documents` row only exists once a
+ * question has been answered, so "an audit" alone isn't the linkable unit, a response is.
+ * Detach reuses the shared `DELETE .../documents/{document_id}` route the Workspace drawer
+ * already uses (issue #13 Phase 1), so both surfaces stay in sync off the one endpoint.
+ */
+function LinkedAuditPointsCard({ docId, points, canEdit }:
+  { docId: string; points: LinkedAuditPoint[]; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [picking, setPicking] = useState(false);
+  const [assessmentId, setAssessmentId] = useState("");
+  const [err, setErr] = useState("");
+  const assessments = useQuery({
+    queryKey: ["assessments-lite"], enabled: picking,
+    queryFn: () => get<{ id: string; title: string; bank_name: string }[]>("/assessments"),
+  });
+  const questions = useQuery({
+    queryKey: ["grid", assessmentId], enabled: picking && !!assessmentId,
+    queryFn: () => get<{ question_id: string; number: string; text: string }[]>(
+      `/assessments/${assessmentId}/questions`),
+  });
+  const done = () => {
+    qc.invalidateQueries({ queryKey: ["document-links", docId] });
+    qc.invalidateQueries({ queryKey: ["resp"] });   // the Workspace drawer's own cache
+  };
+  const link = useMutation({
+    mutationFn: (question_id: string) =>
+      api.post(`/assessments/${assessmentId}/responses/${question_id}/documents`, { document_id: docId }),
+    onSuccess: () => { setErr(""); setPicking(false); setAssessmentId(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not link — answer the question first.")),
+  });
+  const unlink = useMutation({
+    mutationFn: (p: { assessment_id: string; question_id: string }) =>
+      api.delete(`/assessments/${p.assessment_id}/responses/${p.question_id}/documents/${docId}`),
+    onSuccess: () => { setErr(""); done(); },
+    onError: (e: any) => setErr(errText(e, "Could not unlink.")),
+  });
+  const linkedQIds = new Set(points.filter((p) => p.assessment_id === assessmentId).map((p) => p.question_id));
+  const pickableQuestions = (questions.data ?? []).filter((q) => !linkedQIds.has(q.question_id));
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="eyebrow">Linked audit points · {points.length}</div>
+        {canEdit && <button onClick={() => setPicking((s) => !s)}
+          className="text-label font-medium text-accent"><Plus size={14} strokeWidth={2.4} /> Link</button>}
+      </div>
+      {points.length === 0 && <p className="text-label text-txt3">Not linked to any audit point yet.</p>}
+      {points.map((p) => (
+        <div key={p.question_id} className="flex items-center gap-2 border-t border-bd py-2 text-label first:border-t-0">
+          <Link to={`/audits/${p.assessment_id}`} className="min-w-0 flex-1 truncate font-medium text-ink hover:text-accent">
+            <span className="font-mono text-txt3">No. {p.number}</span> · {p.bank_name} — {p.assessment_title}
+          </Link>
+          {canEdit && <button
+            onClick={() => unlink.mutate({ assessment_id: p.assessment_id, question_id: p.question_id })}
+            className="shrink-0 text-caption text-bad hover:underline">remove</button>}
+        </div>
+      ))}
+      {err && <div className="mt-2 rounded-md bg-bad-bg px-2.5 py-1.5 text-caption text-bad">{err}</div>}
+      {picking && (
+        <div className="mt-2 flex flex-col gap-2">
+          <select value={assessmentId} onChange={(e) => setAssessmentId(e.target.value)} className={inputCls}>
+            <option value="">— pick an audit —</option>
+            {(assessments.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.bank_name} — {a.title}</option>))}
+          </select>
+          {assessmentId && (
+            <div className="max-h-48 overflow-y-auto rounded-md border border-bd">
+              {questions.isPending ? (
+                <div className="px-3 py-2 text-label text-txt3">Loading…</div>
+              ) : pickableQuestions.length === 0 ? (
+                <div className="px-3 py-2 text-label text-txt3">Nothing left to link in this audit.</div>
+              ) : pickableQuestions.map((q) => (
+                <button key={q.question_id} onClick={() => link.mutate(q.question_id)}
+                  className="flex w-full items-start gap-2 px-3 py-2 text-left text-label hover:bg-canvas">
+                  <span className="shrink-0 font-mono text-txt3">No. {q.number}</span>
+                  <span className="min-w-0 flex-1 truncate text-txt2">{q.text}</span>
+                </button>))}
+            </div>
+          )}
+        </div>)}
+    </Card>
+  );
+}
+
 // ─────────────────────────────────────────────────────── compliance rail
 /**
  * Governance lives in a collapsible rail, not in tabs above the content.
@@ -580,6 +822,12 @@ function ComplianceRail({ doc, onClose, onDiff }:
   const qc = useQueryClient();
   const can = useCan();
   const [tab, setTab] = useState<RailTab>("details");
+  const [editingDetails, setEditingDetails] = useState(false);
+  const canEditDetails = can("documents", "edit");
+  const links = useQuery({
+    queryKey: ["document-links", doc.id], enabled: tab === "details",
+    queryFn: () => get<DocLinks>(`/documents/${doc.id}/links`),
+  });
   const [err, setErr] = useState("");
   const draft = doc.open_version?.status === "DRAFT" ? doc.open_version : null;
   const discard = useMutation({
@@ -611,17 +859,28 @@ function ComplianceRail({ doc, onClose, onDiff }:
 
       <div className="p-4">
         {tab === "details" && (
-          <>
-            {[["Type", doc.document_type.toLowerCase()],
-              ["Classification", doc.classification.toLowerCase()],
-              ["Owner", doc.owner?.full_name],
-              ["Review every", doc.review_cadence_months ? `${doc.review_cadence_months} mo` : "—"],
-              ["Next review", doc.next_review_at?.slice(0, 10)]].map(([k, v]) => (
-              <div key={k as string} className="flex justify-between gap-3 py-1.5 text-label">
-                <span className="shrink-0 text-txt3">{k}</span>
-                <span className="truncate font-medium capitalize">{(v as string) || "—"}</span>
-              </div>))}
-          </>
+          <div className="flex flex-col gap-4">
+            {editingDetails ? (
+              <DetailsEditForm doc={doc} onDone={() => setEditingDetails(false)} />
+            ) : (
+              <div>
+                {[["Type", doc.document_type.toLowerCase()],
+                  ["Classification", doc.classification.toLowerCase()],
+                  ["Owner", doc.owner?.full_name],
+                  ["Review every", doc.review_cadence_months ? `${doc.review_cadence_months} mo` : "—"],
+                  ["Next review", doc.next_review_at?.slice(0, 10)]].map(([k, v]) => (
+                  <div key={k as string} className="flex justify-between gap-3 py-1.5 text-label">
+                    <span className="shrink-0 text-txt3">{k}</span>
+                    <span className="truncate font-medium capitalize">{(v as string) || "—"}</span>
+                  </div>))}
+                {canEditDetails && (
+                  <button onClick={() => setEditingDetails(true)} className="btn mt-2 py-1 text-label">Edit details</button>
+                )}
+              </div>
+            )}
+            <LinkedControlsCard docId={doc.id} controls={links.data?.controls ?? []} canEdit={canEditDetails} />
+            <LinkedAuditPointsCard docId={doc.id} points={links.data?.audit_points ?? []} canEdit={canEditDetails} />
+          </div>
         )}
         {tab === "approvals" && <ApprovalsTab doc={doc} />}
         {tab === "attest" && <AttestationTab doc={doc} />}
@@ -668,6 +927,7 @@ function ComplianceRail({ doc, onClose, onDiff }:
 // ─────────────────────────────────────────────────────── page
 export default function DocumentDetail() {
   const { id } = useParams();
+  const nav = useNavigate();
   const qc = useQueryClient();
   const can = useCan();
   const [railOpen, setRailOpen] = useState(false);
@@ -706,6 +966,16 @@ export default function DocumentDetail() {
       qc.invalidateQueries({ queryKey: ["documents"] });
     },
     onError: (e: any) => setErr(errText(e, "Could not rename this document.")),
+  });
+  // issue #13: Archive was the only removal option — a document that was truly created by
+  // mistake had no way to actually go away. Blocked server-side (409, naming what's
+  // blocking it) when the document is a Statement of Applicability's cited artifact, an
+  // access-review campaign's output, or the org's own NDA; Archive remains the right tool
+  // for "stop applying but keep the record."
+  const del = useMutation({
+    mutationFn: () => api.delete(`/documents/${id}`),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["documents"] }); nav("/documents"); },
+    onError: (e: any) => setErr(errText(e, "Could not delete this document.")),
   });
 
   const shown = useMemo(() => {
@@ -791,6 +1061,16 @@ export default function DocumentDetail() {
               <button onClick={() => archive.mutate(doc.status === "ARCHIVED" ? "ACTIVE" : "ARCHIVED")}
                 disabled={archive.isPending} className="btn py-1.5 disabled:opacity-50">
                 {doc.status === "ARCHIVED" ? "Restore" : "Archive"}
+              </button>)}
+            {can("documents", "delete") && (
+              <button
+                onClick={() => { if (confirm(
+                    `Delete "${doc.title}"?\n\nEvery version, approval and attestation record ` +
+                    `goes with it. This cannot be undone.`))
+                    del.mutate(); }}
+                disabled={del.isPending}
+                className="btn py-1.5 text-bad hover:border-bad disabled:opacity-50">
+                {del.isPending ? "Deleting…" : "Delete"}
               </button>)}
             {editable && (
               <button onClick={() => setSubmitting(true)} className="btn btn-primary py-1.5">

@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src=".github/assets/logo.png" alt="Audit Rail" width="88" height="88">
+<img src=".github/assets/logo.png" alt="Auditrail" width="88" height="88">
 
-# Audit Rail
+# Auditrail
 
 **A compliance and audit workspace for teams who get audited a lot.**
 
@@ -30,7 +30,7 @@ same thing — with the controls, evidence, policies and attestations that back 
 
 <br>
 
-<img src=".github/assets/dashboard.png" alt="The Audit Rail dashboard: readiness across every active bank assessment, and what needs attention next">
+<img src=".github/assets/dashboard.png" alt="The Auditrail dashboard: readiness across every active bank assessment, and what needs attention next">
 
 <br>
 

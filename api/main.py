@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Audit Rail API",
+    title="Auditrail API",
     description="Compliance & audit portal backend — powered by SR",
     version="0.1.0",
     lifespan=lifespan,
@@ -149,4 +149,4 @@ if os.environ.get("E2E_TEST_HOOKS") == "1":
 
 @app.get("/")
 def root():
-    return {"status": "ok", "service": "Audit Rail API", "version": "0.1.0"}
+    return {"status": "ok", "service": "Auditrail API", "version": "0.1.0"}

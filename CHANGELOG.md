@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased — bug fixes & enhancements across the portal ([#13](https://github.com/CodeColla/audit_rail/issues/13))
+
+Phased rollout against the owner's day-to-day punch list — Platform naming, Audits, Controls,
+Documents, Evidence, Tasks, People, Risks. This entry grows one hand-run SQL block per phase
+that needs one; run each block once, in order, against every live database that needs it
+(dev, `audit_rail_e2e`, and prod — separately, deliberately, never automatically) before
+swapping the API/UI images for that phase.
+
+### Phase 0 — quick wins
+
+Renamed the portal "Audit Rail" → "Auditrail" (`webui/src/components/Brand.tsx`'s
+`PRODUCT_NAME` is the single source of truth); added a `PENDING` risk treatment option.
+
+### Action required if you deploy Phase 0
+
+```sql
+ALTER TABLE risks DROP CONSTRAINT risks_treatment_check;
+ALTER TABLE risks ADD CONSTRAINT risks_treatment_check
+    CHECK (treatment IN ('MITIGATED', 'ACCEPTED', 'AVOIDED', 'TRANSFERRED', 'PENDING'));
+```
+
+### Phase 5 — Tasks
+
+A task-completion upload no longer shows up in the general Evidence vault list — a new
+`evidence.source_task_run_id` column records where it actually came from.
+
+### Action required if you deploy Phase 5
+
+```sql
+ALTER TABLE evidence ADD COLUMN source_task_run_id text;
+ALTER TABLE evidence ADD CONSTRAINT evidence_source_task_run_fk
+    FOREIGN KEY (source_task_run_id, tenant_id) REFERENCES task_runs (id, tenant_id)
+    ON DELETE SET NULL (source_task_run_id);
+```
+
 ## Unreleased — bugfixes & enhancements across the portal ([#8](https://github.com/CodeColla/audit_rail/issues/8))
 
 Seven independent fixes and additions found in day-to-day use, spanning the audit workspace,

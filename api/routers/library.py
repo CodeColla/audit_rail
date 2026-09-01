@@ -87,6 +87,20 @@ def list_controls(
                qcm.c.status.in_(LIVE_MAPPING_STATUSES))
         .group_by(qcm.c.control_id)
     ).all())
+    # issue #13: same count-and-merge shape as mapped_count above, one table over each —
+    # evidence_controls and control_documents both have composite (control_id, tenant_id)
+    # FKs, so the tenant filter here is belt-and-braces, matching mapped_count's own comment.
+    ec, cd = t("evidence_controls"), t("control_documents")
+    evidence_counts = dict(conn.execute(
+        select(ec.c.control_id, func.count())
+        .where(ec.c.tenant_id == user.tenant_id)
+        .group_by(ec.c.control_id)
+    ).all())
+    document_counts = dict(conn.execute(
+        select(cd.c.control_id, func.count())
+        .where(cd.c.tenant_id == user.tenant_id)
+        .group_by(cd.c.control_id)
+    ).all())
     stmt = (
         select(controls, domains.c.name.label("domain_name"),
                domains.c.code.label("domain_code"))
@@ -106,7 +120,9 @@ def list_controls(
         like = f"%{q.lower()}%"
         stmt = stmt.where(func.lower(controls.c.code).like(like)
                           | func.lower(controls.c.statement).like(like))
-    return [{**dict(r), "mapped_count": counts.get(r["id"], 0)}
+    return [{**dict(r), "mapped_count": counts.get(r["id"], 0),
+             "evidence_count": evidence_counts.get(r["id"], 0),
+             "document_count": document_counts.get(r["id"], 0)}
             for r in conn.execute(stmt).mappings()]
 
 

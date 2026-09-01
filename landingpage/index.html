@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Auditrail — Automate Compliance</title>
+    <meta name="description"
+      content="Compliance and audit workspace: answer once, reuse across every audit." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="theme-color" content="#0E1A2B" />
+
+    <!-- Open Graph / LinkedIn — this page exists specifically to be shared (issue #14: "post
+         about it on LinkedIn or any tech blog"), which webui never needed since it's behind
+         auth and never meant to be pasted as a link. og:url is intentionally left for the
+         deploy step to set (or override via a <meta> injected at deploy time) since the real
+         public domain isn't known at build time. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Auditrail — Automate Compliance" />
+    <meta property="og:description"
+      content="Answer a compliance questionnaire once, and reuse the answer across every audit that asks the same thing — with the controls, evidence, policies and attestations that back it." />
+    <meta property="og:image" content="/og-image.png" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Auditrail — Automate Compliance" />
+    <meta name="twitter:description"
+      content="Compliance and audit workspace: answer once, reuse across every audit." />
+    <meta name="twitter:image" content="/og-image.png" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

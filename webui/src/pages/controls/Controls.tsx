@@ -12,6 +12,7 @@ type Control = {
   id: string; code: string; statement: string; lifecycle: string; recurrence_months: number | null;
   applicability: string; reactivation_trigger: string | null; stock_response: string | null;
   domain_code: string; domain_name: string; mapped_count: number;
+  evidence_count: number; document_count: number;
 };
 type Xwalk = {
   columns: { id: string; bank_name: string; version_label: string }[];
@@ -169,7 +170,7 @@ export default function Controls() {
           </div>
 
           {controls.isLoading ? <Loading /> : (
-            <Table head={["Ref", "Control", "Lifecycle", "Applicability", "Mapped"]}>
+            <Table head={["Ref", "Control", "Lifecycle", "Applicability", "Mapped", "Evidence", "Documents"]}>
               {(controls.data ?? []).map((c) => (
                 <tr key={c.id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(c.id)}>
                   <Td className="font-mono font-semibold">{c.code}</Td>
@@ -180,6 +181,8 @@ export default function Controls() {
                   <Td><Pill tone={c.applicability === "applicable" ? "applicable" : "na"}>
                     {c.applicability === "applicable" ? "Applicable" : "Dormant"}</Pill></Td>
                   <Td><span className="rounded bg-canvas px-2 py-0.5 text-caption text-txt2">{c.mapped_count} pts</span></Td>
+                  <Td><span className="tnum text-txt2">{c.evidence_count}</span></Td>
+                  <Td><span className="tnum text-txt2">{c.document_count}</span></Td>
                 </tr>
               ))}
             </Table>
