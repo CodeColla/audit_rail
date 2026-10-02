@@ -23,7 +23,7 @@ from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from api.core import activity, storage
-from api.domain import importer, register_imports, vocabularies
+from api.domain import entitlements, importer, register_imports, vocabularies
 from api.rendering import xlsx_io
 from api.core.config import settings
 from api.core.auth import Principal, get_current_user
@@ -554,6 +554,7 @@ async def upload_asset_photo(asset_id: str, file: UploadFile = File(...),
     if a is None:
         raise HTTPException(404, "asset not found")
 
+    entitlements.ensure_storage(None, user.tenant_id, len(data))
     key, sha, size = storage.save(user.tenant_id, data, file.filename or "photo")
     file_id, now = str(uuid.uuid4()), now_iso()
     old_key = None
@@ -988,6 +989,7 @@ async def upload_agreement_file(tp_id: str, agreement_id: str, file: UploadFile 
     if row is None:
         raise HTTPException(404, "agreement not found")
 
+    entitlements.ensure_storage(None, user.tenant_id, len(data))
     key, sha, size = storage.save(user.tenant_id, data, file.filename or "contract")
     file_id, now = str(uuid.uuid4()), now_iso()
     old_key = None

@@ -77,6 +77,13 @@ def app_client():
         conn.execute(text("INSERT INTO tenants (id,name,slug,status,created_at) "
                           "VALUES (:i,:n,:s,:st,:c)"),
                      {"i": tid, "n": "KIAM", "s": "kiam", "st": "active", "c": NOW})
+        # Phase 10: grandfathered to Enterprise (unlimited) so the ~470 existing tests that
+        # predate billing limits don't start 402ing — tests that actually EXERCISE a plan
+        # limit create their own fresh org via /auth/signup (which starts on Free; see
+        # tests/test_billing_limits.py), the same pattern test_branding.py's _new_org uses.
+        conn.execute(text(
+            "INSERT INTO tenant_plans (tenant_id, plan_code) VALUES (:t, 'enterprise')"),
+            {"t": tid})
         for uid_, email, name, pw, admin_flag in [
             (admin_id, "admin@kiam.example", "Admin", "secret1", 1),
             (member_id, "member@kiam.example", "Member", "secret2", 0),

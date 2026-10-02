@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, insert, select
 
 from api.core import activity, storage
+from api.domain import entitlements
 from api.core.auth import Principal, get_current_user
 from api.core.permissions import require
 from api.core.database import engine, get_conn, t
@@ -90,6 +91,7 @@ async def add_version(
         if p is None:
             raise HTTPException(404, "policy not found")
         data = await file.read()
+        entitlements.ensure_storage(conn, user.tenant_id, len(data))
         key, sha, size = storage.save(user.tenant_id, data, file.filename or "policy")
         file_id, ver_id, now = str(uuid.uuid4()), str(uuid.uuid4()), now_iso()
         members = t("tenant_members")

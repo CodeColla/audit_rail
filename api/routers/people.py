@@ -20,7 +20,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import func, insert, select, text, update
 
 from api.core import activity
-from api.domain import importer, passwords
+from api.domain import entitlements, importer, passwords
 from api.rendering import xlsx_io
 from api.core.auth import Principal, get_current_user
 from api.core.permissions import require
@@ -270,6 +270,9 @@ def invite_person(person_id: str, body: InviteIn,
             t("tenant_members").c.tenant_id == user.tenant_id,
             t("tenant_members").c.user_id == uid)).scalar()
         if not already:
+            # Only a NEW membership is new growth — attaching an existing account that is
+            # already a member here (re-invited with a different role) adds no row.
+            entitlements.ensure_can_add_member(conn, user.tenant_id)
             conn.execute(insert(t("tenant_members")).values(
                 id=str(uuid.uuid4()), tenant_id=user.tenant_id, user_id=uid,
                 role="member", role_id=role_id, created_at=now_iso()))

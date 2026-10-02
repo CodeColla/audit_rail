@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 # NB: `gstin` is intentionally NOT imported any more. It still exists, still works
 # and is still tested — signup just no longer validates against it (P5-S6).
 from api.core import activity, permissions
-from api.domain import control_library, domains, frameworks, passwords, vocabularies
+from api.domain import control_library, domains, entitlements, frameworks, passwords, vocabularies
 from api.core.auth import (Principal, authenticate, create_access_token, get_caller,
                       get_current_user, memberships)
 from api.core.database import engine, t
@@ -57,6 +57,10 @@ def _create_org(conn, *, name: str, gst: str | None, super_admin_user_id: str) -
     conn.execute(insert(t("tenants")).values(
         id=tid, name=name.strip(), slug=_slug(name, conn), gst_number=gst_clean,
         super_admin_user_id=super_admin_user_id, status="active", created_at=now_iso()))
+    # Phase 10: every new org starts on Free — see req/phase10/00-issue-19.md. A tenant with
+    # NO row here is treated as unlimited (api/domain/entitlements.py), so this exists purely
+    # to make a NEW org correctly limited, not to make an old one correctly unlimited.
+    conn.execute(insert(t("tenant_plans")).values(tenant_id=tid, plan_code="free"))
     permissions.seed_roles(conn, tid)          # every org gets Admin / Editor / Viewer
     vocabularies.seed(conn, tid)               # …and a starting set of dropdowns
     domains.seed(conn, tid)                    # …and the 16-domain control framework —
@@ -73,7 +77,14 @@ def _create_org(conn, *, name: str, gst: str | None, super_admin_user_id: str) -
 
 def _add_member(conn, tenant_id: str, user_id: str, role: str,
                 role_name: str | None = None) -> None:
-    """Add a membership. `role` is the legacy text column; `role_name` picks the RBAC role."""
+    """Add a membership. `role` is the legacy text column; `role_name` picks the RBAC role.
+
+    A no-op check for the two call sites in THIS file (the founding admin of a brand-new
+    org, where the member count is always 0) — kept here anyway so any future caller gets
+    the plan's member limit enforced for free, the same way `people.invite_person` does
+    explicitly for the invite flow.
+    """
+    entitlements.ensure_can_add_member(conn, tenant_id)
     role_id = None
     if role_name:
         role_id = conn.execute(select(t("roles").c.id).where(

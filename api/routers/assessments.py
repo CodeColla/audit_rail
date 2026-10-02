@@ -18,7 +18,7 @@ from sqlalchemy import delete as sqldelete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from api.core import activity, storage
-from api.domain import scoring
+from api.domain import entitlements, scoring
 from api.core.auth import Principal, create_guest_token, get_caller, get_current_user
 from api.core.permissions import require
 from api.core.database import engine, get_conn, t
@@ -132,6 +132,7 @@ class AssessmentIn(StrictModel):
 def create_assessment(body: AssessmentIn, user: Principal = Depends(require("audits", "add"))):
     tmpl = t("templates")
     with engine.begin() as conn:
+        entitlements.ensure_can_open_audit(conn, user.tenant_id)
         tpl = conn.execute(select(tmpl).where(
             tmpl.c.id == body.template_id,
             tmpl.c.tenant_id == user.tenant_id)).mappings().first()
@@ -201,7 +202,11 @@ def update_assessment(assessment_id: str, body: StatusIn,
     if "status" in vals and vals["status"] not in ASSESSMENT_STATUSES:
         raise HTTPException(400, f"status must be one of {', '.join(ASSESSMENT_STATUSES)}")
     with engine.begin() as conn:
-        _access(conn, user, assessment_id)
+        row = _access(conn, user, assessment_id)
+        # Reopening a closed audit is new growth exactly like creating one — otherwise the
+        # audit cap is dodged by closing and reopening (req/phase10/00-issue-19.md §1).
+        if row["status"] == "closed" and vals.get("status", "closed") != "closed":
+            entitlements.ensure_can_open_audit(conn, user.tenant_id)
         conn.execute(update(a).where(a.c.id == assessment_id).values(**vals))
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="assessment.updated", entity_type="assessment",

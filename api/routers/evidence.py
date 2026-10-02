@@ -12,6 +12,7 @@ from sqlalchemy import delete as sqldelete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from api.core import activity, storage
+from api.domain import entitlements
 from api.core.auth import Principal, get_current_user
 from api.core.logging import logger
 from api.core.permissions import require
@@ -281,6 +282,7 @@ async def upload_evidence(
     data = await file.read()
     if len(data) > settings.max_upload_mb * 1024 * 1024:
         raise HTTPException(413, f"file exceeds {settings.max_upload_mb} MB limit")
+    entitlements.ensure_storage(None, user.tenant_id, len(data))
     key, sha, size = storage.save(user.tenant_id, data, file.filename or "upload")
 
     ev_id, file_id = str(uuid.uuid4()), str(uuid.uuid4())

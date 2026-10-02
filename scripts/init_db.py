@@ -122,6 +122,14 @@ def seed_kiam(conn) -> None:
     conn.execute(text("UPDATE tenants SET super_admin_user_id=:u WHERE id=:t"),
                  {"u": first_admin, "t": tenant_id})
 
+    # Phase 10: the dev tenant is one customer's data, same reasoning as the rest of this
+    # function — grandfathered to Enterprise (unlimited) rather than Free, so local dev and
+    # demos are never blocked by a plan limit. Mirrors the migration backfill in
+    # docs/phase10/02-migration.sql for every OTHER pre-Phase-10 tenant.
+    conn.execute(text(
+        "INSERT INTO tenant_plans (tenant_id, plan_code) VALUES (:t, 'enterprise')"),
+        {"t": tenant_id})
+
     # P4-S2: seed the system roles and point each membership at the right one.
     # Raw SQL on purpose. seed_roles() goes through the reflected metadata, and
     # metadata.reflect() opens a SECOND connection — which blocks forever behind the

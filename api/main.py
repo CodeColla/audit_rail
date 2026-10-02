@@ -8,9 +8,9 @@ from sqlalchemy import text
 from api.core.config import settings
 from api.core.database import engine, reflect_schema
 from api.core.logging import configure_logging, logger
-from api.routers import (assessments, auth, dashboard, documents, evidence, frameworks,
-                         library, lookups, notifications, org, people, policies, registers,
-                         roles, signing, tasks, templates)
+from api.routers import (assessments, auth, billing, dashboard, documents, evidence,
+                         frameworks, library, lookups, notifications, org, people, policies,
+                         registers, roles, signing, tasks, templates)
 
 
 def _preflight() -> None:
@@ -50,6 +50,7 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
      "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_file_id text;"),
     ("files", "purpose",
      "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
+    ("tenant_plans", "plan_code", "see docs/phase10/02-migration.sql"),
 ]
 
 
@@ -132,6 +133,7 @@ app.include_router(notifications.router, prefix="/api")
 app.include_router(templates.router, prefix="/api")
 app.include_router(roles.router, prefix="/api")
 app.include_router(lookups.router, prefix="/api")
+app.include_router(billing.router, prefix="/api")
 
 # PUBLIC, unauthenticated: the attestation magic link. Safe by construction — every
 # row is derived from the token (see api/routers/signing.py). Mounted under /api so the

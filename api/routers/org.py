@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import insert, select, update
 
 from api.core import activity, storage
+from api.domain import entitlements
 from api.rendering import imagefile
 from api.core.auth import Principal, get_current_user
 from api.core.database import engine, get_conn, t
@@ -49,6 +50,7 @@ async def set_logo(file: UploadFile = File(...),
     if len(data) > MAX_LOGO_MB * 1024 * 1024:
         raise HTTPException(413, f"a logo must be under {MAX_LOGO_MB} MB")
     mime = _sniff(data)
+    entitlements.ensure_storage(None, user.tenant_id, len(data))
 
     name = file.filename or "logo"
     key, sha, size = storage.save(user.tenant_id, data, name)

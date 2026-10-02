@@ -109,6 +109,36 @@ CREATE TABLE tenants (
     created_at          iso_ts NOT NULL DEFAULT now_iso()
 );
 
+-- Phase 10 (req/phase10/00-issue-19.md). One row per tenant, holding the EFFECTIVE plan —
+-- the thing api/domain/entitlements.py actually reads. Prices and per-plan limits live in
+-- CODE (api/domain/plans.py), not here — same posture as api/core/permissions.py's MODULES
+-- catalogue — so a price change is a deploy, not a migration; this table only says which
+-- plan a tenant is on and what has been added to it.
+-- A tenant with NO row here is treated as unlimited (api/domain/entitlements.py), not locked
+-- out: missing billing data must never be an outage. New tenants get a row at creation
+-- (api/routers/auth.py `_create_org`); existing ones are backfilled by
+-- docs/phase10/02-migration.sql, never by this file.
+CREATE TABLE tenant_plans (
+    tenant_id                  text PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+    plan_code                  text NOT NULL DEFAULT 'free'
+                               CHECK (plan_code IN ('free', 'pro', 'enterprise')),
+    billing_cycle              text CHECK (billing_cycle IN ('monthly', 'yearly')),
+    status                     text NOT NULL DEFAULT 'active'
+                               CHECK (status IN ('active', 'past_due', 'cancelled')),
+    current_period_end         iso_ts,
+    -- Set once, when Pro first goes past_due, and left alone after that — see
+    -- entitlements.effective_limits. Past this timestamp a past_due org is Free, not Pro.
+    grace_until                iso_ts,
+    addon_audit_packs          integer NOT NULL DEFAULT 0,
+    addon_storage_packs        integer NOT NULL DEFAULT 0,
+    -- Enterprise deals and manual fixes (scripts/set_plan.py). NULL means "use the plan's
+    -- own default" — unlimited is the FREE PLAN'S default being NULL, not a sentinel here.
+    override_max_active_audits integer,
+    override_storage_bytes     bigint,
+    override_max_members       integer,
+    updated_at                 iso_ts NOT NULL DEFAULT now_iso()
+);
+
 -- A LOGIN. Auditor guests are users with no people row.
 -- P4 NOTE: every PERSON now gets one of these too (created in status='invited' with a NULL
 -- password_hash; they set the password themselves via user_invites). people.user_id is the

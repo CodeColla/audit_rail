@@ -34,7 +34,7 @@ from sqlalchemy import delete, func, insert, select, text, update
 
 from api.core import activity, storage
 from api.rendering import branding, docx_export, imagefile, render, xlsx_io
-from api.domain import vocabularies
+from api.domain import entitlements, vocabularies
 from api.core.auth import Principal
 from api.rendering.html_sanitize import sanitize_document_html
 from api.core.permissions import require
@@ -306,6 +306,7 @@ async def upload_document_image(doc_id: str, file: UploadFile = File(...),
 
     with engine.begin() as conn:
         _require_active(_doc(conn, user, doc_id))
+        entitlements.ensure_storage(conn, user.tenant_id, len(data))
         # The extension comes from the SNIFFED mime, never from the upload's filename: a
         # pasted screenshot arrives as "image.png" or nameless, and a hostile one arrives as
         # "invoice.pdf.png". `storage.save` takes its suffix from whatever it is handed.

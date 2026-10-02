@@ -50,6 +50,7 @@ MODULES: dict[str, tuple[str, ...]] = {
     "obligations":   CRUD,                      # hidden in the UI, still permissioned
     "tasks":         CRUD,
     "reports":       (VIEW,),
+    "billing":       (VIEW, EDIT),               # Phase 10 — plan, usage, Razorpay checkout
 }
 
 #: Human labels for the role editor.
@@ -60,11 +61,12 @@ MODULE_LABELS = {
     "risks": "Risks", "assets": "Assets", "data": "Data inventory",
     "third_parties": "Third parties", "incidents": "Incidents",
     "obligations": "Obligations", "tasks": "Tasks", "reports": "Reports",
+    "billing": "Billing",
 }
 
 
 #: Administering the workspace itself. Only Admin (and the Super Admin) gets these.
-ADMIN_MODULES = ("users", "roles", "org")
+ADMIN_MODULES = ("users", "roles", "org", "billing")
 
 
 def all_permissions() -> set[tuple[str, str]]:

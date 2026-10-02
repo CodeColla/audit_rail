@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, insert, select, update
 
 from api.core import activity, storage
-from api.domain import scoring
+from api.domain import entitlements, scoring
 from api.core.auth import Principal, get_current_user
 from api.core.permissions import require
 from api.core.database import engine, get_conn, t
@@ -202,7 +202,14 @@ async def import_checklist(
     rows = [{"number": str(r["number"]).strip(), "section": str(r.get("section") or "").strip(),
             "text": str(r["text"]).strip()} for r in parsed_rows]
 
+    # A checklist import is always followed by creating the audit it was imported for (the
+    # only POST /assessments call site is Import.tsx, right after this). Checking only at
+    # that later creation would leave a Free org at its cap with an orphan checklist and no
+    # audit to show for it — so the SAME limit is checked here, first.
+    entitlements.ensure_can_open_audit(None, user.tenant_id)
+
     data = await file.read()
+    entitlements.ensure_storage(None, user.tenant_id, len(data))
     tpl_id, file_id, now = str(uuid.uuid4()), str(uuid.uuid4()), now_iso()
     key, sha, size = storage.save(user.tenant_id, data, file.filename or "checklist.xlsx")
     ctl_idx = None
