@@ -1,5 +1,5 @@
 import { Wordmark } from "./Brand";
-import { SIGNUP_URL } from "../lib/env";
+import { SIGNUP_URL, LOGIN_URL } from "../lib/env";
 
 const LINKS = [
   { href: "#features", label: "Product" },
@@ -22,14 +22,24 @@ export function Nav() {
             </a>
           ))}
         </nav>
-        <a
-          href={SIGNUP_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="rounded-xl bg-ink px-4 py-2 text-sm font-semibold text-paper transition-colors hover:bg-ink/90"
-        >
-          Get started
-        </a>
+        <div className="flex items-center gap-4">
+          <a
+            href={LOGIN_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden text-sm font-semibold text-txt2 transition-colors hover:text-ink sm:inline"
+          >
+            Log in
+          </a>
+          <a
+            href={SIGNUP_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-xl bg-ink px-4 py-2 text-sm font-semibold text-paper transition-colors hover:bg-ink/90"
+          >
+            Get started
+          </a>
+        </div>
       </div>
     </header>
   );
