@@ -18,6 +18,12 @@ api.interceptors.response.use(
       localStorage.removeItem("ar_user");
       location.href = "/login";
     }
+    // Phase 10: a structured 402 means a plan limit was hit (api/domain/entitlements.py).
+    // Broadcast it here rather than at each call site — PlanLimitDialog (mounted once in
+    // Shell) is the one place that reacts, so every blocked action gets the same dialog.
+    if (err?.response?.status === 402 && err.response.data?.detail?.code === "plan_limit") {
+      window.dispatchEvent(new CustomEvent("ar:plan-limit", { detail: err.response.data.detail }));
+    }
     return Promise.reject(err);
   },
 );
@@ -47,7 +53,14 @@ export function errText(e: any, fallback = "Something went wrong."): string {
       })
       .join("; ");
   }
-  if (d && typeof d === "object") return JSON.stringify(d);
+  if (d && typeof d === "object") {
+    // Phase 10: a plan-limit 402's detail is a structured object (api/domain/
+    // entitlements.py). PlanLimitDialog is what normally surfaces it, but a few call
+    // sites still render errText() directly — prefer its human sentence over dumping the
+    // raw object as JSON.
+    if (typeof d.message === "string" && d.message.trim()) return d.message;
+    return JSON.stringify(d);
+  }
   return fallback;
 }
 

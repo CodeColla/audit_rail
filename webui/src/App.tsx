@@ -30,6 +30,7 @@ import EvidenceDetail from "./pages/admin/EvidenceDetail";
 import Tasks from "./pages/admin/Tasks";
 import Reports from "./pages/admin/Reports";
 import Admin from "./pages/admin/Admin";
+import Billing from "./pages/billing/Billing";
 
 export default function App() {
   const { user } = useAuth();
@@ -113,6 +114,7 @@ export default function App() {
         <Route path="/reports" element={<Reports />} />
         <Route path="/roles" element={<Roles />} />
         <Route path="/admin" element={<Admin />} />
+        <Route path="/billing" element={<Billing />} />
         <Route path="/account/password" element={<ChangePassword />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="/signup" element={<Navigate to="/" replace />} />

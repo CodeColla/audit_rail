@@ -3,10 +3,11 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import {
   LayoutGrid, ClipboardCheck, Diamond, FileText, FolderCheck,
   CalendarClock, BarChart3, Settings, Users, Boxes, ShieldCheck,
-  Flame, Database, Truck, Siren, KeyRound, LogOut,
+  Flame, Database, Truck, Siren, KeyRound, LogOut, CreditCard,
 } from "lucide-react";
 import { Avatar, OrgLogo } from "./Avatar";
 import { GlobalSearch } from "./GlobalSearch";
+import { PlanLimitDialog } from "./PlanLimitDialog";
 import { useAuth, useCan } from "../lib/auth";
 import { cn } from "../lib/ui";
 import { PoweredBy, Wordmark } from "./Brand";
@@ -45,6 +46,7 @@ const TITLES: Record<string, string> = {
   "/third-parties": "Third parties", "/incidents": "Incidents",
   "/documents": "Documents", "/roles": "Roles", "/account/password": "Account",
   "/evidence": "Evidence", "/tasks": "Tasks", "/reports": "Reports", "/admin": "Admin",
+  "/billing": "Billing",
 };
 
 /** Longest matching prefix, so `/risks/view/:id` still reads "Risks" instead of blank. */
@@ -184,6 +186,9 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="grid min-h-screen grid-cols-[236px_1fr]">
+      {/* Phase 10: reacts to the "ar:plan-limit" window event any 402 broadcasts
+          (lib/api.ts) — one mount covers every page under the Shell. */}
+      <PlanLimitDialog />
       {/* sidebar (fully light) */}
       {/* The nav list scrolls INSIDE the sidebar. Splitting Registers into five menus pushed
           the item count to fourteen; with a plain h-screen column the tail of the list (and
@@ -238,6 +243,13 @@ export function Shell({ children }: { children: ReactNode }) {
               "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium",
               isActive ? "bg-[rgba(249,115,22,0.09)] text-ink" : "text-txt2 hover:bg-canvas")}>
               <Settings size={16} strokeWidth={1.7} /> Admin
+            </NavLink>
+          )}
+          {can("billing", "view") && (
+            <NavLink to="/billing" className={({ isActive }) => cn(
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium",
+              isActive ? "bg-[rgba(249,115,22,0.09)] text-ink" : "text-txt2 hover:bg-canvas")}>
+              <CreditCard size={16} strokeWidth={1.7} /> Billing
             </NavLink>
           )}
           {/* Unconditional, and that fixes a latent bug: both links above are permission
