@@ -17,6 +17,13 @@ argon2-cffi>=23.1
 # same reasoning as the Pillow line below.
 cryptography>=42
 
+# Phase 10, S3a: the Razorpay REST client (api/domain/razorpay_client.py) is ~6 plain
+# HTTP calls with basic auth — not enough surface to justify the official `razorpay` SDK,
+# and a thin client over something already a dependency is trivial to fake in tests.
+# Moved up from "Dev/test" below: it was already there as the TestClient's own dependency,
+# but that undersold it — it's runtime now, not just a test harness detail.
+httpx>=0.28
+
 # M5: recurring-task scheduler
 APScheduler>=3.10
 
@@ -48,7 +55,6 @@ loguru>=0.7
 
 # Dev/test
 pytest>=8.0
-httpx>=0.28          # Starlette TestClient
 # pypdf is a hard dependency of xhtml2pdf, so it is always present wherever the renderer is.
 # Named here because the render tests READ published PDFs back — a static frame that overflows
 # is dropped in silence, and text extraction is the only thing that catches it.

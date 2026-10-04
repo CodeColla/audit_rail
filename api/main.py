@@ -52,6 +52,8 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
      "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
     ("tenant_plans", "plan_code", "see docs/phase10/02-migration.sql"),
     ("deployment_license", "token", "see docs/phase10/02-migration.sql"),
+    ("razorpay_subscriptions", "status", "see docs/phase10/02-migration.sql"),
+    ("billing_events", "payload", "see docs/phase10/02-migration.sql"),
 ]
 
 
@@ -140,6 +142,12 @@ app.include_router(billing.router, prefix="/api")
 # row is derived from the token (see api/routers/signing.py). Mounted under /api so the
 # SPA's Vite proxy reaches it; the user-facing link is the SPA page /sign/{token}.
 app.include_router(signing.router, prefix="/api")
+
+# PUBLIC, unauthenticated: Razorpay's own webhook (Phase 10, S3a). Razorpay calls this
+# directly — no session, no browser — so the HMAC signature on the raw body
+# (api/domain/billing.verify_webhook) is the only thing that authenticates it, the same
+# posture as the signing router just above.
+app.include_router(billing.public_router, prefix="/api")
 
 
 # Test-only hooks for the browser suite — states a browser cannot reach (e.g. a password

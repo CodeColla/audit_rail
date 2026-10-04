@@ -67,6 +67,33 @@ class Settings(BaseSettings):
     # usage is frozen at its current level. See api/domain/entitlements.py.
     license_grace_days: int = 30
 
+    # ── Razorpay (Phase 10, S3a) — Public mode only; never read in enterprise mode ────
+    # Empty by default: every billing route 503s "not configured" rather than crashing,
+    # so pytest and e2e stay fully offline (api/routers/billing.py). Test-mode values go
+    # in .env (gitignored); live values go in _docker/env/api.env, never committed.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    # Set in the Razorpay dashboard when the webhook is created — a value YOU choose,
+    # never derived from razorpay_key_secret. Verifies api/domain/billing.verify_webhook.
+    razorpay_webhook_secret: str = ""
+    # Razorpay `plan_…` ids — created once per environment (scripts/create_razorpay_plans.py),
+    # and DIFFERENT between test and live, so these are never hard-coded in api/domain/plans.py
+    # the way prices and limits are.
+    razorpay_plan_pro_monthly: str = ""
+    razorpay_plan_pro_yearly: str = ""
+    razorpay_plan_addon_audits_monthly: str = ""
+    razorpay_plan_addon_audits_yearly: str = ""
+    razorpay_plan_addon_storage_monthly: str = ""
+    razorpay_plan_addon_storage_yearly: str = ""
+    # How long a Pro subscription keeps its limits after Razorpay reports a failed
+    # charge (status pending/halted) before api/domain/billing.sync_tenant_plan drops it
+    # to Free. See api/domain/entitlements.py's existing past_due/grace_until handling —
+    # this is the number that FILLS that column; entitlements.py itself just reads it.
+    billing_grace_days: int = 7
+    # 0 until SR Associates registers for GST (req/phase10/00-issue-19.md §1) — kept as a
+    # setting, not a hard-coded 0, so switching it on is a config change, not a redeploy.
+    gst_rate: float = 0.0
+
 
 @lru_cache
 def get_settings() -> Settings:

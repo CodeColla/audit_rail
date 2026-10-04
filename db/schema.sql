@@ -175,6 +175,43 @@ CREATE TABLE deployment_license (
     applied_by_user_id text REFERENCES users(id)
 );
 
+-- Phase 10, S3a — Public mode's Razorpay side. One row per Razorpay Subscription; a Pro
+-- tenant has at most one 'pro' row live at a time plus zero or more add-on rows (each
+-- add-on PACK is its own subscription with its own `quantity` — Razorpay's own "addons"
+-- are one-time charges only, not a recurring line, so this is the only way to bill a
+-- recurring add-on). `id` is Razorpay's own id (sub_…), not a generated uuid, so a webhook
+-- event — which only ever carries Razorpay's id — maps straight to a row with no lookup
+-- table in between. `status` mirrors Razorpay's own vocabulary verbatim (created,
+-- authenticated, active, pending, halted, cancelled, completed, expired) rather than a
+-- CHECK enumerating it, because Razorpay has added statuses before and a CHECK would turn
+-- that into an outage instead of an unrecognised row.
+CREATE TABLE razorpay_subscriptions (
+    id                 text PRIMARY KEY,
+    tenant_id          text NOT NULL REFERENCES tenants(id),
+    item               text NOT NULL CHECK (item IN ('pro', 'addon_audits', 'addon_storage')),
+    billing_cycle      text NOT NULL CHECK (billing_cycle IN ('monthly', 'yearly')),
+    quantity           integer NOT NULL DEFAULT 1,
+    status             text NOT NULL,
+    current_end        iso_ts,
+    short_url          text,
+    created_by_user_id text REFERENCES users(id),
+    created_at         iso_ts NOT NULL DEFAULT now_iso(),
+    updated_at         iso_ts NOT NULL DEFAULT now_iso()
+);
+
+-- The webhook log. `razorpay_event_id` (X-Razorpay-Event-Id, which is also in the payload
+-- body) is the PRIMARY KEY specifically so a replayed delivery — Razorpay retries on
+-- anything but a 200 — is a plain INSERT conflict, not application logic that has to get
+-- idempotency right on its own.
+CREATE TABLE billing_events (
+    razorpay_event_id text PRIMARY KEY,
+    event_type         text NOT NULL,
+    tenant_id          text REFERENCES tenants(id),
+    payload            jsonb NOT NULL,
+    received_at        iso_ts NOT NULL DEFAULT now_iso(),
+    processed_at       iso_ts
+);
+
 -- P4. Password policy support: min 8 alphanumeric, expires after 30 days, and the previous
 -- 3 hashes may not be reused.
 --   level 0 = current password, 1 = previous, 2 = the one before that.
