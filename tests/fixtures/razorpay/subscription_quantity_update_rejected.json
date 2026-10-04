@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "BAD_REQUEST_ERROR",
+    "description": "Can't update subscription when subscription is not in Authenticated or Active state",
+    "field": "status"
+  }
+}

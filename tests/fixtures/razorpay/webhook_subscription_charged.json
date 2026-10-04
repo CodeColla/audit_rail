@@ -1,0 +1,49 @@
+{
+  "entity": "event",
+  "account_id": "acc_test",
+  "event": "subscription.charged",
+  "contains": ["payment", "subscription"],
+  "payload": {
+    "payment": {
+      "entity": {
+        "id": "pay_00000000000001",
+        "entity": "payment",
+        "amount": 249900,
+        "currency": "INR",
+        "status": "captured",
+        "order_id": null,
+        "invoice_id": "inv_00000000000001",
+        "method": "upi",
+        "captured": true,
+        "created_at": 1791137114
+      }
+    },
+    "subscription": {
+      "entity": {
+        "id": "sub_TjvKYzsWE3hWMj",
+        "entity": "subscription",
+        "plan_id": "plan_TjvKXnhZsZ5ELg",
+        "status": "active",
+        "current_start": 1791137114,
+        "current_end": 1793729114,
+        "ended_at": null,
+        "quantity": 1,
+        "notes": {"tenant_id": "spike-tenant-id"},
+        "charge_at": 1793729114,
+        "start_at": 1791137114,
+        "end_at": null,
+        "auth_attempts": 1,
+        "total_count": 120,
+        "paid_count": 1,
+        "customer_notify": true,
+        "created_at": 1791137114,
+        "short_url": "https://rzp.io/rzp/BKkl3xlK",
+        "has_scheduled_changes": false,
+        "change_scheduled_at": null,
+        "source": "api",
+        "remaining_count": 119
+      }
+    }
+  },
+  "created_at": 1791137200
+}

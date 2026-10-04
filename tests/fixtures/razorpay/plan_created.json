@@ -1,0 +1,29 @@
+{
+  "id": "plan_TjvKXnhZsZ5ELg",
+  "entity": "plan",
+  "interval": 1,
+  "period": "monthly",
+  "item": {
+    "id": "item_TjvKXn6phGRuvS",
+    "active": true,
+    "name": "Auditrail Pro (monthly) TEST",
+    "description": "Phase 10 spike \u2014 safe to delete",
+    "amount": 249900,
+    "unit_amount": 249900,
+    "currency": "INR",
+    "type": "plan",
+    "unit": null,
+    "tax_inclusive": false,
+    "hsn_code": null,
+    "sac_code": null,
+    "tax_rate": null,
+    "tax_id": null,
+    "tax_group_id": null,
+    "created_at": 1791137113,
+    "updated_at": 1791137113
+  },
+  "notes": {
+    "purpose": "phase10-spike"
+  },
+  "created_at": 1791137113
+}
