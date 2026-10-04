@@ -202,6 +202,11 @@ Four things that fail quietly if you skip them — all covered in `_docker/READM
 - **HTTPS.** `navigator.clipboard` is undefined outside a secure context, so the "copy
   attestation link" buttons silently do nothing on plain HTTP.
 
+The same image above also serves a second deployment shape — a standalone, single-tenant
+**Enterprise** deployment with no payment gateway, entitled by a signed license token
+instead (`DEPLOYMENT_MODE=enterprise`). See **[`LICENSE.md`](LICENSE.md)** for issuing and
+applying one.
+
 ---
 
 ## Project status
