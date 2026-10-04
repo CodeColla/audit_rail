@@ -51,6 +51,7 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
     ("files", "purpose",
      "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
     ("tenant_plans", "plan_code", "see docs/phase10/02-migration.sql"),
+    ("deployment_license", "token", "see docs/phase10/02-migration.sql"),
 ]
 
 

@@ -158,6 +158,23 @@ CREATE TABLE users (
     last_login_at      iso_ts
 );
 
+-- Phase 10 extension (req/phase10/00-issue-19.md, docs/phase10/03-enterprise-licensing.md).
+-- A SINGLETON — id is always 1 — because a license belongs to the whole DEPLOYMENT, not to
+-- any one tenant: a standalone Enterprise deployment (its own database, its own
+-- containers — never a row in the shared Public tenant_plans table above) is always
+-- single-tenant by design. `token` is a signed RS256 JWT the vendor mints OFFLINE
+-- (scripts/issue_license.py); the app only ever verifies it (api/domain/licensing.py)
+-- against a public key, never signs one. This table exists in EVERY deployment's schema
+-- (same schema.sql, same Docker image either way) — a Public deployment simply never
+-- writes to it, because api/domain/entitlements.py only reads it when
+-- settings.deployment_mode == 'enterprise'.
+CREATE TABLE deployment_license (
+    id                 integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    token              text NOT NULL,
+    applied_at         iso_ts NOT NULL DEFAULT now_iso(),
+    applied_by_user_id text REFERENCES users(id)
+);
+
 -- P4. Password policy support: min 8 alphanumeric, expires after 30 days, and the previous
 -- 3 hashes may not be reused.
 --   level 0 = current password, 1 = previous, 2 = the one before that.

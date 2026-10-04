@@ -238,8 +238,45 @@ S1 and S2a can start in parallel straight away.
 - [ ] Pro 14-day free trial on top of Free? *Default: no.* Free already covers trying it out.
 - [ ] International (USD) in the next 6 months? *Default: no, INR only.* Revisit as a later phase.
 
+## 8. Addendum (2026-10-04): Enterprise licensing
+
+The original ask above puts Enterprise out of scope ("Enterprise is all custom, no need to
+get that here"). This addendum brings it back in, as a genuinely different deployment
+shape rather than another row in the Public tier table above.
+
+**What it is:** Enterprise is always its own **standalone deployment** — its own database
+and containers, run either on the customer's own infrastructure or as a dedicated instance
+on ours — never a tenant inside the shared Public database. There's no payment gateway.
+Instead, a signed license token (RS256 JWT, minted offline) encodes `max_members` and
+`storage_gb`; the app verifies and reads it. Growing a deal is minting a new token with
+bigger numbers and handing it over — no code change, no gateway, no DB migration.
+
+**Locked decisions:**
+- Always a separate deployment (never a shared-database row). Same Docker image serves
+  both Public and Enterprise; only `DEPLOYMENT_MODE` differs.
+- On expiry, or before any license is ever applied, after a 30-day grace: **freeze at
+  current usage** — no new audits/logins/storage beyond what already exists; nothing
+  already there is ever touched, deleted, or made read-only.
+- A new in-app **License screen**: the vendor mints the token and sends it over; the
+  customer's own Super Admin pastes it in. Works however the deployment is hosted — the
+  vendor never needs shell or database access to it.
+- Active audits stay **unlimited always**, licensed or not — only `max_members` and
+  `storage_bytes` are ever governed by the token, matching "Enterprise: Contract" above.
+
+**Why RS256, not the HS256 the rest of this app's logins use:** a login JWT is both
+signed and verified by the same server, so one shared secret is fine. A license token can
+be verified by a server the *customer* runs — if that verification secret were the same
+as the signing secret, they could mint their own unlimited license. RS256 means only a
+public key (not secret) ships in every deployment; the private key that mints a license
+never leaves the vendor's own machine.
+
+Full design and the state machine: `docs/phase10/03-enterprise-licensing.md`. Owner-side
+tooling: `scripts/generate_license_keypair.py` (once, ever) and `scripts/issue_license.py`
+(per deal, per renewal).
+
 ## Out of scope
-- Enterprise self-serve (stays sales-led)
+- Enterprise self-serve **purchasing** (the deal itself is still made directly with the
+  owner; only *applying* an already-issued license is self-service)
 - Usage-based metering beyond audits, storage and members
 - Coupons and discounts
 - Multi-currency

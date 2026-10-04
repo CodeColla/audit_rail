@@ -50,6 +50,23 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = True
     scheduler_interval_minutes: int = 60
 
+    # ── Deployment mode (Phase 10 — Enterprise licensing) ───────────────────
+    # "public": the shared, multi-tenant SaaS — Free/Pro/Enterprise plans via tenant_plans,
+    # Pro sold through Razorpay (api/domain/plans.py, entitlements.py).
+    # "enterprise": a standalone, single-tenant deployment (the customer's own infra, or a
+    # dedicated instance on ours) with NO payment gateway — entitlement comes from a signed
+    # RS256 license token instead (api/domain/licensing.py). Same Docker image either way;
+    # only this flag (and, for enterprise, applying a license) differs.
+    deployment_mode: str = "public"
+    # The PUBLIC half of an offline-generated RSA keypair — safe to ship in every image,
+    # a Public deployment just never reads it. The PRIVATE half never leaves the vendor's
+    # own machine; see scripts/generate_license_keypair.py and scripts/issue_license.py.
+    license_public_key_path: str = os.path.join(BASE_DIR, "license_public_key.pem")
+    # How long a license keeps its last-known numbers after it expires (or how long a
+    # brand-new enterprise deployment runs unlimited before one is ever applied) before
+    # usage is frozen at its current level. See api/domain/entitlements.py.
+    license_grace_days: int = 30
+
 
 @lru_cache
 def get_settings() -> Settings:
