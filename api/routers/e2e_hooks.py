@@ -84,3 +84,43 @@ def set_nda_document(body: SetNdaIn, user: Principal = Depends(get_current_user)
             {"i": str(uuid.uuid4()), "t": user.tenant_id, "s": f"trust-{user.tenant_id}",
              "d": body.document_id})
     return {"ok": True}
+
+
+class BillingEventIn(StrictModel):
+    subscription_id: str
+    item: str = "pro"                   # "pro" | "addon_audits" | "addon_storage"
+    billing_cycle: str = "monthly"
+    quantity: int = 1
+    status: str                         # "active" | "pending" | "halted" | "cancelled" | ...
+    current_end: str | None = None      # iso_ts
+
+
+@router.post("/billing-event")
+def billing_event(body: BillingEventIn, user: Principal = Depends(get_current_user)):
+    """Stands in for a real Razorpay webhook delivery (Phase 10, S3b e2e). The browser
+    suite stubs POST /billing/checkout and /billing/verify client-side — there is no real
+    Razorpay in this stack to deliver a webhook at all — so this is what actually writes
+    the subscription state a real webhook would have, letting the UI's own GET /billing
+    read back something genuine afterward. Upserts the row (a stubbed checkout never
+    created one for real) then runs the exact sync_tenant_plan() a webhook would trigger.
+    """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    from api.core.database import t
+    from api.core.util import now_iso
+    from api.domain import billing as billing_domain
+
+    rs = t("razorpay_subscriptions")
+    now = now_iso()
+    with engine.begin() as conn:
+        stmt = pg_insert(rs).values(
+            id=body.subscription_id, tenant_id=user.tenant_id, item=body.item,
+            billing_cycle=body.billing_cycle, quantity=body.quantity, status=body.status,
+            current_end=body.current_end, created_by_user_id=user.user_id,
+            created_at=now, updated_at=now,
+        ).on_conflict_do_update(index_elements=["id"], set_=dict(
+            status=body.status, quantity=body.quantity, current_end=body.current_end,
+            updated_at=now))
+        conn.execute(stmt)
+        billing_domain.sync_tenant_plan(conn, user.tenant_id)
+    return {"ok": True}

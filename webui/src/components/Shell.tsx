@@ -6,6 +6,7 @@ import {
   Flame, Database, Truck, Siren, KeyRound, LogOut, CreditCard,
 } from "lucide-react";
 import { Avatar, OrgLogo } from "./Avatar";
+import { BillingBanner } from "./BillingBanner";
 import { GlobalSearch } from "./GlobalSearch";
 import { PlanLimitDialog } from "./PlanLimitDialog";
 import { useAuth, useCan } from "../lib/auth";
@@ -277,6 +278,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <GlobalSearch />
           <AccountMenu />
         </header>
+        <BillingBanner />
         <div className="mx-auto w-full max-w-[1220px] px-6 pb-16 pt-6">{children}</div>
       </div>
     </div>

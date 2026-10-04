@@ -302,7 +302,8 @@ def change_addons(body: AddonsIn, user: Principal = Depends(require("billing", "
     activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
                  action="billing.addons_changed", entity_type="tenant",
                  entity_id=user.tenant_id, detail={"changes": changes})
-    return {"ok": True, "subscriptions": changes}
+    return {"ok": True, "subscriptions": changes, "key_id": settings.razorpay_key_id,
+           "prefill": {"name": user["full_name"], "email": user["email"]}}
 
 
 @router.post("/billing/cancel")

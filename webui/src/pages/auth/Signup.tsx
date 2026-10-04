@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AuthLayout } from "../../components/AuthLayout";
 import { useAuth } from "../../lib/auth";
 import { errText } from "../../lib/api";
@@ -16,6 +16,11 @@ import { errText } from "../../lib/api";
 export default function Signup() {
   const { signup } = useAuth();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  // Phase 10: the landing page's Pro card links here with ?plan=pro — take them straight
+  // to the upgrade flow instead of the dashboard, so clicking "Start free, upgrade
+  // anytime" actually leads somewhere, not just a plain signup.
+  const wantsPro = params.get("plan") === "pro";
   const [f, setF] = useState({ full_name: "", email: "", password: "",
     organisation_name: "", gst_number: "" });
   const [err, setErr] = useState("");
@@ -28,7 +33,7 @@ export default function Signup() {
     setBusy(true); setErr("");
     try {
       await signup(f);
-      nav("/");
+      nav(wantsPro ? "/billing?upgrade=pro" : "/");
     } catch (e: any) {
       setErr(errText(e, "Could not create the account."));
     } finally {
