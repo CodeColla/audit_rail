@@ -21,11 +21,14 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 NOW = "2026-07-16T00:00:00Z"
 PG_USER, PG_PASS, PG_HOST, PG_PORT = "audit", "audit", "localhost", "5434"
-ADMIN_URL = f"postgresql+psycopg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/audit_rail"
 TEST_DB = "audit_rail_test"
-TEST_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    f"postgresql+psycopg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{TEST_DB}",
+# TEST_DATABASE_URL wins; DATABASE_URL is accepted too (it is what the e2e env file sets).
+# Unset, the repo's original local default applies. Either way the target must pass the guard
+# in _ensure_test_database() below, so a stray env var cannot point the suite at real data.
+TEST_URL = (
+    os.environ.get("TEST_DATABASE_URL")
+    or os.environ.get("DATABASE_URL")
+    or f"postgresql+psycopg://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{TEST_DB}"
 )
 
 # ── point the app at the TEST database, at conftest IMPORT time ────────────────────────
@@ -42,18 +45,39 @@ os.environ.setdefault("VAULT_DIR", tempfile.mkdtemp(prefix="ar-test-vault-"))
 
 
 def _ensure_test_database() -> None:
-    """Refuse to run unless the target is the dedicated e2e test database.
+    """Create the test database on demand, after a guard.
 
-    The shared server holds other databases, and reset_schema() drops the target's schema,
-    so this is the only guard between a test run and real data. The database must already
-    exist; nothing here creates one.
+    reset_schema() drops the target's schema, so the guard is the only line between a test
+    run and a real database: refuse the exact name `sr_auditrail`, and anything whose name
+    does not say it is a test or e2e database. The admin connection goes to the `postgres`
+    maintenance database on the same server, and only a missing test database is created.
     """
+    import re
     from sqlalchemy.engine import make_url
-    name = make_url(TEST_URL).database
-    if name != "sr_auditrail_e2e":
+
+    url = make_url(TEST_URL)
+    name = url.database or ""
+    if name == "sr_auditrail" or not re.fullmatch(r"[A-Za-z0-9_]+", name) \
+            or not ("e2e" in name or "test" in name):
         pytest.exit(
-            f"\nRefusing to run tests against database {name!r}: only 'sr_auditrail_e2e' "
-            f"is allowed. Set TEST_DATABASE_URL to that database.\n",
+            f"\nRefusing to run tests against database {name!r}: the name must contain "
+            f"'e2e' or 'test' and must not be 'sr_auditrail'.\n",
+            returncode=1,
+        )
+    try:
+        admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT",
+                              future=True)
+        with admin.connect() as c:
+            exists = c.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": name}
+            ).scalar()
+            if not exists:
+                c.execute(text(f'CREATE DATABASE "{name}"'))
+        admin.dispose()
+    except Exception as e:  # noqa: BLE001 — surface a helpful message, not a stack trace
+        pytest.exit(
+            f"\nCannot reach PostgreSQL for {name!r} ({e.__class__.__name__}).\n"
+            f"Start it first:  docker compose up -d\n",
             returncode=1,
         )
 

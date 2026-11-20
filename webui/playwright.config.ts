@@ -18,9 +18,19 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
  */
 
 const REPO = path.resolve(HERE, "..");
-const API_PORT = 5099;
-const UI_PORT = 3099;
-const E2E_DB = "postgresql+psycopg://audit:audit@localhost:5434/audit_rail_e2e";
+// Ports and the database can be overridden from the environment; the defaults are the
+// repo's own local e2e stack and are unchanged when nothing is set.
+const API_PORT = Number(process.env.E2E_API_PORT ?? 5099);
+const UI_PORT = Number(process.env.E2E_UI_PORT ?? 3099);
+const DEFAULT_E2E_DB = "postgresql+psycopg://audit:audit@localhost:5434/audit_rail_e2e";
+const E2E_DB = process.env.E2E_DATABASE_URL ?? DEFAULT_E2E_DB;
+// Test-only endpoints are enabled only for the ephemeral API this config starts, and only
+// against the repo's e2e databases. Any other database runs with hooks off.
+const E2E_DB_NAME = new URL(E2E_DB.replace(/^postgresql\+psycopg:/, "postgresql:")).pathname.slice(1);
+const HOOKS_ALLOWED_DB = ["audit_rail_e2e", "sr_auditrail_e2e"].includes(E2E_DB_NAME);
+// A custom database or port means this run must own its servers: never attach to an
+// already-running API that might be pointed somewhere else.
+const CUSTOM_STACK = Boolean(process.env.E2E_DATABASE_URL || process.env.E2E_API_PORT || process.env.E2E_UI_PORT);
 
 export default defineConfig({
   testDir: "./e2e",
@@ -57,20 +67,23 @@ export default defineConfig({
       command: `.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port ${API_PORT}`,
       cwd: REPO,
       port: API_PORT,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: !process.env.CI && !CUSTOM_STACK,
       timeout: 60_000,
       env: {
         DATABASE_URL: E2E_DB,
         JWT_SECRET: "e2e-secret-not-for-production-use-only-32b",
         SCHEDULER_ENABLED: "false",
-        E2E_TEST_HOOKS: "1",
+        // Set explicitly in both directions so an inherited shell value cannot enable hooks.
+        E2E_TEST_HOOKS: HOOKS_ALLOWED_DB ? "1" : "",
       },
     },
     {
-      command: "npm run dev",
+      // Bind IPv4 explicitly: Vite's default "localhost" can resolve to ::1 here, which
+      // refuses the 127.0.0.1 baseURL below.
+      command: "npm run dev -- --host 127.0.0.1",
       cwd: HERE,
       port: UI_PORT,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: !process.env.CI && !CUSTOM_STACK,
       timeout: 60_000,
       env: {
         VITE_PORT: String(UI_PORT),
