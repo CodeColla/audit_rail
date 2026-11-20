@@ -42,20 +42,18 @@ os.environ.setdefault("VAULT_DIR", tempfile.mkdtemp(prefix="ar-test-vault-"))
 
 
 def _ensure_test_database() -> None:
-    """CREATE DATABASE audit_rail_test if it doesn't exist (needs AUTOCOMMIT)."""
-    try:
-        admin = create_engine(ADMIN_URL, isolation_level="AUTOCOMMIT", future=True)
-        with admin.connect() as c:
-            exists = c.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :d"), {"d": TEST_DB}
-            ).scalar()
-            if not exists:
-                c.execute(text(f'CREATE DATABASE "{TEST_DB}"'))
-        admin.dispose()
-    except Exception as e:  # noqa: BLE001 — surface a helpful message, not a stack trace
+    """Refuse to run unless the target is the dedicated e2e test database.
+
+    The shared server holds other databases, and reset_schema() drops the target's schema,
+    so this is the only guard between a test run and real data. The database must already
+    exist; nothing here creates one.
+    """
+    from sqlalchemy.engine import make_url
+    name = make_url(TEST_URL).database
+    if name != "sr_auditrail_e2e":
         pytest.exit(
-            f"\nCannot reach PostgreSQL at {PG_HOST}:{PG_PORT} ({e.__class__.__name__}).\n"
-            f"Start it first:  docker compose up -d\n",
+            f"\nRefusing to run tests against database {name!r}: only 'sr_auditrail_e2e' "
+            f"is allowed. Set TEST_DATABASE_URL to that database.\n",
             returncode=1,
         )
 

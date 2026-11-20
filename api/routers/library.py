@@ -54,9 +54,11 @@ def _control(conn, tenant_id: str, control_id: str) -> dict:
 @router.get("/domains")
 def list_domains(user: Principal = Depends(require("controls", "view")), conn=Depends(get_conn)):
     domains, controls = t("domains"), t("controls")
+    # Retired (soft-deleted) controls are not part of the library any more, so they must not
+    # inflate the sidebar count; the list endpoint already hides them the same way.
     counts = dict(conn.execute(
         select(controls.c.domain_id, func.count())
-        .where(controls.c.tenant_id == user.tenant_id)
+        .where(controls.c.tenant_id == user.tenant_id, controls.c.status == "active")
         .group_by(controls.c.domain_id)
     ).all())
     rows = conn.execute(

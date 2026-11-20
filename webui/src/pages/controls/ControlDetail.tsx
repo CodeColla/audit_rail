@@ -389,7 +389,7 @@ function SatisfiesClauses({ controlId, linked, canEdit }:
   const linkedIds = new Set(linked.map((c) => c.id));
   // grouped by framework, because "this answers three standards" is the point being made
   const byFramework = linked.reduce<Record<string, LinkedClause[]>>((acc, c) => {
-    (acc[c.framework_code] ??= []).push(c);
+    (acc[c.framework_id] ??= []).push(c);
     return acc;
   }, {});
 
@@ -408,10 +408,11 @@ function SatisfiesClauses({ controlId, linked, canEdit }:
           control — and its evidence — count toward ISO, SOC 2 or an RBI requirement.
         </div>
       )}
-      {Object.entries(byFramework).map(([code, rows]) => (
-        <div key={code} className="border-t border-bd py-2 first:border-t-0">
+      {Object.entries(byFramework).map(([fwId, rows]) => (
+        <div key={fwId} className="border-t border-bd py-2 first:border-t-0">
           <div className="mb-1 text-micro font-semibold uppercase tracking-[0.09em] text-txt3">
-            {code}
+            {rows[0].framework_name}
+            <span className="ml-2 font-mono normal-case tracking-normal">{rows[0].framework_code}</span>
           </div>
           {rows.map((c) => (
             <div key={c.id} className="flex items-baseline gap-2.5 py-0.5 text-label">
