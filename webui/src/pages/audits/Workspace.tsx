@@ -619,6 +619,63 @@ function NumberCell({ templateId, questionId, number, canEdit }: {
   );
 }
 
+/**
+ * #20 S5. One part of the audit heading (bank name or audit title), editable in place with the
+ * same blur/Enter-saves, Escape-cancels pattern as DrawerNumberEdit. The server refuses a blank
+ * value, so a blank draft is rejected here with a message instead of a silent revert.
+ */
+function HeadingField({ assessmentId, field, value, placeholder, canEdit, className }: {
+  assessmentId: string; field: "bank_name" | "title"; value: string | null; placeholder: string;
+  canEdit: boolean; className?: string;
+}) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value ?? "");
+  const [err, setErr] = useState("");
+  const label = field === "title" ? "audit title" : "bank name";
+  const save = useMutation({
+    mutationFn: (next: string) => api.patch(`/assessments/${assessmentId}`, { [field]: next }),
+    onSuccess: () => {
+      setErr("");
+      qc.invalidateQueries({ queryKey: ["assessment", assessmentId] });
+      qc.invalidateQueries({ queryKey: ["assessments"] });
+    },
+    onError: (e) => setErr(errText(e, `Could not save the ${label}.`)),
+  });
+
+  if (!canEdit) return <span className={className}>{value || placeholder}</span>;
+
+  if (!editing) {
+    return (
+      <button onClick={() => { setDraft(value ?? ""); setErr(""); setEditing(true); }}
+        title={`Edit ${label}`} aria-label={`Edit ${label}`}
+        className={cn("rounded px-1 hover:bg-canvas hover:text-ink", className)}>
+        {value || <span className="italic text-txt3">{placeholder}</span>}
+      </button>
+    );
+  }
+
+  const commit = () => {
+    setEditing(false);
+    const next = draft.trim();
+    if (!next) { setErr(`The ${label} cannot be blank.`); setDraft(value ?? ""); return; }
+    if (next !== (value ?? "")) save.mutate(next);
+  };
+
+  return (
+    <span className="inline-flex flex-col">
+      <input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit} maxLength={200} aria-label={`Audit ${label}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+          if (e.key === "Escape") { setDraft(value ?? ""); setEditing(false); }
+        }}
+        className={cn("rounded border border-bd bg-paper px-1.5 py-0.5 outline-none focus:border-accent", className)} />
+      {err && <span role="alert" className="text-caption text-bad">{err}</span>}
+    </span>
+  );
+}
+
 export default function Workspace() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -658,7 +715,13 @@ export default function Workspace() {
     <>
       <Link to="/audits" className="text-sm text-txt2 hover:text-ink">← All audits</Link>
       <div className="mb-1 mt-2 flex items-end gap-3">
-        <h1 className="text-title font-semibold tracking-[-0.01em]">{d.bank_name} — {d.title}</h1>
+        <h1 className="flex flex-wrap items-baseline gap-x-2 text-title font-semibold tracking-[-0.01em]">
+          <HeadingField assessmentId={id!} field="bank_name" value={d.bank_name} placeholder="no bank"
+            canEdit={canEdit} />
+          <span aria-hidden>—</span>
+          <HeadingField assessmentId={id!} field="title" value={d.title} placeholder="untitled"
+            canEdit={canEdit} />
+        </h1>
         <Pill tone={d.status}>{d.status.replace(/_/g, " ")}</Pill>
         {/* The audit lifecycle was unreachable: PATCH /assessments/{id} existed but nothing
             called it, so every audit stayed "draft" forever. */}

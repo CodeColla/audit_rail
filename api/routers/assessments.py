@@ -184,10 +184,15 @@ class StatusIn(StrictModel):
     status: str | None = None
     verdict: str | None = None
     verdict_notes: str | None = None
+    # #20 S5: the workspace heading is editable. Both are required when sent: a blank
+    # title would leave the audit unnamed, and a blank bank would be the same as no bank.
+    title: str | None = None
+    bank_name: str | None = None
 
 
 ASSESSMENT_STATUSES = ("draft", "in_progress", "submitted", "in_review",
                        "verdict_issued", "closed")
+ASSESSMENT_NAME_MAX = 200
 
 
 @router.patch("/{assessment_id}")
@@ -200,6 +205,14 @@ def update_assessment(assessment_id: str, body: StatusIn,
     # the column has a CHECK; without this a typo'd status surfaced as a raw 500
     if "status" in vals and vals["status"] not in ASSESSMENT_STATUSES:
         raise HTTPException(400, f"status must be one of {', '.join(ASSESSMENT_STATUSES)}")
+    for name in ("title", "bank_name"):
+        if name in vals:
+            vals[name] = vals[name].strip()
+            if not vals[name]:
+                raise HTTPException(400, f"{name.replace('_', ' ')} cannot be blank")
+            if len(vals[name]) > ASSESSMENT_NAME_MAX:
+                raise HTTPException(400, f"{name.replace('_', ' ')} is over "
+                                         f"{ASSESSMENT_NAME_MAX} characters")
     with engine.begin() as conn:
         _access(conn, user, assessment_id)
         conn.execute(update(a).where(a.c.id == assessment_id).values(**vals))
