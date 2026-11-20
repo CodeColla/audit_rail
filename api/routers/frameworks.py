@@ -26,7 +26,7 @@ from api.core.config import settings
 from api.core.auth import Principal
 from api.core.database import engine, get_conn, t
 from api.core.permissions import require
-from api.core.util import StrictModel, evidence_status, now_iso, today_iso
+from api.core.util import StrictModel, evidence_status, natural_key, now_iso, today_iso
 
 router = APIRouter(prefix="/frameworks", tags=["frameworks"])
 
@@ -153,9 +153,9 @@ def list_clauses(framework_id: str, user: Principal = Depends(require("controls"
                  conn=Depends(get_conn)):
     _framework(conn, user.tenant_id, framework_id)
     fc, ccm, c = t("framework_clauses"), t("control_clause_map"), t("controls")
-    clauses = [dict(r) for r in conn.execute(
-        select(fc).where(fc.c.framework_id == framework_id)
-        .order_by(fc.c.sort_order, fc.c.ref)).mappings()]
+    clauses = sorted((dict(r) for r in conn.execute(
+        select(fc).where(fc.c.framework_id == framework_id)).mappings()),
+        key=lambda r: (r["sort_order"], natural_key(r["ref"])))
 
     mapped: dict[str, list[dict]] = {}
     for r in conn.execute(
@@ -247,8 +247,8 @@ def readiness(framework_id: str, user: Principal = Depends(require("controls", "
         by_clause.setdefault(r["clause_id"], []).append(dict(r))
 
     out, tally = [], {"covered": 0, "stale": 0, "uncovered": 0}
-    for cl in conn.execute(select(fc).where(fc.c.framework_id == framework_id)
-                           .order_by(fc.c.sort_order, fc.c.ref)).mappings():
+    for cl in sorted(conn.execute(select(fc).where(fc.c.framework_id == framework_id))
+                     .mappings(), key=lambda c: (c["sort_order"], natural_key(c["ref"]))):
         controls = [x for x in by_clause.get(cl["id"], [])
                     if x["applicability"] == "applicable"]
         if not controls:

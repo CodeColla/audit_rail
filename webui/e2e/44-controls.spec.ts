@@ -195,3 +195,28 @@ test.describe("permissions", () => {
     await viewerCtx.close();
   });
 });
+
+test.describe("framework tab ordering (#20 S2)", () => {
+  test("control codes sort by number inside a domain, not by character", async ({ page }) => {
+    // Own prefix per run, so the rows we assert on are exactly the ones created here.
+    const prefix = `NS${uniq()}`;
+    await page.goto("/");
+    const token = await page.evaluate(() => localStorage.getItem("ar_token"));
+    const auth = { Authorization: `Bearer ${token}` };
+    const domains = await (await page.request.get("/api/library/domains", { headers: auth })).json();
+    const domainId = domains[0].id;
+    for (const n of [10, 2, 11, 1]) {
+      const r = await page.request.post("/api/library/controls", {
+        headers: auth,
+        data: { domain_id: domainId, code: `${prefix}-${n}`, statement: `Natural order ${n}`,
+                lifecycle: "per_audit" },
+      });
+      expect(r.status(), await r.text()).toBe(201);
+    }
+
+    await page.goto("/controls");
+    const codes = await page.locator("table tbody tr", { hasText: prefix })
+      .locator("td:first-child").allTextContents();
+    expect(codes).toEqual([`${prefix}-1`, `${prefix}-2`, `${prefix}-10`, `${prefix}-11`]);
+  });
+});

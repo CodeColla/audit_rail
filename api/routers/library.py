@@ -16,7 +16,7 @@ from api.core import activity
 from api.core.auth import Principal
 from api.core.permissions import require
 from api.core.database import engine, get_conn, t
-from api.core.util import StrictModel, evidence_status, now_iso, today_iso
+from api.core.util import StrictModel, evidence_status, natural_key, now_iso, today_iso
 
 router = APIRouter(prefix="/library", tags=["library"])
 
@@ -105,10 +105,10 @@ def list_controls(
     ).all())
     stmt = (
         select(controls, domains.c.name.label("domain_name"),
-               domains.c.code.label("domain_code"))
+               domains.c.code.label("domain_code"),
+               domains.c.sort_order.label("_domain_order"))
         .join(domains, controls.c.domain_id == domains.c.id)
         .where(controls.c.tenant_id == user.tenant_id)
-        .order_by(domains.c.sort_order, controls.c.code)
     )
     if not include_retired:
         stmt = stmt.where(controls.c.status == "active")
@@ -122,10 +122,15 @@ def list_controls(
         like = f"%{q.lower()}%"
         stmt = stmt.where(func.lower(controls.c.code).like(like)
                           | func.lower(controls.c.statement).like(like))
-    return [{**dict(r), "mapped_count": counts.get(r["id"], 0),
+    # Domains keep their own order; inside a domain, codes sort by number, not by character
+    # (DPDP-2 before DPDP-10). Done here because there is no pagination to push into SQL.
+    rows = [dict(r) for r in conn.execute(stmt).mappings()]
+    rows.sort(key=lambda r: (r["_domain_order"], natural_key(r["code"])))
+    return [{**{k: v for k, v in r.items() if k != "_domain_order"},
+             "mapped_count": counts.get(r["id"], 0),
              "evidence_count": evidence_counts.get(r["id"], 0),
              "document_count": document_counts.get(r["id"], 0)}
-            for r in conn.execute(stmt).mappings()]
+            for r in rows]
 
 
 @router.get("/controls/{control_id}")
@@ -205,14 +210,17 @@ def control_detail(
     # control routinely answers ISO, SOC 2 and an RBI clause at once, which is what lets the
     # evidence above be gathered once and count toward every certification.
     ccm, fc, fw = t("control_clause_map"), t("framework_clauses"), t("frameworks")
-    linked_clauses = conn.execute(
+    linked_rows = [dict(r) for r in conn.execute(
         select(fc.c.id, fc.c.ref, fc.c.title, fw.c.id.label("framework_id"),
-               fw.c.code.label("framework_code"), fw.c.name.label("framework_name"))
+               fw.c.code.label("framework_code"), fw.c.name.label("framework_name"),
+               fc.c.sort_order.label("_sort"))
         .select_from(ccm.join(fc, ccm.c.clause_id == fc.c.id)
                         .join(fw, fc.c.framework_id == fw.c.id))
         .where(ccm.c.control_id == control_id, ccm.c.tenant_id == user.tenant_id)
-        .order_by(fw.c.code, fc.c.sort_order, fc.c.ref)
-    ).mappings().all()
+    ).mappings()]
+    linked_rows.sort(key=lambda r: (natural_key(r["framework_code"]), r["_sort"],
+                                    natural_key(r["ref"])))
+    linked_clauses = [{k: v for k, v in r.items() if k != "_sort"} for r in linked_rows]
     return {**dict(row), "mapped_points": [dict(m) for m in mapped],
             "linked_risks": [dict(r) for r in linked_risks],
             "linked_obligations": [dict(o) for o in linked_obligations],

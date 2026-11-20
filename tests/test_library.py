@@ -154,3 +154,34 @@ def test_domain_count_excludes_retired_controls(app_client):
     assert mine["control_count"] == 2
     listed = app_client.get("/api/library/controls?domain_code=RCNT", headers=h).json()
     assert len(listed) == mine["control_count"]
+
+
+def test_natural_key_orders_numbers_as_numbers():
+    from api.core.util import natural_key
+    codes = ["DPDP-10", "DPDP-2", "DPDP-11", "DPDP-1"]
+    assert sorted(codes, key=natural_key) == ["DPDP-1", "DPDP-2", "DPDP-10", "DPDP-11"]
+    assert sorted(["A.5.10", "A.5.9", "A.5.1"], key=natural_key) == ["A.5.1", "A.5.9", "A.5.10"]
+    # text and digit runs never compare against each other at the same position
+    assert sorted(["X", "X1", "1X", ""], key=natural_key)[0] == ""
+
+
+def test_controls_list_sorts_codes_numerically_within_a_domain(app_client):
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    dom, now = str(uuid.uuid4()), "2026-07-11T00:00:00Z"
+    with engine.begin() as c:
+        c.execute(sqltext("INSERT INTO domains (id,tenant_id,code,name,sort_order) "
+                          "VALUES (:i,:t,'NATS','Natural sort',91)"), {"i": dom, "t": tid})
+        for code in ["NATS-10", "NATS-2", "NATS-11", "NATS-1"]:
+            c.execute(sqltext(
+                "INSERT INTO controls (id,tenant_id,domain_id,code,statement,lifecycle,"
+                "applicability,status,created_at,updated_at) VALUES "
+                "(:i,:t,:d,:code,'x','per_audit','applicable','active',:n,:n)"),
+                {"i": str(uuid.uuid4()), "t": tid, "d": dom, "code": code, "n": now})
+    tok = token(app_client, "member@kiam.example", "secret2")
+    h = {"Authorization": f"Bearer {tok}"}
+    listed = app_client.get("/api/library/controls?domain_code=NATS", headers=h).json()
+    assert [r["code"] for r in listed] == ["NATS-1", "NATS-2", "NATS-10", "NATS-11"]
+    # the domain's own fields are still there; the internal sort key is not leaked
+    assert listed[0]["domain_code"] == "NATS" and "_domain_order" not in listed[0]

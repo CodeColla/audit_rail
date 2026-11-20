@@ -98,6 +98,17 @@ def evidence_status(valid_until: str | None, today: str, soon_days: int = 60) ->
     return "expiring" if days <= soon_days else "valid"
 
 
+def natural_key(text: str | None) -> list:
+    """Sort key that compares digit runs as numbers, so DPDP-2 < DPDP-10 < DPDP-11.
+
+    Postgres sorts control codes character by character, which puts DPDP-10 before DPDP-2.
+    The split keeps text and digit runs at fixed positions (even = text, odd = number), so
+    keys compare without mixing str and int at the same position.
+    """
+    parts = re.split(r"(\d+)", text or "")
+    return [int(p) if i % 2 else p.lower() for i, p in enumerate(parts)]
+
+
 def risk_band(score: int | None) -> str | None:
     """A 1–25 risk score (likelihood × impact on 1–5 scales) → its band. Calibrated to the
     Sprint 4a spec (9 → HIGH, 3 → LOW)."""
