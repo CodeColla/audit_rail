@@ -3,7 +3,8 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { get } from "../../lib/api";
 import { useCan } from "../../lib/auth";
-import { Bar, inputCls, Loading, PageHead, Pill, Table, Td } from "../../lib/ui";
+import { DataTable } from "../../components/DataTable";
+import { Bar, inputCls, Loading, PageHead, Pill } from "../../lib/ui";
 
 type Assessment = {
   id: string; title: string; bank_name: string; status: string; predicted_verdict: string | null;
@@ -41,22 +42,46 @@ export default function Audits() {
           {q ? `No audits match "${q}".` : "No assessments yet. Create one from an imported template."}
         </div>
       ) : (
-        <Table head={["Bank / assessment", "Progress", "Status", "Predicted verdict", "Bank SPOC"]}>
-          {rows.map((a) => {
-            const pct = a.total_questions ? Math.round((a.answered / a.total_questions) * 100) : 0;
-            return (
-              <tr key={a.id} className="cursor-pointer hover:bg-canvas" onClick={() => nav(`/audits/${a.id}`)}>
-                <Td><div className="font-medium">{a.bank_name}</div>
-                  <div className="text-caption text-txt3">{a.title}</div></Td>
-                <Td className="min-w-[150px]"><Bar pct={pct} muted={a.status === "submitted"} />
-                  <div className="mt-1 text-caption text-txt3 tnum">{a.answered} / {a.total_questions} answered</div></Td>
-                <Td><Pill tone={a.status}>{a.status.replace(/_/g, " ")}</Pill></Td>
-                <Td>{a.predicted_verdict ? <Pill tone={a.predicted_verdict}>{a.predicted_verdict}</Pill> : "—"}</Td>
-                <Td>{a.bank_spoc_name ?? "—"}</Td>
-              </tr>
-            );
-          })}
-        </Table>
+        // #20 S6. Client-side sort over the fetched rows. No onSearch or onDeleteOne: the search
+        // box above is the server query, and audits are not bulk-deleted from this list.
+        <DataTable<Assessment>
+          rows={rows}
+          getId={(a) => a.id}
+          onRowClick={(a) => nav(`/audits/${a.id}`)}
+          columns={[
+            {
+              key: "bank", label: "Bank / assessment",
+              sortValue: (a) => a.bank_name,
+              render: (a) => <><div className="font-medium">{a.bank_name}</div>
+                <div className="text-caption text-txt3">{a.title}</div></>,
+            },
+            {
+              key: "progress", label: "Progress", className: "min-w-[150px]",
+              sortValue: (a) => (a.total_questions ? a.answered / a.total_questions : 0),
+              render: (a) => {
+                const pct = a.total_questions ? Math.round((a.answered / a.total_questions) * 100) : 0;
+                return <><Bar pct={pct} muted={a.status === "submitted"} />
+                  <div className="mt-1 text-caption text-txt3 tnum">{a.answered} / {a.total_questions} answered</div></>;
+              },
+            },
+            {
+              key: "status", label: "Status",
+              sortValue: (a) => a.status,
+              render: (a) => <Pill tone={a.status}>{a.status.replace(/_/g, " ")}</Pill>,
+            },
+            {
+              key: "verdict", label: "Predicted verdict",
+              sortValue: (a) => a.predicted_verdict,
+              render: (a) => a.predicted_verdict
+                ? <Pill tone={a.predicted_verdict}>{a.predicted_verdict}</Pill> : "—",
+            },
+            {
+              key: "spoc", label: "Bank SPOC",
+              sortValue: (a) => a.bank_spoc_name,
+              render: (a) => a.bank_spoc_name ?? "—",
+            },
+          ]}
+        />
       )}
     </>
   );
