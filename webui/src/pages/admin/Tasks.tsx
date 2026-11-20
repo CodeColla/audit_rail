@@ -268,6 +268,72 @@ function CompleteModal({ task, onClose }: { task: Task; onClose: () => void }) {
   );
 }
 
+/** #20 S4. Attach several files to ONE past year of a recurring task (backlogged evidence).
+ * Deliberately not a completion: the schedule does not move, so the modal says so and can be
+ * reused for another year without touching the pending run. */
+function BackfillModal({ task, onClose }: { task: Task; onClose: () => void }) {
+  const qc = useQueryClient();
+  const thisYear = new Date().getFullYear();
+  const years = Array.from({ length: thisYear - 2000 + 1 }, (_, i) => thisYear - i);
+  const [year, setYear] = useState(String(thisYear));
+  const [evidenceType, setEvidenceType] = useState("report");
+  const [files, setFiles] = useState<File[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState("");
+
+  async function submit() {
+    setBusy(true); setErr(""); setDone("");
+    try {
+      const fd = new FormData();
+      fd.append("period_year", year);
+      fd.append("evidence_type", evidenceType.trim());
+      files.forEach((f) => fd.append("files", f));
+      const r = await api.post(`/tasks/${task.id}/backfill`, fd);
+      setDone(`${r.data.evidence.length} file(s) attached to ${year}.`);
+      setFiles([]);
+      qc.invalidateQueries({ queryKey: ["tasks"] });
+      qc.invalidateQueries({ queryKey: ["task", task.id] });
+      qc.invalidateQueries({ queryKey: ["evidence"] });
+    } catch (e: any) {
+      setErr(errText(e, "Could not attach the files."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Backfill evidence">
+      <form onSubmit={(e: FormEvent) => { e.preventDefault(); submit(); }} className="flex flex-col gap-3">
+        <p className="text-label text-txt2">
+          Attach evidence for a past year to “{task.title}”. This does not complete a run and does
+          not move the schedule.
+        </p>
+        <label className="flex flex-col gap-1 text-label">Year
+          <select value={year} onChange={(e) => setYear(e.target.value)} className={inputCls}>
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-label">Evidence type
+          <input value={evidenceType} onChange={(e) => setEvidenceType(e.target.value)}
+            maxLength={100} className={inputCls} />
+        </label>
+        <label className="flex flex-col gap-1 text-label">Files
+          <input type="file" multiple disabled={busy}
+            onChange={(e) => { setFiles(Array.from(e.target.files ?? [])); setDone(""); }} />
+        </label>
+        {files.length > 0 && <div className="text-caption text-txt3">{files.length} file(s) selected</div>}
+        {err && <div role="alert" className="text-label text-bad">{err}</div>}
+        {done && <div role="status" className="text-label text-ok">{done}</div>}
+        <button disabled={busy || files.length === 0 || !evidenceType.trim()}
+          className="btn btn-primary justify-center disabled:opacity-50">
+          {busy ? "Attaching…" : "Attach files"}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
 /** The list row's inline shortcut — the drawer offers the same action, this just saves a
  * click for the common case of "I did the thing, mark it done". */
 function CompleteButton({ task }: { task: Task }) {
@@ -285,6 +351,7 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
   const can = useCan();
   const [editing, setEditing] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [err, setErr] = useState("");
   const { data: task } = useQuery({ queryKey: ["task", id], queryFn: () => get<TaskDetail>(`/tasks/${id}`) });
 
@@ -341,6 +408,8 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
       <div className="flex flex-wrap gap-2">
         {task.next_run && can("tasks", "edit") && (
           <button onClick={() => setCompleting(true)} className="btn btn-primary py-1.5">Complete</button>)}
+        {Boolean(task.frequency || task.cadence_months) && can("tasks", "edit") && can("evidence", "add") && (
+          <button onClick={() => setBackfilling(true)} className="btn py-1.5">Backfill evidence</button>)}
         {can("tasks", "edit") && task.status === "active" && (
           <button onClick={() => pause.mutate()} disabled={pause.isPending} className="btn py-1.5 disabled:opacity-50">Pause</button>)}
         {can("tasks", "edit") && task.status === "paused" && (
@@ -352,6 +421,7 @@ function TaskDrawer({ id, onClose }: { id: string; onClose: () => void }) {
 
       {editing && <EditTaskModal task={task} onClose={() => setEditing(false)} />}
       {completing && task.next_run && <CompleteModal task={task} onClose={() => setCompleting(false)} />}
+      {backfilling && <BackfillModal task={task} onClose={() => setBackfilling(false)} />}
     </Drawer>
   );
 }
