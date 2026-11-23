@@ -645,13 +645,17 @@ function HeadingField({ assessmentId, field, value, placeholder, canEdit, classN
 
   if (!canEdit) return <span className={className}>{value || placeholder}</span>;
 
+  // The error line lives in both branches: a blank commit leaves edit mode before it reports.
   if (!editing) {
     return (
-      <button onClick={() => { setDraft(value ?? ""); setErr(""); setEditing(true); }}
-        title={`Edit ${label}`} aria-label={`Edit ${label}`}
-        className={cn("rounded px-1 hover:bg-canvas hover:text-ink", className)}>
-        {value || <span className="italic text-txt3">{placeholder}</span>}
-      </button>
+      <span className="inline-flex flex-col">
+        <button onClick={() => { setDraft(value ?? ""); setErr(""); setEditing(true); }}
+          title={`Edit ${label}`} aria-label={`Edit ${label}`}
+          className={cn("rounded px-1 hover:bg-canvas hover:text-ink", className)}>
+          {value || <span className="italic text-txt3">{placeholder}</span>}
+        </button>
+        {err && <span role="alert" className="text-caption text-bad">{err}</span>}
+      </span>
     );
   }
 
