@@ -1221,10 +1221,10 @@ CREATE TABLE tasks (
 );
 
 -- One occurrence of a recurring task.
--- NOTE: deliberately NOT UNIQUE (task_id, due_at). complete_run() derives the next
--- due date from TODAY, so completing a run early reproduces the same due_at; a unique
--- constraint would 500 on the normal 'finished it ahead of time' path. Revisit only if
--- the engine is changed to anchor cadence to the run's own due_at.
+-- NOTE: deliberately NOT UNIQUE (task_id, due_at). complete_run() anchors the next due
+-- date to this run's own due_at, and a backfilled run (#20 S4) is dated from the task's
+-- anniversary, so nothing guarantees one run per due_at. A unique constraint would turn
+-- either path into a 500. Add one only together with an engine-side guard.
 CREATE TABLE task_runs (
     id                     text PRIMARY KEY DEFAULT gen_random_uuid()::text,
     tenant_id              text NOT NULL REFERENCES tenants(id),
@@ -1240,6 +1240,21 @@ CREATE TABLE task_runs (
     FOREIGN KEY (task_id, tenant_id)     REFERENCES tasks (id, tenant_id) ON DELETE CASCADE,
     FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence (id, tenant_id)
 );
+
+-- #20 S4. Evidence gathered for a past period (a backfill), linked to the run for that
+-- period. Kept apart from task_runs.evidence_id so a backfill never touches a run's completion
+-- data, and so one period can hold several files. Applied to live databases by hand from
+-- db/migrations/20-task-run-evidence.sql.
+CREATE TABLE task_run_evidence (
+    task_run_id text NOT NULL,
+    evidence_id text NOT NULL,
+    tenant_id   text NOT NULL REFERENCES tenants(id) ON DELETE RESTRICT,
+    created_at  iso_ts NOT NULL DEFAULT now_iso(),
+    PRIMARY KEY (task_run_id, evidence_id),
+    FOREIGN KEY (task_run_id, tenant_id) REFERENCES task_runs (id, tenant_id) ON DELETE CASCADE,
+    FOREIGN KEY (evidence_id, tenant_id) REFERENCES evidence (id, tenant_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_task_run_evidence_tenant ON task_run_evidence (tenant_id);
 
 
 -- =====================================================================================

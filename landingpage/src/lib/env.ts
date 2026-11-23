@@ -6,7 +6,7 @@
 // CONTAINER START. Changing this means rebuilding the landing image, not just restarting it —
 // a known limitation, not an oversight; see docs/phase9/01-sprint-plan.md P9-S3.
 export const SIGNUP_URL =
-  import.meta.env.VITE_SIGNUP_URL ?? "https://app.auditrail.example.com/signup";
+  import.meta.env.VITE_SIGNUP_URL ?? "https://app.auditrail.srassociates.co/";
 
 // Enterprise is sales-led, not self-serve (see docs/phase9) — its CTA opens a mail composer
 // rather than posting to a waitlist API that doesn't exist. Same build-time-only caveat as

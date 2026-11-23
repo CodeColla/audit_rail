@@ -5,7 +5,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, errText, get } from "../../lib/api";
 import { useCan } from "../../lib/auth";
 import { OwnerSelect } from "../registers/Registers";
-import { Loading, Modal, PageHead, Pill, TH, Table, Td, cn, inputCls } from "../../lib/ui";
+import { DataTable } from "../../components/DataTable";
+import { Loading, Modal, PageHead, Pill, TH, Td, cn, inputCls } from "../../lib/ui";
 
 type Domain = { id: string; code: string; name: string; control_count: number };
 type Control = {
@@ -170,22 +171,48 @@ export default function Controls() {
           </div>
 
           {controls.isLoading ? <Loading /> : (
-            <Table head={["Ref", "Control", "Lifecycle", "Applicability", "Mapped", "Evidence", "Documents"]}>
-              {(controls.data ?? []).map((c) => (
-                <tr key={c.id} className="cursor-pointer hover:bg-canvas" onClick={() => openControl(c.id)}>
-                  <Td className="font-mono font-semibold">{c.code}</Td>
-                  <Td className="font-medium">{c.statement}
-                    {c.applicability !== "applicable" && <span className="ml-2 rounded bg-na-bg px-1.5 py-0.5 text-micro text-na">dormant</span>}
-                  </Td>
-                  <Td><Pill tone={c.lifecycle === "per_audit" ? "na" : "warn"}>{lifecycleLabel(c)}</Pill></Td>
-                  <Td><Pill tone={c.applicability === "applicable" ? "applicable" : "na"}>
-                    {c.applicability === "applicable" ? "Applicable" : "Dormant"}</Pill></Td>
-                  <Td><span className="rounded bg-canvas px-2 py-0.5 text-caption text-txt2">{c.mapped_count} pts</span></Td>
-                  <Td><span className="tnum text-txt2">{c.evidence_count}</span></Td>
-                  <Td><span className="tnum text-txt2">{c.document_count}</span></Td>
-                </tr>
-              ))}
-            </Table>
+            // #20 S7. Client-side sort over the fetched list. The default order is still the
+            // server's (domain, natural code), and the Ref sort uses the same natural order.
+            <DataTable<Control>
+              rows={controls.data ?? []}
+              getId={(c) => c.id}
+              onRowClick={(c) => openControl(c.id)}
+              emptyMessage="No controls in this domain."
+              columns={[
+                {
+                  key: "ref", label: "Ref", className: "font-mono font-semibold",
+                  sortValue: (c) => c.code.replace(/\d+/g, (n) => n.padStart(12, "0")),
+                  render: (c) => c.code,
+                },
+                {
+                  key: "control", label: "Control", className: "font-medium",
+                  sortValue: (c) => c.statement,
+                  render: (c) => <>{c.statement}
+                    {c.applicability !== "applicable" && <span className="ml-2 rounded bg-na-bg px-1.5 py-0.5 text-micro text-na">dormant</span>}</>,
+                },
+                {
+                  key: "lifecycle", label: "Lifecycle", sortValue: (c) => lifecycleLabel(c),
+                  render: (c) => <Pill tone={c.lifecycle === "per_audit" ? "na" : "warn"}>{lifecycleLabel(c)}</Pill>,
+                },
+                {
+                  key: "applicability", label: "Applicability", sortValue: (c) => c.applicability,
+                  render: (c) => <Pill tone={c.applicability === "applicable" ? "applicable" : "na"}>
+                    {c.applicability === "applicable" ? "Applicable" : "Dormant"}</Pill>,
+                },
+                {
+                  key: "mapped", label: "Mapped", sortValue: (c) => c.mapped_count,
+                  render: (c) => <span className="rounded bg-canvas px-2 py-0.5 text-caption text-txt2">{c.mapped_count} pts</span>,
+                },
+                {
+                  key: "evidence", label: "Evidence", sortValue: (c) => c.evidence_count,
+                  render: (c) => <span className="tnum text-txt2">{c.evidence_count}</span>,
+                },
+                {
+                  key: "documents", label: "Documents", sortValue: (c) => c.document_count,
+                  render: (c) => <span className="tnum text-txt2">{c.document_count}</span>,
+                },
+              ]}
+            />
           )}
         </div>
       ) : (

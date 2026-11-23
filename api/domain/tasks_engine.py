@@ -12,9 +12,11 @@ fresh dated artifact" loop).
 
 from __future__ import annotations
 
+import calendar
+import datetime as dt
 import uuid
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from api.core.database import engine, t
 from api.core.util import add_days, add_months, now_iso, today_iso
@@ -108,6 +110,48 @@ def mark_overdue(conn, today: str | None = None) -> int:
                     type="task_overdue", title=f"Overdue: {r['title']}",
                     entity_type="task", entity_id=r["task_id"], created_at=now_iso()))
     return len(due)
+
+
+def _same_day_in_year(anchor: str, year: int) -> str:
+    """The anchor's month and day in `year`, keeping its time part. A 29 Feb anchor falls back
+    to the last day of February in a non-leap year."""
+    d = dt.date.fromisoformat(anchor[:10])
+    day = min(d.day, calendar.monthrange(year, d.month)[1])
+    return f"{year:04d}-{d.month:02d}-{day:02d}{anchor[10:]}"
+
+
+def period_run_for_backfill(conn, tenant_id: str, task_id: str, year: int,
+                            member_id: str | None) -> dict | None:
+    """Find or create the run that a backfill for `year` attaches to.
+
+    Returns None when the task is not in this tenant. Reuses the earliest run already dated
+    in `year` (any status, the pending one included) and leaves it exactly as it is. Otherwise
+    creates a done run on the anniversary of the task's latest run. A backfill never changes
+    `tasks.next_due_at` and never changes an existing run's status: the schedule keeps moving
+    only through complete_run.
+    """
+    runs, tasks = t("task_runs"), t("tasks")
+    if conn.execute(select(tasks.c.id).where(
+            tasks.c.id == task_id, tasks.c.tenant_id == tenant_id)).first() is None:
+        return None
+    existing = conn.execute(
+        select(runs.c.id, runs.c.due_at)
+        .where(runs.c.task_id == task_id, runs.c.tenant_id == tenant_id,
+               func.substr(runs.c.due_at, 1, 4) == f"{year:04d}")
+        .order_by(runs.c.due_at)
+    ).mappings().first()
+    if existing is not None:
+        return {"run_id": existing["id"], "due_at": existing["due_at"], "created": False}
+    anchor = conn.execute(
+        select(runs.c.due_at).where(runs.c.task_id == task_id, runs.c.tenant_id == tenant_id)
+        .order_by(runs.c.due_at.desc()).limit(1)
+    ).scalar() or now_iso()
+    due = _same_day_in_year(anchor, year)
+    run_id = _uid()
+    conn.execute(insert(runs).values(
+        id=run_id, tenant_id=tenant_id, task_id=task_id, due_at=due, status="done",
+        completed_at=now_iso(), completed_by_member_id=member_id))
+    return {"run_id": run_id, "due_at": due, "created": True}
 
 
 def complete_run(conn, tenant_id: str, task_id: str, run_id: str, member_id: str | None,

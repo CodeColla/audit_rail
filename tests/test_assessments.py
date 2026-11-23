@@ -425,3 +425,54 @@ def test_deleting_another_tenants_audit_is_404(app_client):
     assert app_client.delete(f"/api/assessments/{aid}", headers=oh).status_code == 404
     # still there
     assert app_client.get(f"/api/assessments/{aid}", headers=h).status_code == 200
+
+
+# ─────────────────────────────────────────────────────────── #20 S5
+
+def test_audit_title_and_bank_name_are_editable_and_trimmed(app_client):
+    """The workspace heading is editable. Values are trimmed, persisted, and the blank title
+    is refused with a 400 that leaves the stored value alone."""
+    from api.core.database import engine
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-heading")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "Heading before",
+                                "bank_name": "Old Bank"}).json()["id"]
+
+    ok = app_client.patch(f"/api/assessments/{aid}", headers=h,
+                          json={"title": "  Heading after  ", "bank_name": " New Bank "})
+    assert ok.status_code == 200, ok.text
+    got = app_client.get(f"/api/assessments/{aid}", headers=h).json()
+    assert got["title"] == "Heading after"
+    assert got["bank_name"] == "New Bank"
+
+    blank = app_client.patch(f"/api/assessments/{aid}", headers=h, json={"title": "   "})
+    assert blank.status_code == 400
+    too_long = app_client.patch(f"/api/assessments/{aid}", headers=h,
+                                json={"bank_name": "x" * 201})
+    assert too_long.status_code == 400
+    assert app_client.get(f"/api/assessments/{aid}", headers=h).json()["title"] == "Heading after"
+
+
+def test_editing_another_tenants_audit_heading_is_404(app_client):
+    from api.core.database import engine
+    from tests.test_identity import uniq_gst
+
+    with engine.connect() as c:
+        tid = c.execute(sqltext("SELECT id FROM tenants WHERE slug='kiam'")).scalar()
+    ids = _seed(engine, tid, suffix="-headx")
+    h = {"Authorization": f"Bearer {token(app_client, 'admin@kiam.example', 'secret1')}"}
+    aid = app_client.post("/api/assessments", headers=h,
+                          json={"template_id": ids["tpl"], "title": "KIAM heading"}).json()["id"]
+
+    other = app_client.post("/api/auth/signup", json={
+        "full_name": "Heading Other Owner", "email": f"hdr-{uuid.uuid4().hex[:8]}@example.com",
+        "password": "Passw0rdOne", "organisation_name": f"Hdr Org {uuid.uuid4().hex[:6]}",
+        "gst_number": uniq_gst()})
+    oh = {"Authorization": f"Bearer {other.json()['access_token']}"}
+
+    r = app_client.patch(f"/api/assessments/{aid}", headers=oh, json={"title": "Hijacked"})
+    assert r.status_code == 404
+    assert app_client.get(f"/api/assessments/{aid}", headers=h).json()["title"] == "KIAM heading"

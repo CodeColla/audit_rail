@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import delete as sqldelete, insert, select, update
 
-from api.core import activity
+from api.core import activity, storage
+from api.core.config import settings
 from api.domain import tasks_engine
 from api.core.auth import Principal, get_current_user
 from api.core.permissions import require
@@ -334,3 +337,76 @@ def complete(task_id: str, run_id: str, body: CompleteIn,
                  action="task.run_completed", entity_type="task", entity_id=task_id,
                  detail={"evidence_id": body.evidence_id})
     return {"completed": True, **result}
+
+
+@router.post("/{task_id}/backfill", status_code=201)
+async def backfill_task(
+    task_id: str,
+    period_year: int = Form(..., description="a past or current year whose evidence is missing"),
+    evidence_type: str = Form(...),
+    files: list[UploadFile] = File(...),
+    user: Principal = Depends(require("tasks", "edit")),
+    _evidence_gate: Principal = Depends(require("evidence", "add")),
+):
+    """#20 S4. Attach several files to one past period of a recurring task.
+
+    This is not a completion: no run is completed, the pending run is left alone, and
+    `tasks.next_due_at` does not move. The files become evidence linked to the run for that
+    year (see tasks_engine.period_run_for_backfill). Files are read and size-checked before
+    anything is stored, and all rows are written in one transaction.
+    """
+    current_year = int(now_iso()[:4])
+    if not 2000 <= period_year <= current_year:
+        raise HTTPException(400, f"period year must be between 2000 and {current_year}")
+    evidence_type = evidence_type.strip()
+    if not evidence_type or len(evidence_type) > 100:
+        raise HTTPException(400, "evidence type is required (up to 100 characters)")
+
+    blobs = []
+    for f in files:
+        data = await f.read()
+        if len(data) > settings.max_upload_mb * 1024 * 1024:
+            raise HTTPException(413, f"{f.filename or 'a file'} exceeds {settings.max_upload_mb} MB")
+        blobs.append((f, data))
+    tasks = t("tasks")
+    # Refuse a bad task before anything is written to the vault, so no orphaned files.
+    with engine.connect() as conn:
+        task = conn.execute(select(tasks.c.frequency, tasks.c.cadence_months).where(
+            tasks.c.id == task_id, tasks.c.tenant_id == user.tenant_id)).mappings().first()
+    if task is None:
+        raise HTTPException(404, "task not found")
+    if task["frequency"] is None and task["cadence_months"] is None:
+        raise HTTPException(400, "only recurring tasks have periods to backfill")
+    stored = [(f, storage.save(user.tenant_id, data, f.filename or "upload"))
+              for f, data in blobs]
+
+    ev, files_t, tre = t("evidence"), t("files"), t("task_run_evidence")
+    with engine.begin() as conn:
+        member_id = _member_id(conn, user.tenant_id, user.user_id)
+        period = tasks_engine.period_run_for_backfill(
+            conn, user.tenant_id, task_id, period_year, member_id)
+        if period is None:
+            raise HTTPException(404, "task not found")
+        linked = []
+        for f, (key, sha, size) in stored:
+            file_id, ev_id = str(uuid.uuid4()), str(uuid.uuid4())
+            title = Path(f.filename or "upload").stem or "upload"
+            conn.execute(insert(files_t).values(
+                id=file_id, tenant_id=user.tenant_id, storage_key=key,
+                original_name=f.filename or "upload", mime_type=f.content_type,
+                size_bytes=size, sha256=sha, uploaded_by_member_id=member_id,
+                created_at=now_iso()))
+            conn.execute(insert(ev).values(
+                id=ev_id, tenant_id=user.tenant_id, title=title,
+                evidence_type=evidence_type, file_id=file_id,
+                source_task_run_id=period["run_id"], created_by_member_id=member_id,
+                created_at=now_iso()))
+            conn.execute(insert(tre).values(
+                task_run_id=period["run_id"], evidence_id=ev_id, tenant_id=user.tenant_id))
+            linked.append({"id": ev_id, "title": title, "sha256": sha})
+    activity.log(tenant_id=user.tenant_id, actor_user_id=user.user_id,
+                 action="task.backfill", entity_type="task", entity_id=task_id,
+                 detail={"period_year": period_year, "task_run_id": period["run_id"],
+                         "run_created": period["created"], "files": len(linked)})
+    return {"task_run_id": period["run_id"], "due_at": period["due_at"],
+            "run_created": period["created"], "evidence": linked}
