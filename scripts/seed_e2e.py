@@ -31,9 +31,18 @@ sys.path.insert(0, str(REPO))
 
 from sqlalchemy import create_engine, text  # noqa: E402
 
-E2E_DB = "audit_rail_e2e"
-ADMIN_URL = "postgresql+psycopg://audit:audit@localhost:5434/audit_rail"
-E2E_URL = f"postgresql+psycopg://audit:audit@localhost:5434/{E2E_DB}"
+# E2E_DATABASE_URL picks another e2e database (e.g. sr_auditrail_e2e); the default is the
+# repo's own local e2e stack. This script drops and rebuilds the schema, so the name must be
+# an e2e database and never the shared `sr_auditrail`.
+import re  # noqa: E402
+
+from sqlalchemy.engine import make_url  # noqa: E402
+
+E2E_URL = os.environ.get("E2E_DATABASE_URL") or "postgresql+psycopg://audit:audit@localhost:5434/audit_rail_e2e"
+E2E_DB = make_url(E2E_URL).database or ""
+if E2E_DB == "sr_auditrail" or not re.fullmatch(r"[A-Za-z0-9_]+", E2E_DB) or "e2e" not in E2E_DB:
+    sys.exit(f"refusing to seed database {E2E_DB!r}: the name must contain 'e2e' and must not be 'sr_auditrail'")
+ADMIN_URL = make_url(E2E_URL).set(database="postgres")
 
 PY = str(REPO / ".venv" / "bin" / "python")
 

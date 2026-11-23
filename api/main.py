@@ -50,6 +50,9 @@ _REQUIRED_COLUMNS: list[tuple[str, str, str]] = [
      "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS logo_file_id text;"),
     ("files", "purpose",
      "ALTER TABLE files ADD COLUMN IF NOT EXISTS purpose text NOT NULL DEFAULT 'GENERIC';"),
+    # A table, not a column: checked by its key column. Hint is the file to run by hand.
+    ("task_run_evidence", "task_run_id",
+     "-- create the table by hand: psql -f db/migrations/20-task-run-evidence.sql"),
 ]
 
 
